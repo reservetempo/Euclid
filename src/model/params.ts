@@ -55,6 +55,16 @@ export enum ParamId {
   CombMix,       // resonator dry/wet (0 = off)
   CombTune,      // resonator pitch as a ratio of the note
   CombDecay,     // resonator feedback: short pluck .. long ringing string
+  // Third wave: envelope curvature + drum layering. The amp segments get a shape
+  // (0.5 = linear, the old behaviour; low = snappy/gated, high = soft/exponential),
+  // and a hit becomes up to three layers under the master ADSR: a transient click,
+  // the tone with an optional independent decay, and noise likewise (0 = follow amp).
+  AmpAttackShape, // attack curve: 0 plucky .. 0.5 linear .. 1 slow swell
+  AmpDecayShape,  // decay+release curve: 0 gated hold .. 0.5 linear .. 1 percussive
+  ToneDecay,      // independent exponential decay for the oscillator layer (0 = follow amp)
+  NoiseDecay,     // independent exponential decay for the noise layer (0 = follow amp)
+  ClickLevel,     // transient click layer level (0 = off)
+  ClickType,      // Tick / Snap / Knock / Blip / Clank
   NumParams,
 }
 
@@ -85,11 +95,17 @@ export function getParamGroup(id: ParamId): ParamGroup {
     case ParamId.Osc2Detune:
     case ParamId.Sync:
     case ParamId.Fold:
+    case ParamId.ClickLevel:
+    case ParamId.ClickType:
       return ParamGroup.Tone;
     case ParamId.AmpAttack:
     case ParamId.AmpDecay:
     case ParamId.AmpSustain:
     case ParamId.AmpRelease:
+    case ParamId.AmpAttackShape:
+    case ParamId.AmpDecayShape:
+    case ParamId.ToneDecay:
+    case ParamId.NoiseDecay:
       return ParamGroup.Amp;
     case ParamId.FilterType:
     case ParamId.FilterCutoff:

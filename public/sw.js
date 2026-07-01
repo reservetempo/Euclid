@@ -8,7 +8,7 @@
 //    immutable, so a cache hit is always correct).
 // Bump CACHE to force clients off old caches.
 
-const CACHE = "msq010-v5";
+const CACHE = "msq010-v6";
 
 self.addEventListener("install", () => self.skipWaiting());
 

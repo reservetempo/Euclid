@@ -30,6 +30,9 @@ const P = {
   // 2nd oscillator + sync, wavefolder, Karplus-Strong/comb resonator.
   Osc2Mix: 38, Osc2Detune: 39, Sync: 40, Fold: 41,
   CombMix: 42, CombTune: 43, CombDecay: 44,
+  // Envelope curvature + layering (shape 0.5 = linear = legacy; decays 0 = follow amp).
+  AmpAttackShape: 45, AmpDecayShape: 46,
+  ToneDecay: 47, NoiseDecay: 48, ClickLevel: 49, ClickType: 50,
 };
 
 // LFO destination indices, in sync with LFO_TARGETS in src/model/paramSpec.ts.
@@ -46,6 +49,23 @@ const CRACKLE_DENSITY = 0.03; // probability of a crackle/dust impulse per sampl
 const METAL_HOLD = 9;        // sample-and-hold period (samples) for "Metal" noise
 const FOLD_GAIN = 4;         // extra pre-fold gain at Fold = 1 (more gain = more folds)
 const COMB_MAXLEN = 8192;    // resonator delay buffer (≈5Hz lowest tuned pitch at 44.1k)
+// Click transient layer: exponential decay (seconds) per ClickType index — keep in
+// sync with CLICK_TYPES in src/model/paramSpec.ts (Tick/Snap/Knock/Blip/Clank).
+const CLICK_DECAY = [0.0015, 0.006, 0.012, 0.004, 0.008];
+const CLICK_GAIN = 1.2;      // click peak level at ClickLevel = 1
+const BLIP_HZ = 1100;        // fixed pitch of the "Blip" click sine
+// Master soft-clip knee: linear (transparent) below, tanh-rounded above, so stacked
+// resonant/driven channels saturate gently instead of hard digital clipping at ±1.
+const CLIP_KNEE = 0.9;
+
+// Standard 2-sample polyBLEP residual: the correction to add around a unit step
+// discontinuity at phase 0 (t = distance into/before the edge in cycles, dt = phase
+// increment per sample). Smooths oscillator edges so they don't alias.
+function polyBlep(t, dt) {
+  if (t < dt) { const x = t / dt; return x + x - x * x - 1; }
+  if (t > 1 - dt) { const x = (t - 1) / dt; return x * x + x + x + 1; }
+  return 0;
+}
 
 // One LFO sample for a given shape (0=Sine 1=Tri 2=Saw 3=Square) at phase∈[0,1).
 // Sample-and-hold (shape 4) is handled in the voice loop (it needs held state).
@@ -122,35 +142,63 @@ function makeRng(seed) {
 }
 
 //============================================================================
-// Linear ADSR — mirrors juce::ADSR (linear segments; release ramps from the
-// current value to 0 over the release time).
+// Shaped ADSR. Each segment advances a linear phase t∈[0,1] and maps it through a
+// power curve, so the segment TIME is exact and only its contour changes:
+//   attack  value = t^aExp                          (from 0 to 1)
+//   decay   value = sustain + (1-sustain)·(1-t)^dExp (from 1 to sustain)
+//   release value = start·(1-t)^dExp                 (from the current value to 0)
+// A shape of 0.5 maps to exponent 1 = the exact legacy linear ADSR. Shape < 0.5
+// (exp < 1) starts fast: a plucky attack / a gated hold-then-drop decay. Shape > 0.5
+// (exp > 1) starts slow: a swelling attack / a percussive fast-drop-long-tail decay.
+function shapeExp(shape) {
+  const s = shape === undefined ? 0.5 : clamp(shape, 0, 1);
+  return Math.pow(4, s * 2 - 1); // 0..1 -> 0.25..4, 0.5 -> 1 (linear)
+}
 class ADSR {
   constructor() {
     this.state = 0; // 0 idle, 1 attack, 2 decay, 3 sustain, 4 release
     this.value = 0;
-    this.attackRate = 0; this.decayRate = 0; this.releaseRate = 0;
-    this.sustain = 0; this.release = 0; this.sr = 44100;
+    this.t = 0; // linear phase of the current segment
+    this.attackInc = 0; this.decayInc = 0; this.releaseInc = 0;
+    this.aExp = 1; this.dExp = 1;
+    this.sustain = 0; this.release = 0; this.releaseStart = 0; this.sr = 44100;
   }
-  setParameters(a, d, s, r, sr) {
+  setParameters(a, d, s, r, sr, aShape, dShape) {
     this.sr = sr; this.release = r; this.sustain = s;
-    this.attackRate = a > 0 ? 1 / (a * sr) : 1e9;
-    this.decayRate = d > 0 ? (1 - s) / (d * sr) : 1e9;
+    this.attackInc = a > 0 ? 1 / (a * sr) : 2;
+    this.decayInc = d > 0 ? 1 / (d * sr) : 2;
+    this.aExp = shapeExp(aShape);
+    this.dExp = shapeExp(dShape);
   }
-  noteOn() { this.value = 0; this.state = 1; }
+  noteOn() { this.value = 0; this.t = 0; this.state = 1; }
   noteOff() {
     if (this.state === 0) return;
     if (this.release > 0 && this.value > 0) {
-      this.releaseRate = this.value / (this.release * this.sr);
+      this.releaseStart = this.value;
+      this.releaseInc = 1 / (this.release * this.sr);
+      this.t = 0;
       this.state = 4;
     } else { this.value = 0; this.state = 0; }
   }
   isActive() { return this.state !== 0; }
   next() {
     switch (this.state) {
-      case 1: this.value += this.attackRate; if (this.value >= 1) { this.value = 1; this.state = 2; } break;
-      case 2: this.value -= this.decayRate; if (this.value <= this.sustain) { this.value = this.sustain; this.state = 3; } break;
+      case 1:
+        this.t += this.attackInc;
+        if (this.t >= 1) { this.value = 1; this.t = 0; this.state = 2; }
+        else this.value = Math.pow(this.t, this.aExp);
+        break;
+      case 2:
+        this.t += this.decayInc;
+        if (this.t >= 1) { this.value = this.sustain; this.state = 3; }
+        else this.value = this.sustain + (1 - this.sustain) * Math.pow(1 - this.t, this.dExp);
+        break;
       case 3: break;
-      case 4: this.value -= this.releaseRate; if (this.value <= 0) { this.value = 0; this.state = 0; } break;
+      case 4:
+        this.t += this.releaseInc;
+        if (this.t >= 1) { this.value = 0; this.state = 0; }
+        else this.value = this.releaseStart * Math.pow(1 - this.t, this.dExp);
+        break;
       default: this.value = 0;
     }
     return this.value;
@@ -233,6 +281,11 @@ class Voice {
     this.fold = 0;
     this.combMix = 0; this.combRatio = 1; this.combFb = 0;
     this.comb = new KarplusComb();
+    // Layer envelopes (per-source exponential decays) + click transient state.
+    this.toneEnvCoef = 0; this.noiseEnvCoef = 0; this.toneEnv = 1; this.noiseEnv = 1;
+    this.clickLevel = 0; this.clickType = 0; this.clickEnv = 0; this.clickCoef = 0;
+    this.clickPhase = 0; this.clickFreq = 0; this.clickPrev = 0;
+    this.clickHold = 0; this.clickCtr = 0;
   }
   start(s, gate) {
     this.basePitch = s[P.Pitch];
@@ -277,12 +330,30 @@ class Voice {
     this.combFb = 0.85 + clamp(s[P.CombDecay], 0, 1) * 0.14; // 0.85 (pluck) .. 0.99 (string)
     this.comb.reset();
 
+    // Layering: per-source exponential decays (0 = follow the amp envelope) and the
+    // click transient. `|| 0` guards snapshots saved before these params existed
+    // (shorter arrays read undefined) so they behave as "off".
+    const toneDec = s[P.ToneDecay] || 0;
+    const noiseDec = s[P.NoiseDecay] || 0;
+    this.toneEnvCoef = toneDec > 0.004 ? Math.exp(-1 / (toneDec * this.sr)) : 0;
+    this.noiseEnvCoef = noiseDec > 0.004 ? Math.exp(-1 / (noiseDec * this.sr)) : 0;
+    this.toneEnv = 1; this.noiseEnv = 1;
+    this.clickLevel = clamp(s[P.ClickLevel] || 0, 0, 1);
+    this.clickType = clamp(Math.round(s[P.ClickType] || 0), 0, CLICK_DECAY.length - 1);
+    this.clickEnv = this.clickLevel > 0 ? 1 : 0;
+    this.clickCoef = Math.exp(-1 / (CLICK_DECAY[this.clickType] * this.sr));
+    this.clickPhase = 0;
+    this.clickFreq = this.clickType === 3 ? BLIP_HZ : Math.max(60, this.basePitch * 2);
+    this.clickPrev = 0; this.clickHold = 0; this.clickCtr = 0;
+
     this.adsr.setParameters(
       Math.max(0.0001, s[P.AmpAttack]),
       Math.max(0.0001, s[P.AmpDecay]),
       clamp(s[P.AmpSustain], 0, 1),
       Math.max(0.0001, s[P.AmpRelease]),
-      this.sr
+      this.sr,
+      s[P.AmpAttackShape], // undefined (old snapshot) -> linear, see shapeExp
+      s[P.AmpDecayShape]
     );
 
     this.oscPhase = 0; this.pitchEnv = 1;
@@ -293,10 +364,19 @@ class Voice {
     this.adsr.noteOn();
     this.active = true;
   }
-  // `pw` is the square-wave duty cycle (0..1, 0.5 = symmetric); ignored by sine/tri.
-  osc(phase, wave, pw) {
+  // `pw` is the square-wave duty cycle (0..1, 0.5 = symmetric); ignored by sine/tri/saw.
+  // `dt` is the per-sample phase increment (freq/sr), used to polyBLEP-smooth the
+  // square/saw edges — naive edges alias badly at high pitch (a big screech source).
+  osc(phase, wave, pw, dt) {
     if (wave === 1) return 2 * Math.abs(2 * (phase - Math.floor(phase + 0.5))) - 1; // triangle
-    if (wave === 2) return phase < pw ? 1 : -1;                                     // square
+    if (wave === 2) {                                                               // square
+      let v = phase < pw ? 1 : -1;
+      v += polyBlep(phase, dt);                     // rising edge at 0
+      let tf = phase - pw + 1; if (tf >= 1) tf -= 1;
+      v -= polyBlep(tf, dt);                        // falling edge at pw
+      return v;
+    }
+    if (wave === 3) return 2 * phase - 1 - polyBlep(phase, dt);                     // saw (rising)
     return Math.sin(TWO_PI * phase);                                               // sine
   }
   // One step of the Paul Kellet "refined" pink-noise filter (state in pinkState),
@@ -371,14 +451,16 @@ class Voice {
         if (this.modPhase >= 1) this.modPhase -= Math.floor(this.modPhase);
       }
       const pw = clamp(0.5 + pwOff, 0.05, 0.95);
+      const dt = Math.min(0.25, freq / sr); // phase step for the polyBLEP edges
       let carrierPhase = this.oscPhase;
       if (this.modType === 1) carrierPhase += modOut * this.modAmount * FM_INDEX; // FM
-      let osc = this.osc(carrierPhase - Math.floor(carrierPhase), this.waveform, pw);
+      let osc = this.osc(carrierPhase - Math.floor(carrierPhase), this.waveform, pw, dt);
       if (this.modType === 2) osc *= 1 - this.modAmount + this.modAmount * modOut; // ring
 
       // Detuned 2nd oscillator, blended in (hard-sync handled at the phase advance).
       if (this.osc2Mix > 0) {
-        const o2 = this.osc(this.osc2Phase - Math.floor(this.osc2Phase), this.waveform, pw);
+        const dt2 = Math.min(0.25, dt * this.osc2Ratio);
+        const o2 = this.osc(this.osc2Phase - Math.floor(this.osc2Phase), this.waveform, pw, dt2);
         osc += o2 * this.osc2Mix;
       }
       // Wavefolder: drive the wave into a sine fold so it folds back on itself,
@@ -386,7 +468,12 @@ class Voice {
       if (this.fold > 0) osc = Math.sin(osc * (1 + this.fold * FOLD_GAIN) * 1.5707963);
 
       const noise = this.nextNoise();
-      let mixed = this.toneLevel * osc + this.noiseLevel * noise;
+      // Layer envelopes: each source can decay on its own clock (0 = follow the amp
+      // ADSR, which still gates the whole voice at the end of the chain).
+      let toneAmp = this.toneLevel, noiseAmp = this.noiseLevel;
+      if (this.toneEnvCoef > 0) { toneAmp *= this.toneEnv; this.toneEnv *= this.toneEnvCoef; }
+      if (this.noiseEnvCoef > 0) { noiseAmp *= this.noiseEnv; this.noiseEnv *= this.noiseEnvCoef; }
+      let mixed = toneAmp * osc + noiseAmp * noise;
 
       // Bit/sample-rate crush: decimate (sample-and-hold), then quantise to N bits.
       if (this.dsFactor > 1) {
@@ -411,6 +498,29 @@ class Voice {
       const g = Math.tan(Math.PI * cutoff / sr);
       const k = 1 / clamp(this.filterReso * resoMul, 0.3, 20);
       let filtered = this.filter.process(mixed, g, k, this.filterType);
+
+      // Click transient layer: a few-ms burst injected AFTER the main filter (so a
+      // low-pass body can't dull it) and before drive/comb (so drive glues it in and
+      // it can pluck the resonator). One-shot per note, independent of the gate.
+      if (this.clickEnv > 1e-4) {
+        let c;
+        switch (this.clickType) {
+          case 1: c = this.rng(); break;                                  // snap: white burst
+          case 2: case 3:                                                 // knock / blip: sine thud/ping
+            c = Math.sin(TWO_PI * this.clickPhase);
+            this.clickPhase += this.clickFreq / sr;
+            if (this.clickPhase >= 1) this.clickPhase -= 1;
+            break;
+          case 4:                                                         // clank: S&H metal grit
+            if (--this.clickCtr <= 0) { this.clickHold = this.rng(); this.clickCtr = METAL_HOLD; }
+            c = this.clickHold; break;
+          default: {                                                      // tick: violet spike
+            const w = this.rng(); c = (w - this.clickPrev) * 0.7; this.clickPrev = w;
+          }
+        }
+        filtered += c * this.clickEnv * this.clickLevel * CLICK_GAIN;
+        this.clickEnv *= this.clickCoef;
+      }
 
       const drive = clamp(this.drive + driveAdd, 0, 2);
       if (drive > 0) filtered = Math.tanh(filtered * (1 + drive * 5));
@@ -893,6 +1003,17 @@ class EngineProcessor extends AudioWorkletProcessor {
       }
     }
 
+    // Soft-knee master clip: transparent below CLIP_KNEE, tanh-rounded above (peaks
+    // asymptote to ±1), so stacked resonant/driven channels saturate gently instead
+    // of hard digital clipping at the DAC.
+    for (let i = 0; i < n; i++) {
+      const x = master[i];
+      const a = x < 0 ? -x : x;
+      if (a > CLIP_KNEE) {
+        const soft = CLIP_KNEE + (1 - CLIP_KNEE) * Math.tanh((a - CLIP_KNEE) / (1 - CLIP_KNEE));
+        master[i] = x < 0 ? -soft : soft;
+      }
+    }
     for (let ch = 0; ch < out.length; ch++) {
       const o = out[ch];
       for (let i = 0; i < n; i++) o[i] = master[i];

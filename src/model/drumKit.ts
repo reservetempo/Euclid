@@ -6,7 +6,9 @@
 
 import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
-import { getParamSpec, baseRange, isDiscrete, LFO_TARGETS, OSC_MOD_TYPES, NOISE_TYPES } from "./paramSpec";
+import {
+  getParamSpec, baseRange, isDiscrete, LFO_TARGETS, OSC_MOD_TYPES, NOISE_TYPES, CLICK_TYPES,
+} from "./paramSpec";
 import { Preset, defaultPresetFor, FACTORY_PRESETS } from "./presets";
 
 export type Snapshot = number[];
@@ -35,6 +37,35 @@ const GAUSS_MU: Record<number, number> = {
 // keeps quiet/no-noise sounds common and loud hiss occasional, while the full range is
 // still reachable. 1 = uniform (no bias); higher = quieter on average.
 const NOISE_LEVEL_BIAS = 2; // mean ≈ 1/3 of the window
+
+// Click-layer level gets the same downward treatment — a transient should usually
+// season the hit, not dominate it (full-blast clicks stay reachable).
+const CLICK_LEVEL_BIAS = 1.6;
+
+// Upward bias on the shuffled decay SHAPE: real drums decay exponentially (fast drop,
+// long quiet tail = shape > 0.5), so the draw is `hi - r^BIAS * span` — percussive
+// shapes are common, linear occasional, gated (hold-then-drop) rare but reachable.
+const DECAY_SHAPE_BIAS = 1.7; // mean ≈ 0.63 of the window
+
+// Probability that a shuffle leaves a layer's independent decay OFF (following the
+// amp envelope, the classic single-envelope voice). Applied per layer, scaled by the
+// window like every draw, so gentle shuffles stay near the current sound.
+const TONE_DECAY_OFF_P = 0.7;
+const NOISE_DECAY_OFF_P = 0.5;
+
+// --- Shuffle harshness guard --------------------------------------------------
+// Caps applied AFTER the draw (shuffle-only — manual editing can still go anywhere).
+// Each targets a stacked-extremes screech the independent draws can land on.
+const FM_INDEX = 4;            // mirror of FM_INDEX in public/worklet/engine.js
+const FM_BW_LIMIT = 9000;      // Hz, Carson-rule cap on FM/ring sideband spread
+const TILT_KNEE = 400;         // Hz, equal-loudness tilt starts above this pitch
+const TILT_POW = 0.3;          // strength of the (knee/pitch)^pow tone attenuation
+const TILT_FLOOR = 0.35;       // never attenuate the tone below this factor
+const RESO_SCREAM_HZ = 4500;   // centre of the ear's most sensitive band
+const RESO_MIN_Q = 2.8;        // max allowed Q at the centre of the scream band
+// Per-noise-colour level compensation (indexed like NOISE_TYPES): the differentiated
+// spectra (Blue/Violet) and S&H grit (Metal) pierce at equal level, so scale them back.
+const NOISE_COLOUR_GAIN = [1, 1, 1, 0.65, 0.5, 1, 0.7];
 
 // How many effect/filter "modules" a shuffle leaves active at once (there are 13 in
 // all — see soundModules). Weighted toward a handful so a sound is usually doing a
@@ -217,6 +248,9 @@ export class DrumParameters {
       After the draw, {@link applySparsity} switches off a random subset of the
       effect/filter modules so a sound is usually only doing 1-3 things at once
       instead of everything at full tilt — the count itself varies per shuffle.
+      {@link ensureAudibleLevel} then floors near-silent results and
+      {@link tameHarshness} caps stacked-extreme screech (scream-band resonance,
+      runaway FM sidebands, piercing noise colours, crushed high tones).
 
       `maxLen` (seconds, 0 = off) caps the estimated audible length: FX tails are
       trimmed first (echo, then reverb), then the amp body, to fit. */
@@ -238,17 +272,25 @@ export class DrumParameters {
       const lo = cur + (this.lo[id] - cur) * randomness;
       const hi = cur + (this.hi[id] - cur) * randomness;
       const isFreq = id === ParamId.Pitch || id === ParamId.FilterCutoff;
-      // Noise level is biased toward the low edge so shuffles are quieter on average;
-      // frequency params use the perceptual curve; everything else is a uniform draw.
+      // Most params draw uniformly from the window; a few get shaped draws: frequency
+      // params use the perceptual curve, noise/click levels are biased quiet, the decay
+      // shape is biased percussive, and the layer decays usually stay off (= follow amp).
       let v: number;
       if (isFreq) v = sampleFreq(curve, lo, hi);
       else if (id === ParamId.NoiseLevel) v = lo + Math.pow(Math.random(), NOISE_LEVEL_BIAS) * (hi - lo);
+      else if (id === ParamId.ClickLevel) v = lo + Math.pow(Math.random(), CLICK_LEVEL_BIAS) * (hi - lo);
+      else if (id === ParamId.AmpDecayShape) v = hi - Math.pow(Math.random(), DECAY_SHAPE_BIAS) * (hi - lo);
+      else if (id === ParamId.ToneDecay) v = Math.random() < TONE_DECAY_OFF_P ? lo : lo + Math.random() * (hi - lo);
+      else if (id === ParamId.NoiseDecay) v = Math.random() < NOISE_DECAY_OFF_P ? lo : lo + Math.random() * (hi - lo);
       else v = lo + Math.random() * (hi - lo);
       this.set(id, v);
     }
     this.dedupeLfoTargets();
     this.applySparsity(randomness);
-    if (randomness > 0) this.ensureAudibleLevel();
+    if (randomness > 0) {
+      this.ensureAudibleLevel();
+      this.tameHarshness();
+    }
     this.clampLength(maxLen);
   }
 
@@ -282,6 +324,60 @@ export class DrumParameters {
     }
   }
 
+  /** The audible-level floor's counterpart: keep a shuffled sound from coming out
+      SCREECHY. Independent draws sometimes stack extremes — high Q parked in the
+      ear's scream band, FM sidebands sprayed past 10kHz, piercing noise colours at
+      full level, heavy bitcrush on a high tone. Each cap here targets one of those
+      stacks while leaving every individual extreme reachable. Shuffle-only: manual
+      editing is never limited. */
+  private tameHarshness(): void {
+    // Equal-loudness tilt: at equal amplitude a 2kHz tone reads far louder (and
+    // shriller) than a 60Hz one, so pull ToneLevel down as pitch climbs above the
+    // mids. Floored so bright sounds stay present, just not ear-piercing.
+    const pitch = this.get(ParamId.Pitch);
+    if (pitch > TILT_KNEE) {
+      const g = Math.max(TILT_FLOOR, Math.pow(TILT_KNEE / pitch, TILT_POW));
+      this.set(ParamId.ToneLevel, this.get(ParamId.ToneLevel) * g);
+    }
+
+    // Bright noise colours pierce at equal level — rebalance so colours shuffle at
+    // roughly equal perceived loudness.
+    const colour = Math.round(this.get(ParamId.NoiseType));
+    const colourGain = NOISE_COLOUR_GAIN[colour] ?? 1;
+    if (colourGain !== 1) this.set(ParamId.NoiseLevel, this.get(ParamId.NoiseLevel) * colourGain);
+
+    // Resonance scream guard: allowed Q shrinks as the cutoff nears the ear's most
+    // sensitive band (~2-9kHz, worst around 4.5k); HP/BP expose the peak more than LP.
+    const cutoff = this.get(ParamId.FilterCutoff);
+    const band = Math.exp(-0.5 * Math.pow(Math.log2(cutoff / RESO_SCREAM_HZ) / 1.2, 2)); // 1 at centre
+    const { max: qMax } = baseRange(ParamId.FilterReso);
+    let allowedQ = qMax - (qMax - RESO_MIN_Q) * band;
+    if (Math.round(this.get(ParamId.FilterType)) !== 0) allowedQ *= 0.85; // HP/BP
+    if (this.get(ParamId.FilterReso) > allowedQ) this.set(ParamId.FilterReso, allowedQ);
+
+    // FM/ring bandwidth cap. Carson's rule: FM spread ≈ (β+1)·fmod with β = amt·index,
+    // fmod = pitch·ratio — keep it under FM_BW_LIMIT by trimming the amount. Ring mod
+    // just needs its sidebands (pitch·ratio) kept below the same line.
+    const modType = Math.round(this.get(ParamId.OscModType));
+    if (modType !== 0) {
+      const fMod = pitch * this.get(ParamId.OscModRatio);
+      const amt = this.get(ParamId.OscModAmount);
+      if (modType === 1) {
+        const maxAmt = (FM_BW_LIMIT / fMod - 1) / FM_INDEX;
+        if (amt > maxAmt) this.set(ParamId.OscModAmount, Math.max(0, maxAmt));
+      } else if (fMod > FM_BW_LIMIT) {
+        this.set(ParamId.OscModAmount, amt * (FM_BW_LIMIT / fMod));
+      }
+    }
+
+    // Heavy bit/rate crushing of an already-high tone is pure shriek (the decimation
+    // images land inharmonically in the highs) — ease both off above 1kHz.
+    if (pitch > 1000) {
+      this.set(ParamId.Crush, Math.min(3, Math.round(this.get(ParamId.Crush))));
+      this.set(ParamId.Downsample, Math.min(3, Math.round(this.get(ParamId.Downsample))));
+    }
+  }
+
   /** The toggleable effect/filter/modulation "modules" of the voice, each with its
       display name (for the recap), whether it's currently audible, and how to switch
       it off. The core tone (osc/pitch/wave/noise level) and the amp envelope are NOT
@@ -308,6 +404,8 @@ export class DrumParameters {
       { name: "Comb", on: g(ParamId.CombMix) > 0.02, off: () => this.set(ParamId.CombMix, 0) },
       { name: "Crush", on: round(ParamId.Crush) > 0, off: () => this.set(ParamId.Crush, 0) },
       { name: "Downsmpl", on: round(ParamId.Downsample) > 0, off: () => this.set(ParamId.Downsample, 0) },
+      { name: CLICK_TYPES[round(ParamId.ClickType)],
+        on: g(ParamId.ClickLevel) > 0.02, off: () => this.set(ParamId.ClickLevel, 0) },
       { name: "Drive", on: g(ParamId.Drive) > 0.05, off: () => this.set(ParamId.Drive, 0) },
       { name: "Punch", on: g(ParamId.PitchEnvAmount) > 0.1, off: () => this.set(ParamId.PitchEnvAmount, 0) },
       { name: "Echo", on: g(ParamId.EchoMix) > 0.03, off: () => this.set(ParamId.EchoMix, 0) },
@@ -336,13 +434,20 @@ export class DrumParameters {
   }
 
   /** Short list of the main settings shaping the current sound, for the recap line:
-      wave, pitch, the noise colour (if noise is audible), every active module by
-      name, then the estimated length. e.g. ["Square","159","Pink","Ring","Comb","0.8s"]. */
+      wave, pitch, the noise colour (if noise is audible), the envelope character
+      (Punchy/Gated when the decay shape leaves linear, layer decays when split),
+      every active module by name, then the estimated length.
+      e.g. ["Square","159","Pink","Punchy","Ring","Comb","0.8s"]. */
   describe(): string[] {
     const tokens: string[] = [];
     tokens.push(getParamSpec(this.drum, ParamId.Waveform).choices![Math.round(this.get(ParamId.Waveform))]);
     tokens.push(String(Math.round(this.get(ParamId.Pitch))));
     if (this.get(ParamId.NoiseLevel) > 0.05) tokens.push(NOISE_TYPES[Math.round(this.get(ParamId.NoiseType))]);
+    const decShape = this.get(ParamId.AmpDecayShape);
+    if (decShape >= 0.68) tokens.push("Punchy");
+    else if (decShape <= 0.32) tokens.push("Gated");
+    if (this.get(ParamId.ToneDecay) > 0.004) tokens.push("T-env");
+    if (this.get(ParamId.NoiseDecay) > 0.004) tokens.push("N-env");
     for (const m of this.soundModules()) if (m.on) tokens.push(m.name);
     tokens.push(`${+this.estimateLength().toFixed(2)}s`);
     return tokens;

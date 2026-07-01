@@ -147,13 +147,14 @@ A single `AudioWorkletProcessor` named `engine-processor`, 2-channel output. Con
 A sound is a flat `number[]` **snapshot** indexed by `ParamId` (`src/model/params.ts`).
 The order is **append-only** and the worklet's `P` map mirrors it exactly, so old saves
 keep working as parameters are added (missing tail defaults to "off"). Current layout
-(45 values):
+(51 values):
 
 ```
 0  Pitch            Hz, base oscillator frequency
 1  PitchEnvAmount   × multiplier of a per-note pitch envelope
 2  PitchEnvDecay    s, exponential decay of the pitch envelope
-3  Waveform         Sine / Tri / Square (square has LFO-able pulse width)
+3  Waveform         Sine / Tri / Square / Saw (square has LFO-able pulse width;
+                    square & saw edges are polyBLEP anti-aliased)
 4  ToneLevel        0..1 oscillator level
 5  NoiseLevel       0..1 noise level
 6  AmpAttack        s
@@ -189,6 +190,12 @@ keep working as parameters are added (missing tail defaults to "off"). Current l
 42 CombMix          0..1 Karplus-Strong/comb dry-wet
 43 CombTune         resonator pitch as a ratio of the note
 44 CombDecay        0..1 resonator feedback (pluck → sustained string)
+45 AmpAttackShape   attack curve: 0 plucky .. 0.5 linear (legacy) .. 1 slow swell
+46 AmpDecayShape    decay+release curve: 0 gated hold .. 0.5 linear .. 1 percussive
+47 ToneDecay        s, independent exponential decay for the tone layer (0 = follow amp)
+48 NoiseDecay       s, independent exponential decay for the noise layer (0 = follow amp)
+49 ClickLevel       0..1 transient click layer level (0 = off)
+50 ClickType        Tick / Snap / Knock / Blip / Clank
 ```
 
 `src/model/paramSpec.ts` defines, per parameter, a base `{min, max, def, skew, step, unit,
@@ -209,7 +216,8 @@ Each `Voice` renders sample-by-sample through this chain (order matters):
    decays exponentially each sample.
 3. **Second operator** (FM or Ring): a sine at `freq·ratio`. FM adds to the carrier phase
    (`× amount·FM_INDEX`, `FM_INDEX=4`); Ring multiplies the carrier by `(1−amt)+amt·mod`.
-4. **Oscillator 1**: sine / triangle / square (square uses the LFO-modulated pulse width).
+4. **Oscillator 1**: sine / triangle / square / saw (square uses the LFO-modulated pulse
+   width; square & saw edges are **polyBLEP** anti-aliased so high pitches don't screech).
 5. **Oscillator 2** (optional): a detuned copy blended by `Osc2Mix`, with optional **hard
    sync** (reset osc2 phase whenever osc1 wraps) for tearing sync tones.
 6. **Wavefolder** (optional): `sin(osc · (1 + fold·FOLD_GAIN) · π/2)` — folds the wave to
@@ -218,16 +226,30 @@ Each `Voice` renders sample-by-sample through this chain (order matters):
    Paul Kellet filter); Brown (−6, leaky integrator); Blue (+3, differentiated pink);
    Violet (+6, differentiated white); Crackle (sparse dust impulses); Metal
    (sample-and-hold decimation).
-8. **Bitcrusher** (optional): sample-rate **Downsample** (sample-and-hold decimation) then
+8. **Layer envelopes**: the tone mix and the noise each get an OPTIONAL independent
+   exponential decay (`ToneDecay`/`NoiseDecay`, 0 = follow the amp envelope) applied at
+   the source mix — so a hit can be a short noise snap on a long tonal body (kick+click,
+   snare) or a short tonal blip under a long noise tail (cymbals). The master ADSR still
+   gates the whole voice.
+9. **Bitcrusher** (optional): sample-rate **Downsample** (sample-and-hold decimation) then
    **Crush** bit-depth quantisation.
-9. **State-variable filter** (TPT/Zavalishin): LP/HP/BP with resonance; cutoff & Q take
-   their LFO modulation here.
-10. **Drive** (optional): `tanh(x · (1 + drive·5))`.
-11. **Karplus-Strong / comb resonator** (optional): a fractional-delay feedback loop with
+10. **State-variable filter** (TPT/Zavalishin): LP/HP/BP with resonance; cutoff & Q take
+    their LFO modulation here.
+11. **Click transient layer** (optional): a few-ms one-shot burst (`ClickLevel`,
+    `ClickType`: Tick = violet spike ~1.5ms, Snap = white burst ~6ms, Knock = sine thud at
+    2× pitch ~12ms, Blip = 1.1kHz sine ping ~4ms, Clank = S&H metal grit ~8ms; decays in
+    `CLICK_DECAY`). Injected **after** the main filter (an LP body can't dull it) and
+    before drive/comb (drive glues it in, and it can pluck the resonator).
+12. **Drive** (optional): `tanh(x · (1 + drive·5))`.
+13. **Karplus-Strong / comb resonator** (optional): a fractional-delay feedback loop with
     a one-pole damping filter and `tanh` soft-clip, tuned to `freq · CombTune`. Low
     feedback = a pluck; high feedback (`CombDecay→1`) = a sustained string.
-12. **Amp ADSR** (linear segments) × amp LFO. The note-off fires after `gate` samples;
-    the voice deactivates when the envelope reaches 0.
+14. **Amp ADSR** × amp LFO. Segments are **shaped**: each advances a linear phase `t` and
+    maps it through a power curve (`shapeExp(s) = 4^(2s−1)`, so shape 0.5 = exponent 1 =
+    exactly linear). Attack = `t^aExp`; decay = `sustain + (1−sustain)·(1−t)^dExp`;
+    release reuses the decay shape from the current value. Segment TIMES are unchanged by
+    the shape — only the contour bends. The note-off fires after `gate` samples; the
+    voice deactivates when the envelope reaches 0.
 
 ### 4.3 Channel chain (after summing 6 voices)
 
@@ -235,6 +257,11 @@ Per `Channel`: **mono feedback Echo** (delay/feedback/mix) → **Freeverb reverb
 `juce::Reverb`: 8 combs + 4 allpass, mono) → **Volume**. FX params are read live from the
 channel's current snapshot (never from the triggering note), so a pitched hit never
 clobbers the base sound.
+
+The summed master bus gets a **soft-knee clip** before output: linear (transparent) below
+`CLIP_KNEE = 0.9`, tanh-rounded above with peaks asymptoting to ±1, so stacked
+resonant/driven channels saturate gently instead of hard digital clipping at the DAC.
+The offline WAV export renders through the same path.
 
 ### 4.4 Dynamic channel allocation
 
@@ -389,8 +416,9 @@ made. Implemented in `drumKit.ts` (`randomize` / `shuffleAll`).
 
 - **Presets are windows.** A preset carries both **values** and a per-parameter **range
   window** (`lo/hi`). `FACTORY_PRESETS` = 12 drum characters + **Full Range**. A character
-  preset **locks its discrete Wave/Filter type** (window `lo==hi`) so shuffles stay in
-  character, while keeping LFO destinations and continuous params open; **Full Range**
+  preset **locks its discrete Wave/Filter/Noise-colour type** (window `lo==hi`) so
+  shuffles stay in character, while keeping the "open" discrete params (LFO destinations
+  + click type — spice, not identity) and continuous params full-window; **Full Range**
   opens every window to the absolute base range for open-ended exploration.
 - **Randomness amount (0–1).** Each continuous value is drawn from `cur` lerped toward the
   window edges by `randomness` (0 = no-op, 1 = full window). Each discrete "type"
@@ -399,14 +427,19 @@ made. Implemented in `drumKit.ts` (`randomize` / `shuffleAll`).
   `FreqCurve` — Linear (uniform in Hz), Logarithmic (equal per octave), or Gaussian
   Bass/Mid/High — so picks land the way the ear hears pitch instead of clustering in the
   perceptual highs.
-- **Noise bias.** `NoiseLevel` is drawn as `low + r^2·span` (r uniform) instead of
-  uniformly, so its average lands at ~1/3 of the window — quieter on average, with loud
-  hiss occasional and the full range still reachable (`NOISE_LEVEL_BIAS = 2`).
-- **Sparsity.** There are **13 toggleable modules** (3 LFOs, FM/Ring, Osc2/Sync, Fold,
-  Comb, Crush, Downsample, Drive, Pitch-punch, Echo, Reverb). After the draw, Shuffle
-  switches a random subset **off** so the number of simultaneously active modules **varies
-  per shuffle** — weighted toward a handful (≈3–6), sometimes 1, occasionally up to a
-  dozen. The core tone (oscillator, pitch, noise level) and amp envelope are never
+- **Shaped draws.** A few parameters get non-uniform draws: `NoiseLevel` is
+  `low + r^2·span` (average ~1/3 of the window — quiet hiss common, loud occasional;
+  `NOISE_LEVEL_BIAS = 2`); `ClickLevel` likewise biased quiet (`CLICK_LEVEL_BIAS = 1.6`);
+  `AmpDecayShape` is biased toward the percussive end (`hi − r^1.7·span`, mean ≈ 0.63 —
+  real drums decay exponentially, gated shapes stay rare-but-reachable); the layer decays
+  `ToneDecay`/`NoiseDecay` snap to the window's low edge (= off, follow amp) with
+  probability 0.7/0.5 so classic single-envelope voices stay common and layered designs
+  arrive as a deliberate minority.
+- **Sparsity.** There are **14 toggleable modules** (3 LFOs, FM/Ring, Osc2/Sync, Fold,
+  Comb, Crush, Downsample, Click, Drive, Pitch-punch, Echo, Reverb). After the draw,
+  Shuffle switches a random subset **off** so the number of simultaneously active modules
+  **varies per shuffle** — weighted toward a handful (≈3–6), sometimes 1, occasionally up
+  to a dozen. The core tone (oscillator, pitch, noise level) and amp envelope are never
   disabled. Higher randomness enforces the budget more strictly.
 - **Duplicate-LFO de-dup.** Two LFOs aimed at the same destination collapse (the later
   one is set to "None").
@@ -414,20 +447,35 @@ made. Implemented in `drumKit.ts` (`randomize` / `shuffleAll`).
   cutting the fundamental, the louder of Tone/Noise is lifted to a floor (`0.6`, keeping
   their balance) and a pathological cutoff is pulled back so the fundamental passes — no
   near-silent results, without flattening dark/bright variety.
+- **Harshness guard** (`tameHarshness`, shuffle-only — manual editing is never limited).
+  The floor's counterpart: independent draws sometimes stack extremes into screech, so
+  each stack gets a targeted cap while individual extremes stay reachable:
+  **equal-loudness tilt** (`ToneLevel × (400/pitch)^0.3`, floored at 0.35, above 400 Hz —
+  a 2 kHz tone reads far louder than a 60 Hz one at equal amplitude); **noise-colour
+  gains** (Blue ×0.65, Violet ×0.5, Metal ×0.7 — differentiated spectra pierce);
+  **resonance scream guard** (allowed Q shrinks from 8 to 2.8 as the cutoff nears the
+  ear's most sensitive band, log-Gaussian around 4.5 kHz; ×0.85 for HP/BP); **FM
+  bandwidth cap** (Carson's rule: trim `OscModAmount` so `(β+1)·pitch·ratio ≤ 9 kHz`,
+  β = amount·FM_INDEX; ring mod scaled likewise); **crush cap** (above 1 kHz pitch,
+  Crush/Downsample indices clamp to ≤3 — decimation images of high tones are pure
+  shriek).
 - **Max length.** An optional cap on a hit's estimated audible length; Shuffle trims the
   longest tail first (echo, then reverb), then scales the amp body, to fit.
 - **Undo / Reset / recap.** A 20-deep undo stack captures values + ranges, so **Back**
   reverses the last shuffle/preset/reset exactly; **Reset** returns to the active preset's
   values. `describe()` produces a one-line recap of the sound (wave, pitch, noise colour,
-  active modules, estimated length), e.g. `Square · 180 · Crackle · Comb · 1.96s`.
+  envelope character — `Punchy`/`Gated` when the decay shape leaves linear, `T-env`/
+  `N-env` when a layer decays independently — active modules incl. the click type, and
+  estimated length), e.g. `Square · 180 · Crackle · Punchy · N-env · Snap · Comb · 1.96s`.
 
 ### How big is the sound-verse? (marketing/intuition)
 
-Counting only the exposed choices for one voice: 13 on/off modules → 8,192 module
-combinations; the discrete "type" switches alone → ≈1.04 billion setups before a single
-continuous knob moves; including every continuous parameter at on-screen resolution →
-roughly **7 × 10⁷³ distinct settings per voice** — far more than grains of sand on Earth
-(~10¹⁹). Neighbouring settings often sound alike, but it's why Shuffle keeps surprising.
+Counting only the exposed choices for one voice: 14 on/off modules → 16,384 module
+combinations; the discrete "type" switches alone (now incl. 4 waves and 5 click types) →
+≈7 billion setups before a single continuous knob moves; including every continuous
+parameter at on-screen resolution → roughly **10⁸⁵ distinct settings per voice** — far
+more than grains of sand on Earth (~10¹⁹). Neighbouring settings often sound alike, but
+it's why Shuffle keeps surprising.
 
 ---
 

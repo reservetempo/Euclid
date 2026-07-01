@@ -8,10 +8,12 @@ import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
 import { getParamSpec, baseSpec, isDiscrete } from "./paramSpec";
 
-// LFO destination params shuffle on every preset; other discrete "type" params
-// (Wave/Filter) only shuffle on Full Range (their range is locked otherwise).
-const LFO_TARGET_IDS = new Set<ParamId>([
-  ParamId.LfoTarget, ParamId.Lfo2Target, ParamId.Lfo3Target,
+// Discrete params that stay open (shuffle) on EVERY preset: LFO destinations and
+// the click-layer flavour — they're spice, not identity. Other discrete "type"
+// params (Wave/Filter/Noise colour) only shuffle on Full Range (their range is
+// locked otherwise) so a character preset stays in character.
+const OPEN_DISCRETE_IDS = new Set<ParamId>([
+  ParamId.LfoTarget, ParamId.Lfo2Target, ParamId.Lfo3Target, ParamId.ClickType,
 ]);
 
 export interface Preset {
@@ -45,8 +47,8 @@ function presetForDrum(drum: DrumType, name: string, color: string): Preset {
     const id = i as ParamId;
     const s = getParamSpec(drum, id);
     // Lock a character's Wave/Filter type (range = its default) so Shuffle keeps it
-    // in character; LFO destinations and continuous params keep their full range.
-    if (isDiscrete(s) && !LFO_TARGET_IDS.has(id)) ranges.push({ lo: s.def, hi: s.def });
+    // in character; open discrete params and continuous params keep their full range.
+    if (isDiscrete(s) && !OPEN_DISCRETE_IDS.has(id)) ranges.push({ lo: s.def, hi: s.def });
     else ranges.push({ lo: s.min, hi: s.max });
     values.push(s.def);
   }

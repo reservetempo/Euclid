@@ -18,6 +18,10 @@ export const NOISE_TYPES = ["White", "Pink", "Brown", "Blue", "Violet", "Crackle
 export const OSC_MOD_TYPES = ["Off", "FM", "Ring"];
 export const LFO_SHAPES = ["Sine", "Tri", "Saw", "Square", "S&H"];
 export const ON_OFF = ["Off", "On"];
+// Transient click-layer flavours (a few ms each): Tick = violet-noise spike,
+// Snap = white burst, Knock = low sine thud at 2x pitch, Blip = 1.1kHz sine ping,
+// Clank = sample-and-hold metal grit.
+export const CLICK_TYPES = ["Tick", "Snap", "Knock", "Blip", "Clank"];
 // Crush bit-depth per index (0 = off); Downsample factor per index (index 0 = 1x off).
 export const CRUSH_CHOICES = ["Off", "12-bit", "10-bit", "8-bit", "6-bit", "5-bit", "4-bit", "3-bit"];
 export const DOWNSAMPLE_CHOICES = ["Off", "2x", "3x", "4x", "6x", "8x", "12x", "16x"];
@@ -47,7 +51,7 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.Pitch:          return make("Pitch", 30, 2000, 200, 0.3, 1, "Hz");
     case ParamId.PitchEnvAmount: return make("Pitch Env", 0, 5, 0, 0.5, 0.05, "x");
     case ParamId.PitchEnvDecay:  return make("Pitch Dec", 0.005, 0.6, 0.06, 0.35, 0.005, "s");
-    case ParamId.Waveform:       return make("Wave", 0, 2, 0, 1, 1, "", true, ["Sine", "Tri", "Square"]);
+    case ParamId.Waveform:       return make("Wave", 0, 3, 0, 1, 1, "", true, ["Sine", "Tri", "Square", "Saw"]);
     case ParamId.ToneLevel:      return make("Tone", 0, 1, 0.8, 1, 0.02, "");
     case ParamId.NoiseLevel:     return make("Noise", 0, 1, 0, 1, 0.02, "");
     case ParamId.AmpAttack:      return make("Attack", 0, 0.1, 0.001, 0.4, 0.001, "s");
@@ -94,6 +98,15 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.CombMix:        return make("Comb", 0, 1, 0, 1, 0.02, "");
     case ParamId.CombTune:       return make("Comb Tune", 0.25, 4, 1, 0.5, 0.01, "x");
     case ParamId.CombDecay:      return make("Comb Decay", 0, 1, 0.5, 1, 0.02, "");
+    // Envelope curvature + layering. Shape 0.5 = linear (the pre-shape behaviour),
+    // so every existing sound is unchanged; the layer decays default to 0 = follow
+    // the amp envelope, and the click layer defaults to off.
+    case ParamId.AmpAttackShape: return make("Att Shape", 0, 1, 0.5, 1, 0.01, "");
+    case ParamId.AmpDecayShape:  return make("Dec Shape", 0, 1, 0.5, 1, 0.01, "");
+    case ParamId.ToneDecay:      return make("Tone Dec", 0, 1.2, 0, 0.35, 0.005, "s");
+    case ParamId.NoiseDecay:     return make("Noise Dec", 0, 1.2, 0, 0.35, 0.005, "s");
+    case ParamId.ClickLevel:     return make("Click", 0, 1, 0, 1, 0.02, "");
+    case ParamId.ClickType:      return make("Click Type", 0, 4, 0, 1, 1, "", true, CLICK_TYPES);
     default:                     return make("?", 0, 1, 0, 1, 0.01, "");
   }
 }
