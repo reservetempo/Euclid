@@ -30,6 +30,12 @@ const GAUSS_MU: Record<number, number> = {
   [FreqCurve.GaussHigh]: 0.85,
 };
 
+// Downward bias on the shuffled Noise-source level: the draw is `low + r^BIAS * span`
+// with r uniform, so the average lands at 1/(BIAS+1) of the window instead of 1/2. This
+// keeps quiet/no-noise sounds common and loud hiss occasional, while the full range is
+// still reachable. 1 = uniform (no bias); higher = quieter on average.
+const NOISE_LEVEL_BIAS = 2; // mean ≈ 1/3 of the window
+
 // How many effect/filter "modules" a shuffle leaves active at once (there are 13 in
 // all — see soundModules). Weighted toward a handful so a sound is usually doing a
 // few things, but it can occasionally run most of them at once for a dense result.
@@ -232,7 +238,12 @@ export class DrumParameters {
       const lo = cur + (this.lo[id] - cur) * randomness;
       const hi = cur + (this.hi[id] - cur) * randomness;
       const isFreq = id === ParamId.Pitch || id === ParamId.FilterCutoff;
-      const v = isFreq ? sampleFreq(curve, lo, hi) : lo + Math.random() * (hi - lo);
+      // Noise level is biased toward the low edge so shuffles are quieter on average;
+      // frequency params use the perceptual curve; everything else is a uniform draw.
+      let v: number;
+      if (isFreq) v = sampleFreq(curve, lo, hi);
+      else if (id === ParamId.NoiseLevel) v = lo + Math.pow(Math.random(), NOISE_LEVEL_BIAS) * (hi - lo);
+      else v = lo + Math.random() * (hi - lo);
       this.set(id, v);
     }
     this.dedupeLfoTargets();
