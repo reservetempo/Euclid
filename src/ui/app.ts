@@ -453,16 +453,29 @@ export class App {
     tempo.max = "200";
     tempo.value = String(this.tempo);
     tempo.className = "tempo";
-    const label = document.createElement("span");
+    // Editable BPM: type a value or drag the slider; the two stay in sync. The box allows
+    // a wider range than the slider (which clamps its own thumb to 60–200).
+    const label = document.createElement("input");
+    label.type = "number";
     label.className = "tempo-label";
-    label.textContent = `${this.tempo}`;
-    tempo.oninput = () => {
-      this.tempo = Number(tempo.value);
+    label.min = "20";
+    label.max = "300";
+    label.step = "1";
+    label.value = String(this.tempo);
+    const applyTempo = (bpm: number) => {
+      bpm = Math.round(bpm);
+      if (Number.isNaN(bpm)) bpm = this.tempo;
+      bpm = Math.max(20, Math.min(300, bpm));
+      this.tempo = bpm;
       this.engine.setTempo(this.tempo);
-      label.textContent = `${this.tempo}`;
+      tempo.value = String(Math.max(60, Math.min(200, bpm))); // slider thumb range
+      label.value = String(bpm);
       this.updateLoopTime();
       this.persist();
     };
+    tempo.oninput = () => applyTempo(Number(tempo.value));
+    label.onfocus = () => label.select();
+    label.onchange = () => applyTempo(Number(label.value));
 
     t.append(play, tempo, label);
     return t;
@@ -507,14 +520,15 @@ export class App {
       const r = document.createElement("div");
       r.className = "euclid-row";
 
-      // Tap the voice to open its inline shuffle menu (generate/replace the sound).
+      // Tap the voice to open its inline shuffle menu (generate/replace the sound). The
+      // title fills with the voice's ring colour so it reads at a glance against its circle.
       const sound = document.createElement("button");
       sound.className = "euclid-sound" + (voice.soundId >= 0 ? " has-sound" : "");
       if (voice.soundId >= 0) {
-        const sw = document.createElement("span");
-        sw.className = "swatch";
-        sw.style.background = voice.color;
-        sound.append(sw, document.createTextNode(voice.name || `Voice ${i + 1}`));
+        sound.style.background = voice.color;
+        sound.style.borderColor = voice.color;
+        sound.style.color = "#15161a"; // dark text for contrast on the light voice hues
+        sound.textContent = voice.name || `Voice ${i + 1}`;
       } else {
         sound.textContent = `🎲 Voice ${i + 1}`;
       }
