@@ -4,7 +4,7 @@
 // step lights up during playback. Mirrors GridView's DPR/layout handling.
 
 import { MelodyGrid } from "../model/melodyGrid";
-import { EUCLID_VOICES, euclidPattern } from "../model/euclid";
+import { EUCLID_VOICES, voicePattern } from "../model/euclid";
 
 const TWO_PI = Math.PI * 2;
 const TOP = -Math.PI / 2; // step 0 sits at 12 o'clock
@@ -77,7 +77,7 @@ export class EuclidView {
       if (!v || v.soundId < 0) continue;
 
       const steps = Math.max(1, v.steps);
-      const pattern = euclidPattern(v.hits, steps, v.rotation);
+      const pattern = voicePattern(v.hits, steps, v.rotation, v.split);
       const active = this.playStep >= 0 ? this.playStep % steps : -1;
 
       for (let k = 0; k < steps; k++) {

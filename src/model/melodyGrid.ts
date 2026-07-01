@@ -5,7 +5,7 @@
 // The loop plays the order list top to bottom, playing each referenced pattern's
 // 16 steps, then repeats.
 
-import { EUCLID_VOICES, euclidPattern, VOICE_DEFAULT } from "./euclid";
+import { EUCLID_VOICES, voicePattern, VOICE_DEFAULT } from "./euclid";
 
 export const NUM_ROWS = 5;
 export const NUM_STEPS = 16;
@@ -24,8 +24,12 @@ export interface EuclidVoice {
   hits: number;
   steps: number;
   rotation: number;
+  split?: number; // primary-gap override for an uneven hit split (undefined = even spread)
   mute?: boolean; // mixer: silenced (same semantics as Lane)
   solo?: boolean; // mixer: when any channel is soloed, only soloed ones are audible
+  // Inline-shuffle editor state, so a reloaded voice keeps shuffling from where it left:
+  preset?: string;                          // active preset (Reset target + label)
+  ranges?: { lo: number[]; hi: number[] };  // live shuffle window per param
 }
 
 function emptyVoice(): EuclidVoice {
@@ -141,7 +145,7 @@ export class WipArrangement {
             .map((v) => ({
               soundId: v.soundId,
               steps: v.steps,
-              pattern: euclidPattern(v.hits, v.steps, v.rotation).map((b) => (b ? 1 : 0)),
+              pattern: voicePattern(v.hits, v.steps, v.rotation, v.split).map((b) => (b ? 1 : 0)),
             }))
         : [],
     }));

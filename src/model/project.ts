@@ -28,12 +28,15 @@ export interface EuclidVoiceJSON {
   hits: number;
   steps: number;
   rotation: number;
+  split?: number;                           // v7: uneven hit-split primary gap
   mute?: boolean; // mixer state; absent in older saves
   solo?: boolean;
+  preset?: string;                          // v7: inline-shuffle editor state
+  ranges?: { lo: number[]; hi: number[] };  // v7: per-param shuffle window
 }
 
 export interface ProjectJSON {
-  version: 3 | 4 | 5 | 6;
+  version: 3 | 4 | 5 | 6 | 7;
   tempo: number;
   blocks: {
     cells: number[]; root: number; scale: number; keyEnabled?: boolean; keyedDrums?: number[];
@@ -67,7 +70,7 @@ export function serialize(
     drumPresets[d] = kit.get(d).presetName();
   }
   return {
-    version: 6,
+    version: 7,
     tempo,
     // Persist the editable grid state (NOT blocksMessage, which is engine-shaped and
     // drops the Euclidean voice config).
@@ -81,7 +84,9 @@ export function serialize(
       voices: g.voices.map((v) => ({
         soundId: v.soundId, snapshot: v.snapshot.slice(), color: v.color, name: v.name,
         pitch: [v.pitch[0], v.pitch[1]] as [number, number], hits: v.hits, steps: v.steps, rotation: v.rotation,
-        mute: v.mute, solo: v.solo,
+        split: v.split, mute: v.mute, solo: v.solo,
+        preset: v.preset,
+        ranges: v.ranges ? { lo: v.ranges.lo.slice(), hi: v.ranges.hi.slice() } : undefined,
       })),
     })),
     order: arr.orderArray(),
@@ -113,7 +118,7 @@ export function deserialize(
 ): number {
   for (const list of lanesPerBlock) list.length = 0;
   const v = json && (json as { version: number }).version;
-  if (!json || (v !== 1 && v !== 2 && v !== 3 && v !== 4 && v !== 5 && v !== 6)) return 120;
+  if (!json || (v !== 1 && v !== 2 && v !== 3 && v !== 4 && v !== 5 && v !== 6 && v !== 7)) return 120;
 
   // v4+: a lane list per grid. v1-v3: one global list -> migrate into block 0.
   if (json.lanesPerBlock) {
@@ -162,8 +167,13 @@ export function deserialize(
         dv.hits = sv.hits ?? 4;
         dv.steps = sv.steps ?? 8;
         dv.rotation = sv.rotation ?? 0;
+        dv.split = typeof sv.split === "number" ? sv.split : undefined;
         dv.mute = !!sv.mute;
         dv.solo = !!sv.solo;
+        dv.preset = typeof sv.preset === "string" ? sv.preset : undefined;
+        dv.ranges = sv.ranges && Array.isArray(sv.ranges.lo) && Array.isArray(sv.ranges.hi)
+          ? { lo: sv.ranges.lo.slice(), hi: sv.ranges.hi.slice() }
+          : undefined;
       });
     }
   }

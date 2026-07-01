@@ -5,21 +5,20 @@
 // patterns play and in what order. Painted lanes are added from saved sounds.
 
 import { EngineHost, Playhead } from "../audio/engineHost";
-import { DRUMS, DrumType, drumColour } from "../model/drums";
+import { DRUMS, DrumType } from "../model/drums";
 import { ParamId } from "../model/params";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
-import { SoundLibrary, SavedSound } from "../model/soundLibrary";
+import { SoundLibrary } from "../model/soundLibrary";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import {
-  WipArrangement, NUM_BLOCKS, NUM_ROWS, NUM_STEPS, ORDER_SLOTS, EMPTY, GRID_COLORS,
+  WipArrangement, NUM_BLOCKS, ORDER_SLOTS, EMPTY, GRID_COLORS,
 } from "../model/melodyGrid";
-import { ALL_ROOTS, ALL_SCALES } from "../model/melodyScale";
-import { RHYTHMS, Rhythm } from "../model/rhythms";
-import { EUCLID_VOICES, clampSteps, MAX_STEPS, VOICE_DEFAULT } from "../model/euclid";
+import { EUCLID_VOICES, clampSteps, MAX_STEPS, VOICE_DEFAULT, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
 import { GridView } from "./gridView";
 import { EuclidView } from "./euclidView";
 import { SoundView } from "./soundView";
+import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
 
 // A paint lane added from the saved-sound library. Each lane has a stable `soundId`
 // (what grid cells reference); the engine binds ids to physical channels on demand
@@ -49,7 +48,17 @@ interface MixChannel {
 const PROJECT_KEY = "msq010.project";
 const ORDER_VIEW = NUM_BLOCKS; // workspace value for the order list
 
+// Every voice's inline shuffle editor drives a single-drum DrumKit; the reference drum
+// only picks parameter specs — Full Range opens all ranges so any character is reachable.
+const REF_DRUM = DrumType.Kick;
+
+// One distinct hue per voice slot, so each circle reads clearly in the Euclid view.
+const VOICE_COLORS = ["#ff6b6b", "#ffd43b", "#69db7c", "#4dabf7", "#b197fc"];
+
 type View = "grid" | "sound" | "mixer";
+
+// The editable numeric fields of a Euclidean voice (its scrubbable number boxes).
+type EuclidField = "hits" | "steps" | "rotation" | "split";
 
 export class App {
   private engine = new EngineHost();
@@ -59,7 +68,7 @@ export class App {
   private drumTypes = DRUMS.map((d) => d.type);
   private saveTimer = 0;
 
-  private view: View = "sound"; // Sounds is the landing view
+  private view: View = "grid"; // the Euclid grid is the landing view
   private selectedDrum: DrumType = DrumType.Kick; // voice edited in the Sounds view
   private soundName = ""; // last used sound name (prefills the Save dialog)
   private workspace = 0; // 0..5 = pattern index, ORDER_VIEW = loop/order list
@@ -73,6 +82,10 @@ export class App {
   private lanesPerBlock: Lane[][] = Array.from({ length: NUM_BLOCKS }, () => []);
   private activeLanePerBlock: number[] = new Array(NUM_BLOCKS).fill(-1);
   private nextSoundId = 0; // monotonic id for new lanes (cells reference these)
+
+  // Per-voice inline shuffle editors, keyed by `${block}:${slot}`. Lazily created when
+  // a voice's shuffle menu first opens; cleared on new/load (rebuilt from saved state).
+  private voiceEditors = new Map<string, VoiceEditor>();
 
   private root: HTMLElement;
   private viewRoot!: HTMLElement;
@@ -239,6 +252,7 @@ export class App {
     this.tempo = 120;
     for (const list of this.lanesPerBlock) list.length = 0;
     this.activeLanePerBlock.fill(-1);
+    this.voiceEditors.clear();
     this.nextSoundId = 0;
     this.afterProjectChange();
   }
@@ -246,8 +260,13 @@ export class App {
   /** After load/new: select each grid's first lane (or none if empty), and bump the
       id counter past every loaded sound id so new lanes never collide with cells. */
   private resetActiveLanes(): void {
+    this.voiceEditors.clear(); // rebuilt lazily from each voice's saved snapshot/ranges
     let maxId = -1;
     for (const lane of this.allLanes()) if (lane.soundId > maxId) maxId = lane.soundId;
+    // Voices carry sound ids too — keep new ids clear of them.
+    for (const blk of this.arr.blocks) {
+      for (const v of blk.voices) if (v.soundId > maxId) maxId = v.soundId;
+    }
     this.nextSoundId = maxId + 1;
     for (let b = 0; b < NUM_BLOCKS; b++) {
       this.activeLanePerBlock[b] = this.lanesPerBlock[b].length ? 0 : -1;
@@ -267,12 +286,6 @@ export class App {
     const gate = Math.round(this.engine.sampleRate * 0.4);
     const snap = this.kit.get(drum).capture();
     this.engine.audition(snap, gate, estimateLength(snap));
-  }
-
-  /** Preview a lane once (on the reserved audition channel). */
-  private auditionLane(lane: Lane): void {
-    const gate = Math.round(this.engine.sampleRate * 0.4);
-    this.engine.audition(lane.snapshot, gate, estimateLength(lane.snapshot));
   }
 
   /** The editor's default sound: Full Range, fully shuffled so it's random and
@@ -438,66 +451,26 @@ export class App {
       v.append(this.renderOrderEditor());
     } else {
       const blk = this.arr.blocks[this.workspace];
+      blk.euclid = true; // the sequencer is Euclidean-only now
 
-      if (blk.euclid) {
-        // Euclidean mode: circle visualization + the 5-voice menu (no cell grid).
-        this.euclidView.setBlock(blk);
-        const wrap = document.createElement("div");
-        wrap.className = "euclid-wrap";
-        wrap.append(this.euclidView.canvas);
-        v.append(wrap);
-        v.append(this.euclidMenu());
-        v.append(this.stepsActions());
-        // viewRoot is already in the DOM, so size synchronously (reads real width),
-        // and again on the next frame as a fallback for first-paint width.
-        this.euclidView.layout();
-        requestAnimationFrame(() => this.euclidView.layout());
-      } else {
-        const gridWrap = document.createElement("div");
-        gridWrap.className = "grid-wrap";
-        this.gridView.setBlock(blk);
-        this.gridView.setActiveDrum(this.activeDrumForPaint());
-        // Colour painted cells by the lane that owns that channel (any grid).
-        this.gridView.colorForDrum = (id) => this.allLanes().find((l) => l.soundId === id)?.color ?? drumColour(id);
-        gridWrap.append(this.gridView.canvas);
-        v.append(gridWrap);
-
-        v.append(this.scaleControls());
-        v.append(this.stepsActions());
-        v.append(this.laneSelector());
-
-        requestAnimationFrame(() => this.gridView.layout());
-      }
-
-      v.append(this.modeToggle()); // Manual / Euclid switch lives at the bottom of the page
+      // Circle visualization + the 5-voice shuffle menu.
+      this.euclidView.setBlock(blk);
+      const wrap = document.createElement("div");
+      wrap.className = "euclid-wrap";
+      wrap.append(this.euclidView.canvas);
+      v.append(wrap);
+      v.append(this.euclidMenu());
+      v.append(this.stepsActions());
+      // viewRoot is already in the DOM, so size synchronously (reads real width),
+      // and again on the next frame as a fallback for first-paint width.
+      this.euclidView.layout();
+      requestAnimationFrame(() => this.euclidView.layout());
     }
 
     this.updateLoopTime();
   }
 
-  /** Manual / Euclidean mode toggle for the current grid. */
-  private modeToggle(): HTMLElement {
-    const blk = this.arr.blocks[this.curBlock()];
-    const row = document.createElement("div");
-    row.className = "mode-toggle";
-    (["Manual", "Euclid"] as const).forEach((label, i) => {
-      const isEuclid = i === 1;
-      const b = document.createElement("button");
-      b.className = "mode-btn" + (blk.euclid === isEuclid ? " on" : "");
-      b.textContent = label;
-      b.onclick = () => {
-        if (blk.euclid === isEuclid) return;
-        blk.euclid = isEuclid;
-        this.pushSounds(); // euclid voices enter/leave the sound table
-        this.syncPattern();
-        this.render();
-      };
-      row.append(b);
-    });
-    return row;
-  }
-
-  /** The 5-voice Euclidean menu: each row assigns a saved sound + hits/steps/start. */
+  /** The 5-voice Euclidean menu: each row opens a shuffle menu + hits/steps/start. */
   private euclidMenu(): HTMLElement {
     const blk = this.arr.blocks[this.curBlock()];
     const wrap = document.createElement("div");
@@ -508,7 +481,7 @@ export class App {
       const r = document.createElement("div");
       r.className = "euclid-row";
 
-      // Sound assignment (reuses the saved-sound picker).
+      // Tap the voice to open its inline shuffle menu (generate/replace the sound).
       const sound = document.createElement("button");
       sound.className = "euclid-sound" + (voice.soundId >= 0 ? " has-sound" : "");
       if (voice.soundId >= 0) {
@@ -517,11 +490,12 @@ export class App {
         sw.style.background = voice.color;
         sound.append(sw, document.createTextNode(voice.name || `Voice ${i + 1}`));
       } else {
-        sound.textContent = `+ Voice ${i + 1}`;
+        sound.textContent = `🎲 Voice ${i + 1}`;
       }
-      sound.onclick = () => this.openEuclidSoundPicker(sound, i);
+      sound.onclick = () => this.openVoiceShuffleMenu(sound, i);
 
-      const mkNum = (label: string, value: number, onSet: (n: number) => void) => {
+      // A hits/steps/start/split box: tap to type, or click-hold and drag up/down to scrub.
+      const mkNum = (label: string, value: number, field: EuclidField, disabled = false) => {
         const cell = document.createElement("label");
         cell.className = "euclid-num";
         const lab = document.createElement("span");
@@ -531,17 +505,26 @@ export class App {
         inp.value = String(value);
         inp.min = "0";
         inp.inputMode = "numeric";
-        inp.onfocus = () => inp.select(); // one tap selects the value, ready to retype
-        inp.onchange = () => { onSet(Number(inp.value)); };
+        inp.disabled = disabled;
+        if (!disabled) {
+          inp.onfocus = () => inp.select(); // one tap selects the value, ready to retype
+          inp.onchange = () => { this.setEuclidNum(i, field, Number(inp.value)); };
+          this.attachDragScrub(inp, i, field);
+        }
         cell.append(lab, inp);
         return cell;
       };
 
-      const hits = mkNum("Hits", voice.hits, (n) => this.setEuclidNum(i, "hits", n));
-      const steps = mkNum("Steps", voice.steps, (n) => this.setEuclidNum(i, "steps", n));
-      const start = mkNum("Start", voice.rotation, (n) => this.setEuclidNum(i, "rotation", n));
+      const hits = mkNum("Hits", voice.hits, "hits");
+      const steps = mkNum("Steps", voice.steps, "steps");
+      const start = mkNum("Start", voice.rotation, "rotation");
+      // Split: the primary gap between hits (even spread by default). Disabled unless there
+      // are 2+ hits AND room to vary the gap. Drag/type it to try uneven splits (6·6·4 …).
+      const splitLocked = voice.hits < 2 || maxSplitGap(voice.hits, voice.steps) <= 1;
+      const split = mkNum("Split", voice.split ?? evenGap(voice.hits, voice.steps), "split", splitLocked);
+      split.title = `Hit split: ${this.splitLabel(voice.hits, voice.steps, voice.rotation, voice.split)}`;
 
-      r.append(sound, hits, steps, start);
+      r.append(sound, hits, steps, start, split);
 
       // Remove button: clears the assigned sound from this slot (only shown when filled).
       if (voice.soundId >= 0) {
@@ -558,49 +541,145 @@ export class App {
     return wrap;
   }
 
-  /** Update a Euclidean voice's hits/steps/rotation (clamped), then resync + redraw. */
-  private setEuclidNum(slot: number, field: "hits" | "steps" | "rotation", n: number): void {
+  /** Apply a typed hits/steps/start/split value: update the model, then re-render so the
+      inputs show the clamped result. */
+  private setEuclidNum(slot: number, field: EuclidField, n: number): void {
+    this.applyEuclidNum(slot, field, n);
+    this.render(); // reflect clamped values in the inputs
+  }
+
+  /** Core hits/steps/start/split update (clamped) + resync + redraw, with NO full render —
+      so drag-scrub can update live without tearing down the input mid-drag. */
+  private applyEuclidNum(slot: number, field: EuclidField, n: number): void {
     const v = this.arr.blocks[this.curBlock()].voices[slot];
     if (Number.isNaN(n)) n = 0;
     if (field === "steps") v.steps = clampSteps(n);
     else if (field === "hits") v.hits = Math.max(0, Math.min(MAX_STEPS, Math.round(n)));
-    else v.rotation = Math.round(n);
+    else if (field === "rotation") v.rotation = Math.round(n);
+    else v.split = Math.max(1, Math.min(maxSplitGap(v.hits, v.steps), Math.round(n))); // primary gap
     // Cap hits at steps only once steps is set (a blank voice defaults to 0 steps and
     // shouldn't swallow a hits value the user types first).
     if (v.steps >= 1 && v.hits > v.steps) v.hits = v.steps;
     this.syncPattern();
     this.euclidView.draw();
     this.updateLoopTime();
-    this.render(); // reflect clamped values in the inputs
   }
 
-  /** Saved-sound picker for one Euclidean voice slot. */
-  private openEuclidSoundPicker(anchor: HTMLElement, slot: number): void {
-    const existing = this.viewRoot.querySelector(".sound-picker");
-    if (existing) { existing.remove(); return; }
-    const panel = this.buildSoundList((s) => {
-      panel.remove();
+  /** Human-readable gap composition of the voice's actual pattern, e.g. "6·6·4" — the
+      spacing between consecutive hits (wrapping the last gap back to the first hit). */
+  private splitLabel(hits: number, steps: number, rotation: number, split?: number): string {
+    const pat = voicePattern(hits, steps, rotation, split);
+    const idx: number[] = [];
+    for (let i = 0; i < pat.length; i++) if (pat[i]) idx.push(i);
+    if (idx.length < 2) return "even spread";
+    const gaps = idx.map((at, j) => {
+      const next = idx[(j + 1) % idx.length];
+      const g = next - at;
+      return g > 0 ? g : g + pat.length; // wrap the final gap
+    });
+    return gaps.join("·");
+  }
+
+  /** Make a number input scrub: click-hold and drag up to increase, down to decrease.
+      A plain tap (no drag) falls through to the normal focus/type behaviour. */
+  private attachDragScrub(input: HTMLInputElement, slot: number, field: EuclidField): void {
+    const PX_PER_STEP = 7; // vertical pixels per ±1
+    let startY = 0, startVal = 0, dragging = false, moved = false;
+
+    input.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      startY = e.clientY;
+      startVal = Number(input.value) || 0;
+      dragging = true;
+      moved = false;
+      input.setPointerCapture(e.pointerId);
+    });
+    input.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const delta = Math.round((startY - e.clientY) / PX_PER_STEP);
+      if (delta === 0 && !moved) return;
+      if (!moved) { moved = true; input.blur(); } // it's a drag, not a tap — don't type
+      e.preventDefault();
+      this.applyEuclidNum(slot, field, startVal + delta);
       const v = this.arr.blocks[this.curBlock()].voices[slot];
-      if (v.soundId < 0) {
-        // Fresh assignment: start the circle blank (all zero) so the user dials in the
-        // pattern (also resets older saves whose empty voices held a legacy default).
-        v.soundId = this.nextSoundId++;
-        v.hits = VOICE_DEFAULT.hits; v.steps = VOICE_DEFAULT.steps; v.rotation = VOICE_DEFAULT.rotation;
-      }
-      v.snapshot = s.snapshot.slice();
-      v.color = s.color;
-      v.name = s.name;
-      v.pitch = [s.pitch[0], s.pitch[1]];
-      this.pushSounds();
-      this.syncPattern();
-      this.engine.audition(v.snapshot, Math.round(this.engine.sampleRate * 0.4), estimateLength(v.snapshot));
-      this.render();
+      const shown = field === "steps" ? v.steps : field === "hits" ? v.hits
+        : field === "rotation" ? v.rotation : (v.split ?? evenGap(v.hits, v.steps));
+      input.value = String(shown);
+    });
+    const end = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      try { input.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      if (moved) this.render(); // rebuild so every row reflects the clamped values
+    };
+    input.addEventListener("pointerup", end);
+    input.addEventListener("pointercancel", end);
+  }
+
+  /** The live editor for one voice slot, created lazily. Rebuilt from the voice's saved
+      snapshot/ranges/preset so a reloaded project keeps shuffling from where it left. */
+  private voiceEditorFor(slot: number): VoiceEditor {
+    const key = `${this.curBlock()}:${slot}`;
+    let ed = this.voiceEditors.get(key);
+    if (ed) return ed;
+    const kit = new DrumKit([REF_DRUM]);
+    const p = kit.get(REF_DRUM);
+    p.applyPreset(FULL_RANGE_PRESET); // default window (no undo entry)
+    const v = this.arr.blocks[this.curBlock()].voices[slot];
+    if (v.preset) kit.adoptPresetByName(REF_DRUM, v.preset); // Reset target after reload
+    if (v.ranges) p.restoreRanges(v.ranges.lo, v.ranges.hi);
+    if (v.snapshot.length) p.restore(v.snapshot);
+    ed = { kit, randomness: 1.0, curveIdx: 1, maxLenIdx: 0 };
+    this.voiceEditors.set(key, ed);
+    return ed;
+  }
+
+  /** Write the voice's editor state back into the voice, swap it into the engine (takes
+      effect on the voice's next "on" step), persist, and redraw the circle. */
+  private writeVoiceFromEditor(slot: number): void {
+    const ed = this.voiceEditorFor(slot);
+    const p = ed.kit.get(REF_DRUM);
+    const v = this.arr.blocks[this.curBlock()].voices[slot];
+    if (v.soundId < 0) {
+      v.soundId = this.nextSoundId++;
+      v.color = VOICE_COLORS[slot % VOICE_COLORS.length];
+      // Give a fresh voice an audible default pattern so the shuffle can be heard.
+      if (v.steps < 1) { v.steps = 8; v.hits = 4; v.rotation = 0; }
+    }
+    v.snapshot = p.capture();
+    v.name = p.describe().join(" · ");
+    const pr = ed.kit.pitchRange(REF_DRUM);
+    v.pitch = [pr[0], pr[1]];
+    v.preset = p.presetName();
+    v.ranges = p.captureRanges();
+    this.pushSounds();
+    this.syncPattern();
+    this.euclidView.draw();
+  }
+
+  /** Preview one voice's current editor sound once (on the reserved audition channel). */
+  private auditionVoice(slot: number): void {
+    const p = this.voiceEditorFor(slot).kit.get(REF_DRUM);
+    const snap = p.capture();
+    this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap));
+  }
+
+  /** Inline shuffle menu for one voice: generate/replace its sound live. Reuses the
+      anchor + outside-tap-dismiss pattern of the old sound picker. */
+  private openVoiceShuffleMenu(anchor: HTMLElement, slot: number): void {
+    const existing = this.viewRoot.querySelector(".voice-shuffle");
+    if (existing) { existing.remove(); return; }
+    const editor = this.voiceEditorFor(slot);
+    const panel = buildVoiceShuffleMenu(editor, REF_DRUM, {
+      onChange: () => this.writeVoiceFromEditor(slot),
+      audition: () => this.auditionVoice(slot),
     });
     anchor.parentElement?.append(panel);
     const close = (ev: PointerEvent) => {
       if (!panel.contains(ev.target as Node) && ev.target !== anchor) {
         panel.remove();
         document.removeEventListener("pointerdown", close, true);
+        this.render(); // refresh the row's name/colour now the menu is closing
       }
     };
     setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
@@ -617,7 +696,10 @@ export class App {
     v.name = "";
     v.pitch = [60, 1000];
     v.hits = VOICE_DEFAULT.hits; v.steps = VOICE_DEFAULT.steps; v.rotation = VOICE_DEFAULT.rotation;
+    v.split = undefined;
     v.mute = false; v.solo = false;
+    v.preset = undefined; v.ranges = undefined;
+    this.voiceEditors.delete(`${this.curBlock()}:${slot}`); // next open starts fresh
     this.pushSounds(); // drop the removed voice from the engine sound table
     this.syncPattern();
     this.euclidView.draw();
@@ -648,67 +730,7 @@ export class App {
     return bar;
   }
 
-  /** Key on/off toggle + Root + Scale pickers, shown below both stacked grids.
-      When the key is off the row->note mapping is bypassed (each cell plays its
-      saved sound as-is) and the Root/Scale pickers are hidden. */
-  private scaleControls(): HTMLElement {
-    const blk = this.arr.blocks[this.workspace];
-    const row = document.createElement("div");
-    row.className = "scale-ctl";
-
-    const keyToggle = document.createElement("button");
-    keyToggle.className = "key-toggle" + (blk.keyEnabled ? " on" : "");
-    keyToggle.textContent = blk.keyEnabled ? "Key: On" : "Key: Off";
-    keyToggle.title = "Turn the key/scale mapping on or off for this pattern";
-    keyToggle.onclick = () => {
-      blk.keyEnabled = !blk.keyEnabled;
-      // Turning the key on targets the grid's current sounds by default; tap a sound's
-      // key badge in the lane bar to include/exclude individual ones.
-      if (blk.keyEnabled) {
-        blk.keyedDrums.clear();
-        for (const lane of this.lanes) blk.keyedDrums.add(lane.soundId);
-      }
-      this.gridView.draw();
-      this.syncPattern();
-      this.render(); // show/hide the Root + Scale pickers + lane key badges
-    };
-    row.append(labelled("Key", keyToggle));
-
-    if (!blk.keyEnabled) return row; // no key -> hide the Root/Scale pickers
-
-    const rootSel = document.createElement("select");
-    ALL_ROOTS.forEach((name, i) => {
-      const o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = name;
-      rootSel.append(o);
-    });
-    rootSel.value = String(blk.root);
-    rootSel.onchange = () => {
-      blk.setRoot(Number(rootSel.value));
-      this.gridView.draw();
-      this.syncPattern();
-    };
-
-    const scaleSel = document.createElement("select");
-    ALL_SCALES.forEach((name, i) => {
-      const o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = name;
-      scaleSel.append(o);
-    });
-    scaleSel.value = String(blk.scale);
-    scaleSel.onchange = () => {
-      blk.scale = Number(scaleSel.value);
-      this.gridView.draw();
-      this.syncPattern();
-    };
-
-    row.append(labelled("Root", rootSel), labelled("Scale", scaleSel));
-    return row;
-  }
-
-  /** Row below the scale controls: open the Mixer or the preset-Rhythms picker. */
+  /** Row below the circle: open the Mixer. */
   private stepsActions(): HTMLElement {
     const row = document.createElement("div");
     row.className = "steps-actions";
@@ -718,159 +740,8 @@ export class App {
     mix.textContent = "🎚 Mixer";
     mix.onclick = () => { this.view = "mixer"; this.render(); };
 
-    const rhythms = document.createElement("button");
-    rhythms.className = "mixer-open-btn rhythms-open-btn";
-    rhythms.textContent = "🥁 Rhythms";
-    rhythms.onclick = () => this.openRhythmPanel();
-
-    row.append(mix, rhythms);
+    row.append(mix);
     return row;
-  }
-
-  /** Modal: pick a preset rhythm, assign a saved sound to each track, then lay it
-      onto the current grid (each track on its own empty row; layered on top). */
-  private openRhythmPanel(): void {
-    const overlay = document.createElement("div");
-    overlay.className = "rhythm-overlay";
-    const modal = document.createElement("div");
-    modal.className = "rhythm-modal";
-    overlay.append(modal);
-    const close = () => overlay.remove();
-    overlay.onclick = (e) => { if (e.target === overlay) close(); };
-
-    let selected: Rhythm | null = null;
-    const assigned = new Map<string, SavedSound>(); // track name -> sound
-
-    const header = (title: string, onBack?: () => void) => {
-      const h = document.createElement("div");
-      h.className = "rhythm-head";
-      if (onBack) {
-        const back = document.createElement("button");
-        back.className = "rhythm-back";
-        back.textContent = "‹";
-        back.onclick = onBack;
-        h.append(back);
-      }
-      const t = document.createElement("span");
-      t.className = "rhythm-title";
-      t.textContent = title;
-      const x = document.createElement("button");
-      x.className = "rhythm-close";
-      x.textContent = "×";
-      x.onclick = close;
-      h.append(t, x);
-      return h;
-    };
-
-    // List of rhythms -> selecting one shows its track-assignment view.
-    const showList = () => {
-      modal.innerHTML = "";
-      modal.append(header("Preset Rhythms"));
-      const list = document.createElement("div");
-      list.className = "rhythm-list";
-      for (const r of RHYTHMS) {
-        const b = document.createElement("button");
-        b.className = "rhythm-item";
-        const nm = document.createElement("span");
-        nm.className = "rhythm-name";
-        nm.textContent = r.name;
-        const gn = document.createElement("span");
-        gn.className = "rhythm-genre";
-        gn.textContent = r.genre;
-        b.append(nm, gn);
-        b.onclick = () => { selected = r; assigned.clear(); showAssign(); };
-        list.append(b);
-      }
-      modal.append(list);
-    };
-
-    // Per-track sound assignment + Apply.
-    const showAssign = () => {
-      if (!selected) return showList();
-      modal.innerHTML = "";
-      modal.append(header(selected.name, showList));
-      const body = document.createElement("div");
-      body.className = "rhythm-assign";
-      for (const track of selected.tracks) {
-        const r = document.createElement("div");
-        r.className = "rhythm-track";
-        const nm = document.createElement("span");
-        nm.className = "rhythm-track-name";
-        nm.textContent = track.name;
-        const pick = document.createElement("button");
-        pick.className = "cat-btn rhythm-pick";
-        const chosen = assigned.get(track.name);
-        if (chosen) {
-          pick.classList.add("has-sound");
-          const sw = document.createElement("span");
-          sw.className = "swatch";
-          sw.style.background = chosen.color;
-          pick.append(sw, document.createTextNode(chosen.name));
-        } else {
-          pick.textContent = "Add sound";
-        }
-        pick.onclick = () => showAssignPick(track.name);
-        r.append(nm, pick);
-        body.append(r);
-      }
-      modal.append(body);
-
-      const apply = document.createElement("button");
-      apply.className = "rhythm-apply";
-      apply.textContent = "Apply to grid";
-      apply.onclick = () => {
-        if (assigned.size === 0) { alert("Assign a sound to at least one track first."); return; }
-        this.applyRhythm(selected!, assigned);
-        close();
-      };
-      modal.append(apply);
-    };
-
-    // Saved-sound picker for one track; picking returns to the assignment view.
-    const showAssignPick = (trackName: string) => {
-      modal.innerHTML = "";
-      modal.append(header(`Sound for ${trackName}`, showAssign));
-      modal.append(this.buildSoundList((s) => { assigned.set(trackName, s); showAssign(); }));
-    };
-
-    showList();
-    this.root.append(overlay);
-  }
-
-  /** Layer a rhythm onto the current grid: each assigned track becomes a new sound
-      on the next empty row, painted where the pattern hits. Existing rows are kept. */
-  private applyRhythm(rhythm: Rhythm, assigned: Map<string, SavedSound>): void {
-    const blk = this.arr.blocks[this.curBlock()];
-    const emptyRows: number[] = [];
-    for (let r = 0; r < NUM_ROWS; r++) {
-      let empty = true;
-      for (let s = 0; s < NUM_STEPS; s++) if (blk.getCell(r, s) >= 0) { empty = false; break; }
-      if (empty) emptyRows.push(r);
-    }
-
-    let placed = 0;
-    let skipped = 0;
-    for (const track of rhythm.tracks) {
-      const sound = assigned.get(track.name);
-      if (!sound) continue;
-      if (placed >= emptyRows.length) { skipped++; continue; } // out of empty rows
-      const id = this.nextSoundId++;
-      const lane: Lane = {
-        soundId: id,
-        name: sound.name,
-        snapshot: sound.snapshot.slice(),
-        color: sound.color,
-        pitch: [sound.pitch[0], sound.pitch[1]],
-      };
-      this.lanes.push(lane); // current grid's lane list
-      const row = emptyRows[placed++];
-      for (let s = 0; s < NUM_STEPS; s++) if (track.steps[s]) blk.setCell(row, s, id);
-    }
-
-    if (this.activeLane < 0 && this.lanes.length) this.activeLane = 0;
-    this.pushAll();
-    this.render();
-    if (skipped) alert(`${skipped} track(s) skipped — the grid ran out of empty rows or channels.`);
   }
 
   // --- mixer view -------------------------------------------------------
@@ -884,9 +755,7 @@ export class App {
     this.mixerLeds = new Map();
 
     const blk = this.arr.blocks[this.curBlock()];
-    const channels: MixChannel[] = blk.euclid
-      ? blk.voices.filter((vo) => vo.soundId >= 0)
-      : this.lanes;
+    const channels: MixChannel[] = blk.voices.filter((vo) => vo.soundId >= 0);
 
     const head = document.createElement("div");
     head.className = "mixer-head";
@@ -991,193 +860,14 @@ export class App {
     return row;
   }
 
-  // --- paint lanes ------------------------------------------------------
-  /** Grid the lane bar + paint act on (ORDER_VIEW falls back to grid 0). */
+  // --- paint lanes (legacy model; grids are Euclidean in the UI now) ----
+  /** Grid the pattern bar + voices act on (ORDER_VIEW falls back to grid 0). */
   private curBlock(): number {
     return this.workspace < NUM_BLOCKS ? this.workspace : 0;
   }
-  /** Lanes of the current grid (the bar shown under it). */
-  private get lanes(): Lane[] {
-    return this.lanesPerBlock[this.curBlock()];
-  }
-  /** Every lane across all grids (engine pushes, colouring, channel allocation). */
+  /** Every paint lane across all grids (kept so old projects still push to the engine). */
   private allLanes(): Lane[] {
     return this.lanesPerBlock.flat();
-  }
-  /** Selected lane index within the current grid. */
-  private get activeLane(): number { return this.activeLanePerBlock[this.curBlock()]; }
-  private set activeLane(i: number) { this.activeLanePerBlock[this.curBlock()] = i; }
-
-  /** Drum index the grid paints, or -1 when no lane is selected. */
-  private activeDrumForPaint(): number {
-    const lane = this.lanes[this.activeLane];
-    return lane ? lane.soundId : -1;
-  }
-
-  /** Added sound lanes (none by default) plus a + button to add from the library.
-      When the grid's key is on, each pad shows a key badge to include/exclude that
-      sound from the key (only highlighted sounds get pitched by the row). */
-  private laneSelector(): HTMLElement {
-    const blk = this.arr.blocks[this.curBlock()];
-    const row = document.createElement("div");
-    row.className = "lane-bar";
-
-    const lanes = document.createElement("div");
-    lanes.className = "lanes";
-    this.lanes.forEach((lane, i) => {
-      const keyed = blk.keyEnabled && blk.isKeyed(lane.soundId);
-      const b = document.createElement("button");
-      b.className = "drum-pad" + (i === this.activeLane ? " on" : "") + (keyed ? " keyed" : "");
-      const sw = document.createElement("span");
-      sw.className = "swatch";
-      sw.style.background = lane.color;
-      const name = document.createElement("span");
-      name.textContent = lane.name;
-      b.append(sw, name);
-      b.onclick = () => this.selectLane(i);
-      // While the key is on, a tappable key badge toggles this sound's targeting.
-      if (blk.keyEnabled) {
-        const key = document.createElement("span");
-        key.className = "lane-key" + (keyed ? " on" : "");
-        key.textContent = "♪";
-        key.title = keyed ? "Key on for this sound (tap to exclude)" : "Tap to apply the key to this sound";
-        key.onclick = (e) => {
-          e.stopPropagation();
-          blk.toggleKeyed(lane.soundId);
-          this.gridView.draw();
-          this.syncPattern();
-          this.render();
-        };
-        b.append(key);
-      }
-      // The selected lane gets an × to remove it.
-      if (i === this.activeLane) {
-        const rm = document.createElement("span");
-        rm.className = "lane-remove";
-        rm.textContent = "×";
-        rm.title = "Remove lane";
-        rm.onclick = (e) => { e.stopPropagation(); this.removeLane(i); };
-        b.append(rm);
-      }
-      lanes.append(b);
-    });
-
-    const add = document.createElement("button");
-    add.className = "add-sound-btn";
-    add.textContent = "+";
-    add.title = "Add a saved sound";
-    add.onclick = (e) => { e.stopPropagation(); this.openSoundPicker(row); };
-
-    row.append(lanes, add);
-    return row;
-  }
-
-  private selectLane(i: number): void {
-    this.activeLane = i;
-    const lane = this.lanes[i];
-    if (!lane) return;
-    this.gridView.setActiveDrum(lane.soundId); // paint with this sound, and preview it
-    this.auditionLane(lane);
-    this.persist();
-    this.render();
-  }
-
-  private removeLane(i: number): void {
-    const lane = this.lanes[i];
-    if (lane) this.arr.blocks[this.curBlock()].keyedDrums.delete(lane.soundId); // don't leave it keyed
-    this.lanes.splice(i, 1);
-    if (this.activeLane === i) this.activeLane = -1; // nothing selected to paint
-    else if (this.activeLane > i) this.activeLane -= 1;
-    this.gridView.setActiveDrum(this.activeDrumForPaint());
-    this.pushSounds(); // drop the removed sound from the engine table
-    this.persist();
-    this.render();
-  }
-
-  /** A `.sound-picker` panel listing every saved sound, grouped into collapsible
-      folders; tapping one calls `onPick`. Reused by the lane + button and by the
-      rhythm track-assignment UI. */
-  private buildSoundList(onPick: (s: SavedSound) => void): HTMLElement {
-    const panel = document.createElement("div");
-    panel.className = "sound-picker";
-    const items = this.library.all();
-
-    const makeItem = (it: SavedSound, inFolder: boolean) => {
-      const b = document.createElement("button");
-      b.className = "pick-item" + (inFolder ? " in-folder" : "");
-      const sw = document.createElement("span");
-      sw.className = "swatch";
-      sw.style.background = it.color;
-      const name = document.createElement("span");
-      name.textContent = it.name;
-      b.append(sw, name);
-      b.onclick = () => onPick(it);
-      return b;
-    };
-
-    if (items.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "hint";
-      empty.textContent = "No saved sounds yet. Save some in the Sounds view.";
-      panel.append(empty);
-      return panel;
-    }
-    // Group by folder name (folders can span drums), each collapsible, ungrouped last.
-    const folderNames = [...new Set(items.filter((s) => s.folder).map((s) => s.folder))]
-      .sort((a, b) => a.localeCompare(b));
-    const collapsed = new Set<string>();
-    const render = () => {
-      panel.innerHTML = "";
-      for (const f of folderNames) {
-        const group = items.filter((s) => s.folder === f);
-        const open = !collapsed.has(f);
-        const head = document.createElement("button");
-        head.className = "saved-folder-head";
-        head.textContent = `${open ? "▾" : "▸"} ${f} (${group.length})`;
-        const color = this.library.folderColor(f);
-        if (color) {
-          head.style.background = color;
-          head.style.color = textOn(color);
-          head.style.borderColor = "transparent";
-        }
-        head.onclick = () => { if (open) collapsed.add(f); else collapsed.delete(f); render(); };
-        panel.append(head);
-        if (open) for (const it of group) panel.append(makeItem(it, true));
-      }
-      for (const it of items.filter((s) => !s.folder)) panel.append(makeItem(it, false));
-    };
-    render();
-    return panel;
-  }
-
-  /** Popup of every saved sound across drums; choosing one adds it as a lane. */
-  private openSoundPicker(anchor: HTMLElement): void {
-    const existing = anchor.querySelector(".sound-picker");
-    if (existing) { existing.remove(); return; }
-
-    const panel = this.buildSoundList((s) => { panel.remove(); this.addLane(s); });
-    anchor.append(panel);
-    // Dismiss on the next outside tap.
-    const close = (ev: PointerEvent) => {
-      if (!panel.contains(ev.target as Node)) {
-        panel.remove();
-        document.removeEventListener("pointerdown", close, true);
-      }
-    };
-    setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
-  }
-
-  private addLane(sound: SavedSound): void {
-    const lane: Lane = {
-      soundId: this.nextSoundId++,
-      name: sound.name,
-      snapshot: sound.snapshot.slice(),
-      color: sound.color,
-      pitch: [sound.pitch[0], sound.pitch[1]],
-    };
-    this.lanes.push(lane);
-    this.pushSounds();
-    this.selectLane(this.lanes.length - 1);
   }
 
   // --- order editor -----------------------------------------------------
@@ -1273,20 +963,3 @@ export class App {
   }
 }
 
-// Black or white text for readability on a given hex background.
-function textOn(hex: string): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? "#15161a" : "#ffffff";
-}
-
-function labelled(text: string, control: HTMLElement): HTMLElement {
-  const wrap = document.createElement("label");
-  wrap.className = "field";
-  const span = document.createElement("span");
-  span.textContent = text;
-  wrap.append(span, control);
-  return wrap;
-}
