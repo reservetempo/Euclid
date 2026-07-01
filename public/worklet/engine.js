@@ -565,7 +565,7 @@ class Channel {
 
 //============================================================================
 class EngineProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
     this.sr = sampleRate; // AudioWorkletGlobalScope global
     this.channels = [];
@@ -596,12 +596,32 @@ class EngineProcessor extends AudioWorkletProcessor {
     // timeline is `absStep % total`; per-voice polymeter phase reads it directly so a
     // voice's cycle never resets at the grid-loop wrap (continuous polymeter).
     this.absStep = 0;
+    // Bounded render: stop sequencing after this many steps (0 = play forever). Used by
+    // the offline export to render exactly N loops, then let tails/FX ring out.
+    this.maxSteps = 0;
     this.samplesToNextStep = 0;
     this.lastGrid = -2;      // for change-only playhead reporting
     this.lastCol = -2;
     this.lastSlot = -2;
 
     this.port.onmessage = (e) => this.onMessage(e.data);
+
+    // Offline export bootstrap: an OfflineAudioContext renders to completion the moment
+    // startRendering() is called, so port messages posted just before it race the render
+    // and can be missed. Instead the whole render config is passed in processorOptions and
+    // applied synchronously here, so playback is fully set up before the first quantum.
+    const o = options && options.processorOptions;
+    if (o && o.render) {
+      if (Array.isArray(o.sounds)) {
+        for (const s of o.sounds) this.sounds.set(s.id, { snap: s.snap, lo: s.lo, hi: s.hi, tail: s.tail });
+      }
+      this.blocks = o.blocks || null;
+      this.order = o.order || null;
+      this.tempo = o.tempo || 120;
+      this.maxSteps = o.maxSteps | 0;
+      this.playing = true;
+      this.absStep = 0;
+    }
   }
 
   onMessage(m) {
@@ -637,6 +657,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         this.promotePending();
         this.playing = true;
         this.absStep = 0;
+        this.maxSteps = m.maxSteps | 0;
         this.samplesToNextStep = 0;
         break;
       case "stop":
@@ -775,6 +796,10 @@ class EngineProcessor extends AudioWorkletProcessor {
     const blocks = this.blocks;
     const order = this.order;
     if (!blocks || !order) { this.reportPlayhead(-1, -1, -1); return; }
+
+    // Bounded render (offline export): once the requested steps have fired, stop
+    // sequencing so process() renders only the ringing tails from here on.
+    if (this.maxSteps > 0 && this.absStep >= this.maxSteps) { this.playing = false; return; }
 
     const { runs, total } = this.buildTimeline();
     if (total <= 0) { this.reportPlayhead(-1, -1, -1); return; }

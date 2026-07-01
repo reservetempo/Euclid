@@ -95,4 +95,44 @@ export class EngineHost {
   stop(): void {
     this.node?.port.postMessage({ type: "stop" });
   }
+
+  /** Render the pattern offline (faster than realtime) to an AudioBuffer: fire exactly
+      `maxSteps` steps then let tails/FX ring for `tailSec`. Uses its own
+      OfflineAudioContext + worklet instance, independent of live playback. */
+  async renderToBuffer(opts: {
+    blocks: unknown[];
+    order: number[];
+    sounds: EngineSound[];
+    tempo: number;
+    maxSteps: number;
+    tailSec: number;
+    sampleRate?: number;
+  }): Promise<AudioBuffer> {
+    const sr = opts.sampleRate ?? 44100;
+    const samplesPerStep = (sr * 60) / Math.max(1, opts.tempo) / 4;
+    const length = Math.max(1, Math.ceil(opts.maxSteps * samplesPerStep + Math.max(0, opts.tailSec) * sr));
+    const ctx = new OfflineAudioContext(2, length, sr);
+    const url = `${import.meta.env.BASE_URL}worklet/engine.js`;
+    await ctx.audioWorklet.addModule(url);
+    // The whole render config goes in processorOptions (applied in the processor
+    // constructor), not port messages — offline rendering starts immediately and would
+    // race messages posted just before startRendering.
+    const node = new AudioWorkletNode(ctx, "engine-processor", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: {
+        render: true,
+        sounds: opts.sounds,
+        blocks: opts.blocks,
+        order: opts.order,
+        tempo: opts.tempo,
+        maxSteps: opts.maxSteps,
+      },
+    });
+    node.connect(ctx.destination);
+    const buffer = await ctx.startRendering();
+    node.disconnect();
+    return buffer;
+  }
 }

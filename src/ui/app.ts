@@ -4,7 +4,8 @@
 // 8-wide grids), or the "Loop" view (20-slot order list) that sequences which
 // patterns play and in what order. Painted lanes are added from saved sounds.
 
-import { EngineHost, Playhead } from "../audio/engineHost";
+import { EngineHost, EngineSound, Playhead } from "../audio/engineHost";
+import { encodeWavFromBuffer } from "../audio/wav";
 import { DRUMS, DrumType } from "../model/drums";
 import { ParamId } from "../model/params";
 import { DrumKit, estimateLength } from "../model/drumKit";
@@ -133,16 +134,15 @@ export class App {
     this.engine.setTempo(this.tempo);
   }
 
-  /** Replace the engine's sound table with every painted lane: stable id + snapshot +
-      Pitch range (for the key mapping) + estimated tail (for channel stealing).
-      Muted / soloed-out lanes get Volume zeroed. The engine binds ids to channels. */
-  private pushSounds(): void {
+  /** The engine sound table: every painted lane + assigned Euclidean voice as a stable
+      id + snapshot + Pitch range (for the key mapping) + estimated tail (for channel
+      stealing). Muted / soloed-out channels get Volume zeroed. */
+  private buildSounds(): EngineSound[] {
     const sounds = this.allLanes().map((lane) => {
       const snap = lane.snapshot.slice();
       if (!this.channelAudible(lane)) snap[ParamId.Volume] = 0;
       return { id: lane.soundId, snap, lo: lane.pitch[0], hi: lane.pitch[1], tail: estimateLength(snap) };
     });
-    // Euclidean voices across every grid are sounds too — same mute/solo handling.
     for (const blk of this.arr.blocks) {
       if (!blk.euclid) continue;
       for (const v of blk.voices) {
@@ -152,7 +152,12 @@ export class App {
         sounds.push({ id: v.soundId, snap, lo: v.pitch[0], hi: v.pitch[1], tail: estimateLength(snap) });
       }
     }
-    this.engine.setSounds(sounds);
+    return sounds;
+  }
+
+  /** Push the sound table to the (live) engine. The engine binds ids to channels. */
+  private pushSounds(): void {
+    this.engine.setSounds(this.buildSounds());
   }
 
   /** Every mixable channel: each grid's paint lanes plus every assigned Euclidean voice. */
@@ -239,6 +244,42 @@ export class App {
     const a = document.createElement("a");
     a.href = url;
     a.download = "msq010-project.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /** Ask how many loop passes to render, then export (offline) to a downloadable WAV. */
+  private promptExportWav(): void {
+    const answer = prompt("Export the loop as a WAV — how many times should it repeat?", "4");
+    if (answer === null) return;
+    const loops = Math.max(1, Math.floor(Number(answer)) || 1);
+    this.exportWav(loops).catch((e) => {
+      console.error(e);
+      alert("Sorry — the export failed.");
+    });
+  }
+
+  /** Render `loops` passes of the loop-order arrangement to a WAV and download it, so it
+      can be uploaded to SoundCloud (etc.) manually. Renders offline (faster than realtime)
+      and appends a tail sized to the longest sound so reverb/echo rings out cleanly. */
+  private async exportWav(loops: number): Promise<void> {
+    const loopLen = this.arr.loopSteps();
+    if (loopLen <= 0) { alert("Nothing to export yet — add some voices to a grid first."); return; }
+    const sounds = this.buildSounds();
+    const maxTail = sounds.reduce((m, s) => Math.max(m, s.tail || 0), 0);
+    const tailSec = Math.min(8, Math.max(1.5, maxTail + 0.5));
+    const buffer = await this.engine.renderToBuffer({
+      blocks: this.arr.blocksMessage(),
+      order: this.arr.orderArray(),
+      sounds,
+      tempo: this.tempo,
+      maxSteps: Math.max(1, Math.round(loops)) * loopLen,
+      tailSec,
+    });
+    const url = URL.createObjectURL(encodeWavFromBuffer(buffer));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "euclid-song.wav";
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -380,6 +421,7 @@ export class App {
       mk("New project", () => { if (confirm("Clear everything and start fresh?")) this.newProject(); }),
       mk("Save to file", () => this.saveToFile()),
       mk("Load from file", () => fileInput.click()),
+      mk("Export WAV", () => this.promptExportWav()),
     );
 
     btn.onclick = () => panel.classList.toggle("hidden");
