@@ -175,12 +175,27 @@ export class App {
     return !ch.mute && (!this.anySolo() || !!ch.solo);
   }
 
+  /** The order sent to the engine reflects the play source: a numbered grid button solos
+      just that grid (ignore the loop order); the Loop view plays the real order. */
+  private effectiveOrder(): number[] {
+    if (this.workspace < NUM_BLOCKS) return [this.workspace]; // solo the selected grid
+    return this.arr.orderArray();
+  }
+
   /** Resend grids + order. While playing the engine stages this and applies it
       at the next loop restart, so the current pass plays unchanged. */
   private syncPattern(): void {
-    this.engine.setPattern(this.arr.blocksMessage(), this.arr.orderArray());
+    this.engine.setPattern(this.arr.blocksMessage(), this.effectiveOrder());
     this.updateLoopTime();
     this.persist();
+  }
+
+  /** Switch the workspace = play source. A numbered grid solos that grid; the Loop button
+      plays the whole order. While playing, jump straight to the new source (restart). */
+  private selectWorkspace(ws: number): void {
+    this.workspace = ws;
+    this.engine.setPattern(this.arr.blocksMessage(), this.effectiveOrder(), this.playing);
+    this.render();
   }
 
   private updateLoopTime(): void {
@@ -693,15 +708,16 @@ export class App {
       b.className = "pat-btn" + (this.workspace === i ? " on" : "");
       b.textContent = String(i + 1);
       b.style.setProperty("--pat", GRID_COLORS[i]);
-      b.onclick = () => { this.workspace = i; this.render(); };
+      b.title = `Play grid ${i + 1} on its own`;
+      b.onclick = () => this.selectWorkspace(i);
       bar.append(b);
     }
 
     const loop = document.createElement("button");
     loop.className = "loop-view-btn" + (this.workspace === ORDER_VIEW ? " on" : "");
     loop.textContent = "↻";
-    loop.title = "Loop / order view";
-    loop.onclick = () => { this.workspace = ORDER_VIEW; this.render(); };
+    loop.title = "Play the loop order";
+    loop.onclick = () => this.selectWorkspace(ORDER_VIEW);
     bar.append(loop);
 
     return bar;

@@ -13,6 +13,12 @@ export const NUM_BLOCKS = 6;
 export const ORDER_SLOTS = 20;
 export const EMPTY = -1;
 
+// Integer gcd/lcm for the continuous-polymeter loop length, capped to match the engine
+// (public/worklet/engine.js LCM_CAP) so coprime step counts can't blow the length up.
+const LCM_CAP = 1024;
+const gcdInt = (a: number, b: number): number => { a = Math.abs(a | 0); b = Math.abs(b | 0); while (b) { const t = a % b; a = b; b = t; } return a || 1; };
+const lcmInt = (a: number, b: number): number => (!a || !b ? Math.max(a, b) || 1 : Math.min(LCM_CAP, (a / gcdInt(a, b)) * b));
+
 // One voice (circle) of a grid in Euclidean mode: an assigned saved sound plus its
 // hits/steps/start. soundId = -1 when the slot is empty (no circle drawn / no audio).
 export interface EuclidVoice {
@@ -78,6 +84,21 @@ export class MelodyGrid {
     let len = 1;
     for (const v of this.voices) if (v.soundId !== EMPTY && v.steps > len) len = v.steps;
     return len;
+  }
+
+  /** Steps of the reference (first assigned) voice — the length that chains to the next
+      section in the loop order. Falls back to the Euclidean loop length. */
+  refSteps(): number {
+    for (const v of this.voices) if (v.soundId !== EMPTY && v.steps >= 1) return v.steps;
+    return this.euclidLen();
+  }
+
+  /** LCM of the active voices' step counts (capped): the length at which every voice's
+      polymeter phase realigns, so a single-grid loop repeats without a phase reset. */
+  euclidLcm(): number {
+    let l = 1;
+    for (const v of this.voices) if (v.soundId !== EMPTY && v.steps >= 1) l = lcmInt(l, v.steps);
+    return Math.max(1, l);
   }
 
   private idx(row: number, step: number): number {
@@ -173,17 +194,28 @@ export class WipArrangement {
     return n;
   }
 
-  /** Total 16th-note steps in one loop pass (each filled slot contributes its grid's
-      length: 16 for manual, the Euclidean loop length otherwise). */
+  /** Total 16th-note steps in one loop pass. Consecutive slots of the same grid form one
+      continuous run of `slots * referenceSteps` steps; a single grid filling the whole
+      order loops at the LCM of its voice steps (continuous polymeter). Mirrors the
+      engine's buildTimeline (public/worklet/engine.js). */
   loopSteps(): number {
-    let total = 0;
-    for (let i = 0; i < ORDER_SLOTS; i++) {
-      const g = this.order[i];
-      if (g >= 0 && g < this.blocks.length) {
-        const b = this.blocks[g];
-        total += b.euclid ? b.euclidLen() : NUM_STEPS;
-      }
+    const runs: { gi: number; len: number }[] = [];
+    let i = 0;
+    while (i < ORDER_SLOTS) {
+      const gi = this.order[i];
+      if (!(gi >= 0 && gi < this.blocks.length)) { i++; continue; }
+      let slots = 1, j = i + 1;
+      while (j < ORDER_SLOTS && this.order[j] === gi) { slots++; j++; }
+      const b = this.blocks[gi];
+      const ref = b.euclid ? b.refSteps() : NUM_STEPS;
+      runs.push({ gi, len: slots * ref });
+      i = j;
     }
-    return total;
+    if (runs.length === 0) return 0;
+    if (runs.length === 1) {
+      const b = this.blocks[runs[0].gi];
+      return b.euclid ? Math.max(b.euclidLcm(), b.refSteps()) : runs[0].len;
+    }
+    return runs.reduce((s, r) => s + r.len, 0);
   }
 }

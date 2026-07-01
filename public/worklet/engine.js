@@ -72,6 +72,13 @@ const STEP_GATE_SEC = 0.4;
 
 const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
 
+// Integer gcd/lcm for the continuous-polymeter loop length (LCM of a single grid's
+// voice step counts, so every voice's phase realigns at the wrap). Capped so wildly
+// coprime step counts can't blow the loop length up.
+const LCM_CAP = 1024;
+function gcdInt(a, b) { a = Math.abs(a | 0); b = Math.abs(b | 0); while (b) { const t = a % b; a = b; b = t; } return a || 1; }
+function lcmInt(a, b) { if (!a || !b) return Math.max(a, b) || 1; return Math.min(LCM_CAP, (a / gcdInt(a, b)) * b); }
+
 //============================================================================
 // Melody scale -> frequency (port of MelodyScale.h / melodyScale.ts). Owns the
 // pitch mapping because the clock lives here. Keep intervals in sync with
@@ -585,7 +592,10 @@ class EngineProcessor extends AudioWorkletProcessor {
 
     this.tempo = 120;
     this.playing = false;
-    this.seqPos = 0;         // position within the ordered sequence
+    // Monotonic 16th-note counter since the last play/restart. Position within the
+    // timeline is `absStep % total`; per-voice polymeter phase reads it directly so a
+    // voice's cycle never resets at the grid-loop wrap (continuous polymeter).
+    this.absStep = 0;
     this.samplesToNextStep = 0;
     this.lastGrid = -2;      // for change-only playhead reporting
     this.lastCol = -2;
@@ -606,21 +616,27 @@ class EngineProcessor extends AudioWorkletProcessor {
         this.triggerSound(AUDITION, m.snapshot, m.snapshot, m.gate | 0, m.tail);
         break;
       case "pattern":
-        if (this.playing) {
+        if (this.playing && !m.restart) {
           // Stage; applied at the next loop restart.
           this.pendingBlocks = m.blocks;
           this.pendingOrder = m.order;
           this.hasPending = true;
         } else {
+          // Not playing, or an explicit restart (source switch: solo a grid / back to the
+          // loop) — apply now and, if playing, jump the transport to the new source's start.
           this.blocks = m.blocks;
           this.order = m.order;
+          this.hasPending = false;
+          this.pendingBlocks = null;
+          this.pendingOrder = null;
+          if (this.playing) { this.absStep = 0; this.samplesToNextStep = 0; }
         }
         break;
       case "tempo": this.tempo = m.bpm; break;
       case "play":
         this.promotePending();
         this.playing = true;
-        this.seqPos = 0;
+        this.absStep = 0;
         this.samplesToNextStep = 0;
         break;
       case "stop":
@@ -690,54 +706,108 @@ class EngineProcessor extends AudioWorkletProcessor {
     ch.trigger(voiceSnap, gate);
   }
 
-  // Fire one step of the ordered sequence. Grids are variable-length: a manual grid is
-  // 16 steps; a Euclidean grid is its loop length (`len`). Each entry carries its start
-  // offset so we can find which grid + local step `seqPos` lands on. Staged edits are
-  // promoted only at the loop boundary.
+  // Steps of a grid's reference (first assigned) voice — the length that chains to the
+  // next section in the loop order (its first voice connects to the next grid's first
+  // voice). Manual grids are a fixed 16.
+  referenceSteps(b) {
+    if (!b.euclid) return NUM_STEPS;
+    const vs = b.voices || [];
+    for (let i = 0; i < vs.length; i++) { const s = vs[i].steps | 0; if (s >= 1) return s; }
+    return Math.max(1, (b.len | 0) || 1);
+  }
+
+  // LCM of a grid's voice step counts (capped): the length at which every voice's
+  // polymeter phase realigns, so a single-grid loop repeats without a phase reset.
+  lcmVoices(b) {
+    let l = 1;
+    const vs = b.voices || [];
+    for (let i = 0; i < vs.length; i++) { const s = vs[i].steps | 0; if (s >= 1) l = lcmInt(l, s); }
+    return Math.max(1, l);
+  }
+
+  // Build the play timeline as a list of RUNS. A run is a maximal group of consecutive
+  // order slots that reference the SAME grid; it plays continuously (true polymeter — no
+  // per-cycle reset) for `slots * referenceSteps` steps, then hands off to the next grid.
+  //   - Multiple grids in the order: each run is "hard" — at its end (a different grid
+  //     starts) any voice whose cycle would overrun the boundary is dropped for that
+  //     cycle ("remove that voice's last sequence"). The reference voice always fits.
+  //   - A single grid filling the whole order: one "soft" run whose length is the LCM of
+  //     its voice steps, so every voice runs continuously and realigns at the wrap.
+  buildTimeline() {
+    const blocks = this.blocks;
+    const order = this.order;
+    const runs = [];
+    let total = 0, i = 0;
+    while (i < order.length) {
+      const gi = order[i];
+      if (!(gi >= 0 && gi < blocks.length)) { i++; continue; }
+      let slots = 1, j = i + 1;
+      while (j < order.length && order[j] === gi) { slots++; j++; }
+      const ref = this.referenceSteps(blocks[gi]);
+      const len = slots * ref;
+      runs.push({ grid: gi, firstSlot: i, slots, ref, len, start: total, soft: false });
+      total += len;
+      i = j;
+    }
+    if (runs.length === 1) {
+      const r = runs[0];
+      const b = blocks[r.grid];
+      r.len = b.euclid ? Math.max(this.lcmVoices(b), r.ref) : r.len;
+      r.start = 0;
+      r.soft = true;
+      total = r.len;
+    }
+    return { runs, total };
+  }
+
+  // Which order slot a within-run position maps to (for the loop view's playhead).
+  slotForPos(run, localPos) {
+    const slot = run.firstSlot + Math.floor(localPos / Math.max(1, run.ref));
+    const maxSlot = run.firstSlot + run.slots - 1;
+    return slot > maxSlot ? maxSlot : slot;
+  }
+
+  // Fire one step of the timeline. `absStep` is monotonic; the position within the loop
+  // is `absStep % total`. Within a run each voice reads its own phase continuously
+  // (polymeter), except a hard run truncates a voice's final overrunning cycle so it
+  // doesn't bleed past the handoff to the next grid.
   fireStep(gate) {
     const blocks = this.blocks;
     const order = this.order;
     if (!blocks || !order) { this.reportPlayhead(-1, -1, -1); return; }
 
-    // Build the play sequence with cumulative start offsets + per-grid lengths.
-    const seq = [];
-    let total = 0;
-    for (let i = 0; i < order.length; i++) {
-      const gi = order[i];
-      if (gi >= 0 && gi < blocks.length) {
-        const b = blocks[gi];
-        const len = b.euclid ? Math.max(1, b.len | 0) : NUM_STEPS;
-        seq.push({ grid: gi, slot: i, start: total, len });
-        total += len;
-      }
-    }
-    if (total === 0) { this.reportPlayhead(-1, -1, -1); return; }
-    if (this.seqPos >= total) this.seqPos %= total;
+    const { runs, total } = this.buildTimeline();
+    if (total <= 0) { this.reportPlayhead(-1, -1, -1); return; }
 
-    // Find the entry whose [start, start+len) window contains seqPos.
-    let e = 0;
-    while (e + 1 < seq.length && seq[e + 1].start <= this.seqPos) e++;
-    const entry = seq[e];
-    const localStep = this.seqPos - entry.start;
-    const g = blocks[entry.grid];
+    const pos = this.absStep % total;
+    let ri = 0;
+    while (ri + 1 < runs.length && runs[ri + 1].start <= pos) ri++;
+    const run = runs[ri];
+    const localPos = pos - run.start;
+    const g = blocks[run.grid];
 
     const fired = [];
     if (g.euclid) {
-      // Euclidean: each voice (circle) triggers when its pattern hits at localStep,
-      // cycling independently (polyrhythm) within the grid's loop length.
+      // Euclidean: each voice (circle) triggers when its pattern hits at its own phase,
+      // cycling independently (polymeter) for the full run length.
       const voices = g.voices || [];
       for (let v = 0; v < voices.length; v++) {
         const vo = voices[v];
-        if (!vo || vo.soundId < 0 || !vo.pattern || vo.steps < 1) continue;
-        if (!vo.pattern[localStep % vo.steps]) continue;
+        if (!vo || vo.soundId < 0 || !vo.pattern || (vo.steps | 0) < 1) continue;
+        const vs = vo.steps | 0;
+        // Hard run: drop the final cycle that would overrun the handoff boundary.
+        if (!run.soft && (localPos - (localPos % vs)) + vs > run.len) continue;
+        if (!vo.pattern[localPos % vs]) continue;
         const snd = this.sounds.get(vo.soundId);
         if (!snd) continue;
         this.triggerSound(vo.soundId, snd.snap, snd.snap.slice(), gate, snd.tail);
         fired.push(vo.soundId);
       }
+      this.reportPlayhead(run.grid, localPos, this.slotForPos(run, localPos), fired);
     } else {
       // Manual: key targeting — only sounds in keyedDrums get pitched to the row's note
       // (a missing list = all, for older patterns).
+      const localStep = localPos % NUM_STEPS;
       const keyedSet = Array.isArray(g.keyedDrums) ? new Set(g.keyedDrums) : null;
       for (let row = 0; row < NUM_ROWS; row++) {
         const id = g.cells[row * NUM_STEPS + localStep]; // cell = stable sound id
@@ -752,12 +822,17 @@ class EngineProcessor extends AudioWorkletProcessor {
         this.triggerSound(id, snd.snap, voiceSnap, gate, snd.tail);
         fired.push(id);
       }
+      this.reportPlayhead(run.grid, localStep, this.slotForPos(run, localPos), fired);
     }
 
-    this.reportPlayhead(entry.grid, localStep, entry.slot, fired);
-
-    this.seqPos = (this.seqPos + 1) % total;
-    if (this.seqPos === 0) this.promotePending(); // loop completed -> apply staged edits
+    this.absStep += 1;
+    const nextPos = this.absStep % total;
+    // Apply staged edits at the loop boundary; for a continuous single-grid loop also at
+    // each reference-voice downbeat, so live edits still take effect promptly.
+    const primaryRef = runs[0].ref;
+    if (nextPos === 0 || (run.soft && primaryRef >= 1 && nextPos % primaryRef === 0)) {
+      this.promotePending();
+    }
   }
 
   renderChannels(master, offset, n) {

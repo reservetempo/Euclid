@@ -72,13 +72,16 @@ export class EngineHost {
     this.node?.port.postMessage({ type: "audition", snapshot, gate, tail });
   }
 
-  /** Replace the pattern (6 grids + 20-slot order). Resend on any edit; while
-      playing the engine stages it and applies at the next loop restart. */
+  /** Replace the pattern (6 grids + 20-slot order). Resend on any edit; while playing the
+      engine stages it and applies at the next loop restart. Pass `restart` to apply it now
+      and jump the transport to step 0 — used when switching play source (solo a grid /
+      back to the loop) so the change is heard immediately. */
   setPattern(
     blocks: { cells: number[]; root: number; scale: number; keyEnabled: boolean }[],
-    order: number[]
+    order: number[],
+    restart = false
   ): void {
-    this.node?.port.postMessage({ type: "pattern", blocks, order });
+    this.node?.port.postMessage({ type: "pattern", blocks, order, restart });
   }
 
   setTempo(bpm: number): void {
