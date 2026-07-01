@@ -25,6 +25,8 @@ export interface VoiceMenuCallbacks {
   onChange: () => void;
   // Preview the current sound once (also used by the ▶ button).
   audition: () => void;
+  // Open the full per-parameter editor for this voice (the "Full Parameters" button).
+  onFullParams: () => void;
 }
 
 /** Build the voice shuffle popup for `editor` (operating on reference drum `drum`).
@@ -37,6 +39,7 @@ export function buildVoiceShuffleMenu(
 ): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "voice-shuffle";
+  let showPresets = false; // presets stay hidden behind their button until toggled
 
   // Apply a kit mutation, then push it into the voice, preview it, and refresh the UI.
   const afterChange = () => { cb.onChange(); cb.audition(); render(); };
@@ -98,13 +101,34 @@ export function buildVoiceShuffleMenu(
     panel.append(selectRow("Spread", CURVE_OPTIONS.map((o) => o.label), editor.curveIdx, (i) => { editor.curveIdx = i; }));
     panel.append(selectRow("Max len", MAXLEN_OPTIONS.map((o) => o.label), editor.maxLenIdx, (i) => { editor.maxLenIdx = i; }));
 
-    // Presets grid (character windows); picking one applies it and previews.
-    const presets = document.createElement("div");
-    presets.className = "voice-preset-grid";
-    for (const p of FACTORY_PRESETS) {
-      presets.append(presetTile(p, () => { editor.kit.applyPreset(drum, p); afterChange(); }));
+    // Presets live behind a button that shows the active preset's name + colour; tapping
+    // it reveals the grid of character windows. Picking one applies it and collapses.
+    const p = editor.kit.get(drum);
+    const presetBtn = mkBtn(p.presetName(), "cat-btn preset-name-btn");
+    const col = p.presetColor();
+    presetBtn.style.background = col;
+    presetBtn.style.color = textOn(col);
+    presetBtn.style.borderColor = "transparent";
+    presetBtn.onclick = () => { showPresets = !showPresets; render(); };
+    panel.append(presetBtn);
+
+    if (showPresets) {
+      const presets = document.createElement("div");
+      presets.className = "voice-preset-grid";
+      for (const preset of FACTORY_PRESETS) {
+        presets.append(presetTile(preset, () => {
+          editor.kit.applyPreset(drum, preset);
+          showPresets = false;
+          afterChange();
+        }));
+      }
+      panel.append(presets);
     }
-    panel.append(presets);
+
+    // Full Parameters: open the deep per-parameter editor for this voice (live).
+    const full = mkBtn("Full Parameters", "cat-btn full-params-btn");
+    full.onclick = () => cb.onFullParams();
+    panel.append(full);
   };
 
   render();

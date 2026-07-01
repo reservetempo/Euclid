@@ -9,7 +9,6 @@ import { DRUMS, DrumType } from "../model/drums";
 import { ParamId } from "../model/params";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
-import { SoundLibrary } from "../model/soundLibrary";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import {
   WipArrangement, NUM_BLOCKS, ORDER_SLOTS, EMPTY, GRID_COLORS,
@@ -64,11 +63,11 @@ export class App {
   private engine = new EngineHost();
   private arr = new WipArrangement();
   private kit = new DrumKit(DRUMS.map((d) => d.type)); // editable per-drum params
-  private library = new SoundLibrary();
   private drumTypes = DRUMS.map((d) => d.type);
   private saveTimer = 0;
 
   private view: View = "grid"; // the Euclid grid is the landing view
+  private soundSlot = 0; // which voice the full-parameters (sound) view is editing
   private selectedDrum: DrumType = DrumType.Kick; // voice edited in the Sounds view
   private soundName = ""; // last used sound name (prefills the Save dialog)
   private workspace = 0; // 0..5 = pattern index, ORDER_VIEW = loop/order list
@@ -282,26 +281,12 @@ export class App {
     this.render();
   }
 
-  private audition(drum: DrumType): void {
-    const gate = Math.round(this.engine.sampleRate * 0.4);
-    const snap = this.kit.get(drum).capture();
-    this.engine.audition(snap, gate, estimateLength(snap));
-  }
-
-  /** The editor's default sound: Full Range, fully shuffled so it's random and
-      different every time, with no carried-over name. */
+  /** Seed the (now background) editor kit with a fresh random Full Range sound. Kept so
+      new/loaded projects still serialise a valid drum kit + preset. */
   private applyRandomDefault(): void {
     this.kit.applyPreset(this.selectedDrum, FULL_RANGE_PRESET);
     this.kit.shuffleAll(this.selectedDrum, 1.0); // 100% -> uniform over the full range
     this.soundName = "";
-  }
-
-  /** After saving a sound: drop back to a fresh random Full Range sound. */
-  private revertEditorToDefault(): void {
-    this.applyRandomDefault();
-    this.audition(this.selectedDrum); // editor sound is auditioned, not in the table
-    this.persist();
-    this.render();
   }
 
   // --- start gate -------------------------------------------------------
@@ -334,7 +319,10 @@ export class App {
 
     const bar = document.createElement("header");
     bar.className = "topbar";
-    bar.append(this.viewToggle(), this.transport(), this.menu());
+    const title = document.createElement("span");
+    title.className = "app-title";
+    title.textContent = "Euclid";
+    bar.append(title, this.transport(), this.menu());
     this.root.append(bar);
 
     this.viewRoot = document.createElement("main");
@@ -344,25 +332,6 @@ export class App {
     if (this.view === "grid") this.renderGrid();
     else if (this.view === "mixer") this.renderMixer();
     else this.renderSound();
-  }
-
-  private viewToggle(): HTMLElement {
-    const seg = document.createElement("div");
-    seg.className = "seg";
-    for (const v of ["grid", "sound"] as View[]) {
-      const b = document.createElement("button");
-      b.textContent = v === "grid" ? "Steps" : "Sounds";
-      // The Mixer is a sub-view of Steps, so it keeps the Steps segment lit.
-      const active = v === "grid" ? this.view !== "sound" : this.view === "sound";
-      b.className = "seg-btn" + (active ? " on" : "");
-      b.onclick = () => {
-        if (this.view === v) return;
-        this.view = v;
-        this.render();
-      };
-      seg.append(b);
-    }
-    return seg;
   }
 
   private menu(): HTMLElement {
@@ -670,9 +639,17 @@ export class App {
     const existing = this.viewRoot.querySelector(".voice-shuffle");
     if (existing) { existing.remove(); return; }
     const editor = this.voiceEditorFor(slot);
+    const openFull = () => {
+      panel.remove();
+      document.removeEventListener("pointerdown", close, true);
+      this.soundSlot = slot;
+      this.view = "sound";
+      this.render();
+    };
     const panel = buildVoiceShuffleMenu(editor, REF_DRUM, {
       onChange: () => this.writeVoiceFromEditor(slot),
       audition: () => this.auditionVoice(slot),
+      onFullParams: openFull,
     });
     anchor.parentElement?.append(panel);
     const close = (ev: PointerEvent) => {
@@ -945,20 +922,33 @@ export class App {
     }
   }
 
-  // --- sound view -------------------------------------------------------
+  // --- sound view (full per-parameter editor for one voice, live) -------
   private renderSound(): void {
     const v = this.viewRoot;
+    const slot = this.soundSlot;
+    const voice = this.arr.blocks[this.curBlock()].voices[slot];
 
-    const sound = new SoundView(this.kit, this.library, this.selectedDrum, this.soundName, {
-      // The editor voice isn't in the engine sound table — it's auditioned on demand
-      // (onAudition reads the kit fresh), so edits just need persisting.
-      onChange: () => { this.persist(); },
-      onRangeChange: () => { this.persist(); },
-      onAudition: (d) => this.audition(d),
-      onRename: (name) => { this.soundName = name; this.persist(); },
-      onSaved: () => this.revertEditorToDefault(),
+    // Header: Back to the sequencer + the voice's current (auto-generated) name.
+    const head = document.createElement("div");
+    head.className = "mixer-head";
+    const back = document.createElement("button");
+    back.className = "mixer-back";
+    back.textContent = "‹ Sequencer";
+    back.onclick = () => { this.view = "grid"; this.render(); };
+    const title = document.createElement("h2");
+    title.className = "mixer-title";
+    title.textContent = voice.name || `Voice ${slot + 1}`;
+    head.append(back, title);
+    v.append(head);
+
+    // The editor drives this voice's own kit, so every change is live: writing it back
+    // resends the sound table and the engine swaps it in on the voice's next "on" step.
+    const editor = this.voiceEditorFor(slot);
+    const sound = new SoundView(editor.kit, REF_DRUM, {
+      onChange: () => this.writeVoiceFromEditor(slot),
+      onRangeChange: () => this.writeVoiceFromEditor(slot),
+      onAudition: () => this.auditionVoice(slot),
     });
-
     v.append(sound.el);
   }
 }
