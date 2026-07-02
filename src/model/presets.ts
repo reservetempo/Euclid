@@ -50,7 +50,11 @@ function presetForDrum(drum: DrumType, name: string, color: string): Preset {
     const s = getParamSpec(drum, id);
     // Lock a character's Wave/Filter type (range = its default) so Shuffle keeps it
     // in character; open discrete params and continuous params keep their full range.
-    if (isDiscrete(s) && !OPEN_DISCRETE_IDS.has(id)) ranges.push({ lo: s.def, hi: s.def });
+    // A drum that explicitly NARROWS a discrete range keeps that window instead of
+    // locking (e.g. the Wobble's beat-locked LFO-sync divisions shuffle within it).
+    const b = baseSpec(id);
+    const narrowed = s.min !== b.min || s.max !== b.max;
+    if (isDiscrete(s) && !OPEN_DISCRETE_IDS.has(id) && !narrowed) ranges.push({ lo: s.def, hi: s.def });
     else ranges.push({ lo: s.min, hi: s.max });
     values.push(s.def);
   }

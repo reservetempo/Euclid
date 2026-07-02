@@ -147,7 +147,7 @@ A single `AudioWorkletProcessor` named `engine-processor`, 2-channel output. Con
 A sound is a flat `number[]` **snapshot** indexed by `ParamId` (`src/model/params.ts`).
 The order is **append-only** and the worklet's `P` map mirrors it exactly, so old saves
 keep working as parameters are added (missing tail defaults to "off"). Current layout
-(62 values):
+(65 values):
 
 ```
 0  Pitch            Hz, base oscillator frequency
@@ -166,7 +166,7 @@ keep working as parameters are added (missing tail defaults to "off"). Current l
 11 FilterCutoff     Hz
 12 FilterReso       Q
 13 LfoTarget        Pitch/Filter/Amp/Drive/Reso/Wave/None (LFO 1)
-14 LfoRate          Hz
+14 LfoRate          Hz (only while the LFO's Sync = Free)
 15 LfoDepth         0..1
 16 Drive            0..1  (tanh saturation)
 17 EchoTime         s
@@ -208,6 +208,9 @@ keep working as parameters are added (missing tail defaults to "off"). Current l
 59 HitChance        0.25..1 probability a hit plays (misses may become quiet ghosts)
 60 Ratchet          0..1 probability a hit becomes a 2-4x retrigger burst
 61 ChokeGroup       Off / A / B / C / D (not randomizable — kit wiring, not a gene)
+62-64 Lfo1Sync/Lfo2Sync/Lfo3Sync   Free / 1/32 / 1/16 / 1/16. / 1/8 / 1/8. / 1/4 /
+                    1/4. / 1/2 / 1/1 — one LFO CYCLE spans the division at the live
+                    tempo (Free = LfoRate Hz), phase-locked to the beat grid per hit
 ```
 
 `src/model/paramSpec.ts` defines, per parameter, a base `{min, max, def, skew, step, unit,
@@ -221,9 +224,15 @@ juce-style non-linear slider mapping (`p^skew`), used by the UI and manual entry
 Each `Voice` renders sample-by-sample through this chain (order matters):
 
 1. **Three LFOs** evaluated first. Each has a shape (Sine/Tri/Saw/Square/**Sample-&-Hold**),
-   rate, depth, and destination. They fold into modulators: pitch (× 2^(v·d·0.5)), filter
-   cutoff (× 2^(v·d·2)), amp (tremolo), drive (additive), resonance (× 2^(v·d)), or pulse
-   width. Phases advance even when depth is 0. S&H latches a new random value each cycle.
+   rate, depth, destination, and a **tempo sync** (`Lfo*Sync`). They fold into modulators:
+   pitch (× 2^(v·d·0.5)), filter cutoff (× 2^(v·d·2)), amp (tremolo), drive (additive),
+   resonance (× 2^(v·d)), or pulse width. Phases advance even when depth is 0. S&H latches
+   a new random value each cycle. When Sync ≠ Free, one LFO cycle spans the division at
+   the LIVE tempo (`60·beats/bpm` seconds — recomputed every block, like the echo) and
+   the phase is initialised from the transport at the hit (`(beatPos/beats) mod 1`,
+   `beatPos` = beats since play started) instead of restarting at 0 — so every hit's
+   wobble lands the same way against the bar (the classic beat-synced dubstep wobble).
+   Auditions (no transport) start at phase 0.
 2. **Pitch** = `basePitch · (1 + pitchEnvAmount·pitchEnv) · pitchLFO`, where `pitchEnv`
    decays exponentially each sample.
 3. **Second operator** (FM or Ring): a sine at `freq·ratio`. FM adds to the carrier phase
@@ -462,8 +471,11 @@ made. Implemented in `drumKit.ts` (`randomize` / `shuffleAll`).
   window** (`lo/hi`). `FACTORY_PRESETS` = 12 drum characters + **Full Range**. A character
   preset **locks its discrete Wave/Filter/Noise-colour type** (window `lo==hi`) so
   shuffles stay in character, while keeping the "open" discrete params (LFO destinations
-  + click type — spice, not identity) and continuous params full-window; **Full Range**
-  opens every window to the absolute base range for open-ended exploration.
+  + click type — spice, not identity) and continuous params full-window; a drum that
+  explicitly **narrows** a discrete range keeps that window instead of locking (the
+  Wobble's `Lfo1Sync` shuffles within 1/16..1/4, so its wobble speed varies but always
+  stays on the beat); **Full Range** opens every window to the absolute base range for
+  open-ended exploration.
 - **Randomness amount (0–1).** Each continuous value is drawn from `cur` lerped toward the
   window edges by `randomness` (0 = no-op, 1 = full window). Each discrete "type"
   parameter rerolls within its window with probability `randomness`.

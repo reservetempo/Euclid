@@ -37,6 +37,9 @@ const P = {
   ModalMix: 51, ModalMaterial: 52, ModalDecay: 53,
   EchoSync: 54, EchoPing: 55, Pan: 56,
   AccentAmount: 57, Humanize: 58, HitChance: 59, Ratchet: 60, ChokeGroup: 61,
+  // LFO tempo-sync, one per LFO (Free = LfoRate Hz; a division = one LFO cycle
+  // per that note length at the live tempo, phase-locked to the beat grid).
+  Lfo1Sync: 62, Lfo2Sync: 63, Lfo3Sync: 64,
 };
 
 // Read a snapshot index that may not exist in older saves (undefined/null -> default).
@@ -96,6 +99,9 @@ const VOWEL_MAKEUP = 1.5;
 // Echo tempo-sync divisions in BEATS (quarter notes) per EchoSync index; 0 = Free
 // (use EchoTime seconds). Mirrors ECHO_SYNC_BEATS in src/model/paramSpec.ts.
 const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
+// LFO tempo-sync: BEATS spanned by ONE LFO cycle per Lfo*Sync index; 0 = Free (use
+// LfoRate Hz). Mirrors LFO_SYNC_BEATS in src/model/paramSpec.ts.
+const LFO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2, 4];
 const ECHO_BUF_SEC = 1.3; // echo buffer length (covers a 1/2-note at >=93 BPM)
 
 // --- Per-hit Life ---------------------------------------------------------------
@@ -366,6 +372,8 @@ class Voice {
     this.lfoRates = [0, 0, 0];
     this.lfoDepths = [0, 0, 0];
     this.lfoShapes = [0, 0, 0];
+    this.lfoSyncs = [0, 0, 0];  // tempo-sync index per LFO (0 = Free, use lfoRates Hz)
+    this.lfoInc = [0, 0, 0];    // per-sample phase increments, refreshed per block (live tempo)
     this.lfoSH = [0, 0, 0];     // sample-and-hold held value, per LFO
     this.gateSamples = 0; this.samplesPlayed = 0; this.noteOffSent = false;
     // Noise-colour filter state (white needs none; the others are shaped from it).
@@ -395,7 +403,9 @@ class Voice {
   }
   // `vel` scales the hit (accents/ghosts/humanize); `ratchetCount`/`ratchetInterval`
   // (samples) re-strike the envelope for drum-roll bursts within the step.
-  start(s, gate, vel, ratchetCount, ratchetInterval) {
+  // `beatPos` is the transport position in BEATS at the hit (0 when not sequenced),
+  // used to phase-lock tempo-synced LFOs to the beat grid.
+  start(s, gate, vel, ratchetCount, ratchetInterval, beatPos) {
     this.vel = vel === undefined ? 1 : vel;
     this.ratchetLeft = (ratchetCount | 0) > 1 ? (ratchetCount | 0) - 1 : 0;
     this.ratchetInterval = Math.max(1, ratchetInterval | 0);
@@ -414,7 +424,15 @@ class Voice {
     this.lfoRates = [s[P.LfoRate], s[P.Lfo2Rate], s[P.Lfo3Rate]];
     this.lfoDepths = [s[P.LfoDepth], s[P.Lfo2Depth], s[P.Lfo3Depth]];
     this.lfoShapes = [Math.round(s[P.Lfo1Shape]), Math.round(s[P.Lfo2Shape]), Math.round(s[P.Lfo3Shape])];
-    this.lfoPhase = [0, 0, 0];
+    this.lfoSyncs = [Math.round(rd(s, P.Lfo1Sync, 0)), Math.round(rd(s, P.Lfo2Sync, 0)), Math.round(rd(s, P.Lfo3Sync, 0))];
+    // A tempo-synced LFO starts phase-locked to the transport's beat grid (the
+    // echo's tempo-sync applied to modulation): every hit's wobble lands the same
+    // way against the bar, wherever in the cycle the note falls. Free LFOs keep
+    // the legacy per-hit restart at phase 0.
+    for (let L = 0; L < 3; L++) {
+      const beats = LFO_SYNC_BEATS[this.lfoSyncs[L]] || 0;
+      this.lfoPhase[L] = beats > 0 && beatPos > 0 ? (beatPos / beats) % 1 : 0;
+    }
     this.lfoSH = [this.rng(), this.rng(), this.rng()]; // seed S&H for the first cycle
     this.drive = s[P.Drive];
 
@@ -543,10 +561,17 @@ class Voice {
       default: return white;                                        // white
     }
   }
-  renderAdding(out, n) {
+  renderAdding(out, n, tempo) {
     if (!this.active) return;
     const sr = this.sr;
     const nyquist = sr * 0.5;
+    // Effective LFO phase increments for this block: a synced LFO's cycle spans its
+    // division at the LIVE tempo (mirroring the echo's tempo-sync, so BPM changes
+    // retune it mid-ring); Free uses the Rate knob in Hz.
+    for (let L = 0; L < 3; L++) {
+      const beats = LFO_SYNC_BEATS[this.lfoSyncs[L]] || 0;
+      this.lfoInc[L] = (beats > 0 ? Math.max(1, tempo || 120) / (60 * beats) : this.lfoRates[L]) / sr;
+    }
     for (let i = 0; i < n; i++) {
       // Ratchet: re-strike the envelope (and the one-shot transients) on schedule so
       // one step becomes a 2-4 hit burst. Each sub-hit re-arms its own gate and lands
@@ -569,7 +594,7 @@ class Voice {
         const shape = this.lfoShapes[L];
         // S&H holds one random value per cycle; the others read the shaped wave.
         const v = shape === 4 ? this.lfoSH[L] : lfoWave(shape, this.lfoPhase[L]); // -1..1
-        this.lfoPhase[L] += this.lfoRates[L] / sr;     // advance even when silent
+        this.lfoPhase[L] += this.lfoInc[L];            // advance even when silent
         if (this.lfoPhase[L] >= 1) { this.lfoPhase[L] -= 1; this.lfoSH[L] = this.rng(); }
         if (depth <= 0) continue;
         switch (this.lfoTargets[L]) {
@@ -826,11 +851,11 @@ class Channel {
   }
   killVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].active = false; }
   chokeVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].choke(); }
-  trigger(snap, gate, vel, ratchetCount, ratchetInterval) {
+  trigger(snap, gate, vel, ratchetCount, ratchetInterval, beatPos) {
     for (let i = 0; i < NUM_VOICES; i++) {
-      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval); return; }
+      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos); return; }
     }
-    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval);
+    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos);
     this.next = (this.next + 1) % NUM_VOICES;
   }
   // Render `n` samples and ADD into the STEREO master at `offset`. `scratch` is
@@ -838,7 +863,7 @@ class Channel {
   renderInto(masterL, masterR, scratch, offset, n, tempo) {
     if (!this.params) return;
     for (let i = 0; i < n; i++) scratch[i] = 0;
-    for (let v = 0; v < NUM_VOICES; v++) this.voices[v].renderAdding(scratch, n);
+    for (let v = 0; v < NUM_VOICES; v++) this.voices[v].renderAdding(scratch, n, tempo);
 
     const p = this.params;
     const echoMix = p[P.EchoMix];
@@ -1054,8 +1079,9 @@ class EngineProcessor extends AudioWorkletProcessor {
 
   // Trigger sound `id`: bind/steal a channel, load its FX params, mark it busy for the
   // estimated tail, and start a voice with the (possibly key-pitched) snapshot.
-  // `vel` and the ratchet pair come from perHit (accents/ghosts/humanize/rolls).
-  triggerSound(id, baseSnap, voiceSnap, gate, tailSec, vel, ratchetCount, ratchetInterval) {
+  // `vel` and the ratchet pair come from perHit (accents/ghosts/humanize/rolls);
+  // `beatPos` (transport beats at the hit) phase-locks tempo-synced LFOs to the grid.
+  triggerSound(id, baseSnap, voiceSnap, gate, tailSec, vel, ratchetCount, ratchetInterval, beatPos) {
     // Choke groups: this hit silences every other sound in its group (fast-release,
     // not a hard cut) — the classic closed-hat-chokes-open-hat relationship.
     const group = Math.round(rd(baseSnap, P.ChokeGroup, 0));
@@ -1070,7 +1096,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     const ch = this.channels[c];
     ch.setParams(baseSnap);
     ch.busyUntil = this.clock + gate + Math.max(0, tailSec || 0) * this.sr;
-    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval);
+    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos);
   }
 
   // Per-hit Life: given a sound's snapshot and whether this step is the accent (the
@@ -1211,7 +1237,8 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (!hit) continue; // dropped by HitChance
         const voiceSnap = snd.snap.slice();
         this.jitterSnap(voiceSnap, hit.human);
-        this.triggerSound(vo.soundId, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval);
+        // absStep is the monotonic 16th counter -> beats since play, for LFO sync.
+        this.triggerSound(vo.soundId, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, this.absStep * 0.25);
         fired.push(vo.soundId);
       }
       this.reportPlayhead(run.grid, localPos, this.slotForPos(run, localPos), fired);
@@ -1233,7 +1260,7 @@ class EngineProcessor extends AudioWorkletProcessor {
           voiceSnap[P.Pitch] = frequencyFor(row, g.root, g.scale, snd.lo, snd.hi);
         }
         this.jitterSnap(voiceSnap, hit.human);
-        this.triggerSound(id, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval);
+        this.triggerSound(id, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, this.absStep * 0.25);
         fired.push(id);
       }
       this.reportPlayhead(run.grid, localStep, this.slotForPos(run, localPos), fired);

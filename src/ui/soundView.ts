@@ -368,13 +368,15 @@ export class SoundView {
   }
 
   // The LFO params rendered as three labelled sub-sections (Dest + Shape + Rate +
-  // Amt each). Listed explicitly because Shape was appended at the param tail and
-  // so is not adjacent to its LFO's other params in index order.
+  // Sync + Amt each). Listed explicitly because Shape/Sync were appended at the
+  // param tail and so are not adjacent to their LFO's other params in index order.
+  // Rate only applies while Sync = Free; a division overrides it with a beat-locked
+  // cycle length (like the echo's sync).
   private lfoSections(): HTMLElement {
     const blocks: ParamId[][] = [
-      [ParamId.LfoTarget, ParamId.Lfo1Shape, ParamId.LfoRate, ParamId.LfoDepth],
-      [ParamId.Lfo2Target, ParamId.Lfo2Shape, ParamId.Lfo2Rate, ParamId.Lfo2Depth],
-      [ParamId.Lfo3Target, ParamId.Lfo3Shape, ParamId.Lfo3Rate, ParamId.Lfo3Depth],
+      [ParamId.LfoTarget, ParamId.Lfo1Shape, ParamId.LfoRate, ParamId.Lfo1Sync, ParamId.LfoDepth],
+      [ParamId.Lfo2Target, ParamId.Lfo2Shape, ParamId.Lfo2Rate, ParamId.Lfo2Sync, ParamId.Lfo2Depth],
+      [ParamId.Lfo3Target, ParamId.Lfo3Shape, ParamId.Lfo3Rate, ParamId.Lfo3Sync, ParamId.Lfo3Depth],
     ];
     const wrap = document.createElement("div");
     wrap.className = "lfo-sections";

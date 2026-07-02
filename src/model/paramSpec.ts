@@ -29,6 +29,11 @@ export const MODAL_MATERIALS = ["Membrane", "Bell", "Bar", "Bowl", "Plate"];
 // each index's length in BEATS (quarter notes) — mirrored in engine.js, keep in sync.
 export const ECHO_SYNCS = ["Free", "1/32", "1/16", "1/16.", "1/8", "1/8.", "1/4", "1/4.", "1/2"];
 export const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
+// LFO tempo-sync divisions ("Free" = the Rate knob in Hz). One LFO CYCLE spans the
+// division — e.g. "1/8" wobbles twice per beat. Synced LFOs also phase-lock to the
+// transport's beat grid at each hit (see engine.js). Mirrored in engine.js.
+export const LFO_SYNCS = ["Free", "1/32", "1/16", "1/16.", "1/8", "1/8.", "1/4", "1/4.", "1/2", "1/1"];
+export const LFO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2, 4];
 // Choke groups: a triggering sound silences other sounds in its group (classic
 // closed-hat-chokes-open-hat). Deliberately NOT randomizable — it's a relationship
 // between sounds, so shuffling it would re-wire the kit at random.
@@ -134,6 +139,10 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.HitChance:      return make("Hit Chance", 0.25, 1, 1, 1, 0.01, "");
     case ParamId.Ratchet:        return make("Ratchet", 0, 1, 0, 1, 0.02, "");
     case ParamId.ChokeGroup:     return make("Choke", 0, 4, 0, 1, 1, "", false, CHOKE_GROUPS);
+    // LFO tempo-sync, one per LFO. Free (default) keeps the legacy Hz behaviour.
+    case ParamId.Lfo1Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
+    case ParamId.Lfo2Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
+    case ParamId.Lfo3Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     default:                     return make("?", 0, 1, 0, 1, 0.01, "");
   }
 }
@@ -240,22 +249,31 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       break;
 
     case DrumType.Wobble:
-      // Dubstep wobble bass: low sustained tone whose LP filter is swung by the LFO.
+      // Old-school dubstep wobble: a lightly detuned square reese whose LP filter is
+      // swung by a BEAT-LOCKED sine LFO. Lfo1Sync is narrowed to musical divisions
+      // (1/16..1/4, default 1/8), so shuffles change the wobble speed but always stay
+      // on the grid; LfoRate only applies if the user switches Sync back to Free.
+      // Kept clean on purpose: noise capped low, moderate reso/drive — growl, not
+      // screech.
       if (id === ParamId.Pitch) setRange(s, 30, 90, 50);
       if (id === ParamId.PitchEnvAmount) s.def = 0.0;
       if (id === ParamId.Waveform) s.def = 2.0; // Square
       if (id === ParamId.ToneLevel) s.def = 1.0;
+      if (id === ParamId.NoiseLevel) setRange(s, 0, 0.2, 0);
+      if (id === ParamId.Osc2Mix) s.def = 0.4;
+      if (id === ParamId.Osc2Detune) setRange(s, -0.5, 0.5, 0.2); // reese beating, never dissonant
       if (id === ParamId.AmpAttack) s.def = 0.005;
       if (id === ParamId.AmpDecay) setRange(s, 0.05, 1.5, 0.25);
       if (id === ParamId.AmpSustain) s.def = 0.85;
       if (id === ParamId.AmpRelease) s.def = 0.15;
       if (id === ParamId.FilterType) s.def = 0.0; // LP
-      if (id === ParamId.FilterCutoff) setRange(s, 80, 6000, 600);
-      if (id === ParamId.FilterReso) s.def = 4.0;
+      if (id === ParamId.FilterCutoff) setRange(s, 100, 3500, 500);
+      if (id === ParamId.FilterReso) s.def = 2.5;
       if (id === ParamId.LfoTarget) s.def = 1.0; // Filter
       if (id === ParamId.LfoRate) setRange(s, 0.5, 20, 9);
+      if (id === ParamId.Lfo1Sync) setRange(s, 2, 6, 4); // 1/16 .. 1/4, def 1/8
       if (id === ParamId.LfoDepth) s.def = 0.85;
-      if (id === ParamId.Drive) s.def = 0.5;
+      if (id === ParamId.Drive) s.def = 0.3;
       break;
 
     case DrumType.SynthBass:

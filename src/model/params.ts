@@ -81,6 +81,13 @@ export enum ParamId {
   HitChance,      // probability a scheduled hit plays (misses may become ghosts)
   Ratchet,        // probability a hit becomes a 2-4x retrigger burst
   ChokeGroup,     // Off / A / B / C / D — triggering chokes same-group sounds
+  // Fifth wave: LFO tempo-sync, one per LFO (the echo's EchoSync, applied to
+  // modulation). Free = the Rate knob in Hz; a division locks one LFO cycle to
+  // that note length at the live tempo AND phase-locks it to the transport's
+  // beat grid at each hit — the classic beat-synced dubstep wobble.
+  Lfo1Sync,
+  Lfo2Sync,
+  Lfo3Sync,
   NumParams,
 }
 
@@ -146,6 +153,9 @@ export function getParamGroup(id: ParamId): ParamGroup {
     case ParamId.Lfo1Shape:
     case ParamId.Lfo2Shape:
     case ParamId.Lfo3Shape:
+    case ParamId.Lfo1Sync:
+    case ParamId.Lfo2Sync:
+    case ParamId.Lfo3Sync:
       return ParamGroup.Lfo;
     case ParamId.Drive:
     case ParamId.EchoTime:
