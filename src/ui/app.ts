@@ -101,11 +101,12 @@ export class App {
       if (this.nodeDotEls) this.nodeDotEls.forEach((els) => els.forEach((el) => el.classList.remove("playing")));
       return;
     }
-    // Rings follow the LIVE node + step of every line (independent phases).
+    // Rings follow each line's LIVE node + step; a resting line falls back to its
+    // edited node shown statically (no active step) so the ring stays populated.
     const states: RingState[] = this.arr.lines.map((ln, i) => {
       const st = p.lines![i];
-      const node = st && st.node >= 0 ? ln.nodes[st.node] ?? null : null;
-      return { node, step: st ? st.step : -1 };
+      if (st && st.node >= 0) return { node: ln.nodes[st.node] ?? null, step: st.step };
+      return { node: this.node(i), step: -1 };
     });
     this.euclidView.setRings(states);
     this.euclidView.pulse(p.fired);
@@ -896,7 +897,7 @@ export class App {
     loop.className = "loop-time";
     const loopLabel = document.createElement("span");
     loopLabel.className = "loop-time-label";
-    loopLabel.textContent = "Realigns every";
+    loopLabel.textContent = "Loop length";
     this.loopTimeEl = document.createElement("span");
     this.loopTimeEl.className = "loop-time-val";
     loop.append(loopLabel, this.loopTimeEl);
@@ -905,7 +906,7 @@ export class App {
 
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "Each voice flows along its own line of nodes (the number = bars). Lines loop independently — tap a node to edit it.";
+    hint.textContent = "Each voice flows along its line of nodes (the number = bars). The loop is as long as the longest line; shorter lines rest until it comes round. Tap a node to edit it.";
     v.append(hint);
 
     const list = document.createElement("div");

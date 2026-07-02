@@ -1092,11 +1092,11 @@ class EngineProcessor extends AudioWorkletProcessor {
     voiceSnap[P.FilterCutoff] *= 1 + (Math.random() * 2 - 1) * HUMANIZE_CUTOFF * human;
   }
 
-  // Fire one step: every LINE advances independently off the same monotonic
-  // `absStep` clock. A line's position is `absStep % lineTotal`; that picks the
-  // active NODE (by cumulative lenSteps), and the node's own pattern cycles inside
-  // its window (`nodeLocal % steps` — polymeter when steps doesn't divide the
-  // window). Nodes without a sound are rests: they hold their bars in silence.
+  // Fire one step. The loop length is the LONGEST line's chain; every line reads its
+  // position as `absStep % loopTotal`, plays its chain once (active NODE by cumulative
+  // lenSteps, the node's pattern cycling inside its window via `nodeLocal % steps`),
+  // then RESTS once past its own length — so all lines realign at the top of the loop
+  // instead of a short line repeating under a long one. Silent nodes are rests too.
   fireStep(gate) {
     const lines = this.lines;
     if (!lines) { this.reportPlayhead(null, []); return; }
@@ -1105,22 +1105,33 @@ class EngineProcessor extends AudioWorkletProcessor {
     // sequencing so process() renders only the ringing tails from here on.
     if (this.maxSteps > 0 && this.absStep >= this.maxSteps) { this.playing = false; return; }
 
-    const fired = [];
-    const states = []; // per line: { node, step } for the playhead
+    // Loop length = the longest line's total (in steps); every line wraps here.
+    const totals = [];
+    let loopTotal = 0;
     for (let li = 0; li < lines.length; li++) {
       const nodes = (lines[li] && lines[li].nodes) || [];
       let total = 0;
       for (let k = 0; k < nodes.length; k++) total += Math.max(1, nodes[k].lenSteps | 0);
-      if (total <= 0 || nodes.length === 0) { states.push({ node: -1, step: -1 }); continue; }
+      totals.push(total);
+      if (total > loopTotal) loopTotal = total;
+    }
+    const pos = loopTotal > 0 ? this.absStep % loopTotal : 0;
 
-      const local = this.absStep % total;
+    const fired = [];
+    const states = []; // per line: { node, step } for the playhead (-1 = resting)
+    for (let li = 0; li < lines.length; li++) {
+      const nodes = (lines[li] && lines[li].nodes) || [];
+      const total = totals[li];
+      // Past this line's own length (or empty): the line rests until the loop wraps.
+      if (total <= 0 || pos >= total) { states.push({ node: -1, step: -1 }); continue; }
+
       let acc = 0, ni = 0;
-      while (ni < nodes.length - 1 && local >= acc + Math.max(1, nodes[ni].lenSteps | 0)) {
+      while (ni < nodes.length - 1 && pos >= acc + Math.max(1, nodes[ni].lenSteps | 0)) {
         acc += Math.max(1, nodes[ni].lenSteps | 0);
         ni++;
       }
       const nd = nodes[ni];
-      const nodeLocal = local - acc;
+      const nodeLocal = pos - acc;
       const vs = nd.steps | 0;
       states.push({ node: ni, step: vs >= 1 ? nodeLocal % vs : -1 });
 

@@ -1,9 +1,12 @@
 // The pattern data: 6 voice LINES, each a chain of NODES. A node is one sound plus
 // one Euclidean rhythm (hits/steps/start/split) that holds its line for `bars` bars;
-// when its bars elapse the line moves to its next node, wrapping at the end. Every
-// line advances independently — different lines can have different total lengths
-// (and nodes different step counts), so the whole piece is a long-form polymeter
-// with no global "pattern switch": each voice flows through its own node chain.
+// when its bars elapse the line moves to its next node, wrapping at the end. The
+// loop is as long as the LONGEST line: every line plays its chain ONCE per loop and
+// then rests until the loop comes round, so all lines realign at the top (a 1-bar
+// voice sits out the other 3 bars of a 4-bar voice rather than repeating under it).
+// Polymeter still lives at the STEP scale — a node whose `steps` doesn't divide its
+// bar window cycles at its own rate — and node chains let a voice change its rhythm
+// across the loop.
 //
 // This replaces the previous 6-grids + 20-slot-order arrangement (every voice used
 // to switch grids together); see project.ts for the migration of old saves.
@@ -14,13 +17,6 @@ export const NUM_LINES = EUCLID_VOICES; // one line per voice ring / logo letter
 export const STEPS_PER_BAR = 16;        // 4/4 at 16th-note steps
 export const MAX_BARS = 64;             // per node
 export const EMPTY = -1;
-
-// Cap on the combined loop length (steps) reported by loopSteps(): the LCM of the
-// line lengths realigns everything, but wildly coprime bar counts would blow it up.
-const LOOP_LCM_CAP = 16384;
-
-const gcdInt = (a: number, b: number): number => { a = Math.abs(a | 0); b = Math.abs(b | 0); while (b) { const t = a % b; a = b; b = t; } return a || 1; };
-const lcmInt = (a: number, b: number): number => (!a || !b ? Math.max(a, b) || 1 : Math.min(LOOP_LCM_CAP, (a / gcdInt(a, b)) * b));
 
 // Identity colour per voice line (inner ring → outer ring), and per logo letter —
 // one six-colour rainbow for the whole app (rings, rows, node dots, wordmark).
@@ -87,16 +83,19 @@ export class LineArrangement {
     return this.lines[li].nodes.some((n) => n.soundId !== EMPTY);
   }
 
-  /** Steps until every ACTIVE line realigns (LCM of their lengths, capped) — the
-      display/export "loop length". Lines wrap independently in the engine, so this
-      is bookkeeping, not a scheduling unit. */
+  /** The loop length in steps: the LONGEST line's chain. Every line plays its chain
+      once per loop and then rests until it restarts, so all lines realign at the top
+      — this IS the scheduling boundary (mirrored in engine.js fireStep). Returns 0
+      when no line has a sound (nothing to play or export). */
   loopSteps(): number {
+    let active = false;
     let l = 0;
     for (let i = 0; i < NUM_LINES; i++) {
-      if (!this.lineActive(i)) continue;
-      l = l === 0 ? this.lineSteps(i) : lcmInt(l, this.lineSteps(i));
+      if (this.lineActive(i)) active = true;
+      const s = this.lineSteps(i);
+      if (s > l) l = s;
     }
-    return l;
+    return active ? l : 0;
   }
 
   /** Lines serialised for the worklet scheduler (patterns precomputed here so the
