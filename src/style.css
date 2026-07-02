@@ -166,115 +166,41 @@ button:active { transform: scale(0.94); }
 .tempo-label::-webkit-inner-spin-button,
 .tempo-label::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
-/* --- grid view --- */
+/* --- main views --- */
 .viewroot { flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px; }
 
-/* pattern picker: numbered circles (1..6), each ringed in its grid colour */
-.pattern-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.pat-btn {
-  width: 40px; height: 40px;
-  font-weight: 700; font-size: 15px;
-  color: var(--muted);
-  border-color: color-mix(in srgb, var(--pat) 40%, var(--panel));
-}
-.pat-btn.on { border-color: var(--pat); color: var(--pat); background: var(--panel2); }
 .loop-view-btn {
   --bc: var(--accent);
-  margin-left: auto;
-  width: 40px; height: 40px;
+  width: 48px; height: 48px;
   font-size: 18px; line-height: 1;
-  color: var(--muted);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--panel));
 }
-.loop-view-btn.on { border-color: var(--accent); color: var(--accent); background: var(--panel2); }
 
-/* loop time (shown in the loop/order view) */
+/* loop time (shown in the Loop view) */
 .loop-time { display: flex; align-items: baseline; gap: 6px; font-size: 14px; }
 .loop-time-label { color: var(--muted); }
 .loop-time-val { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; }
 
-/* scale options, shown below both grids */
-.scale-ctl { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-.field select {
-  font: inherit;
-  color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 10px;
+/* --- loop view: each voice's node chain as a line of numbered circles --- */
+.line-list { display: flex; flex-direction: column; gap: 16px; }
+.line-row { position: relative; display: flex; align-items: center; gap: 10px; padding: 4px 2px; flex-wrap: wrap; }
+/* The line the nodes sit on, in the voice's colour. */
+.line-row::before {
+  content: ""; position: absolute; left: 4px; right: 4px; top: 50%;
+  height: 2px; margin-top: -1px; border-radius: 1px;
+  background: var(--vc); opacity: 0.35;
 }
-.key-toggle {
-  font: inherit;
-  color: var(--muted);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 12px;
-}
-.key-toggle.on { background: var(--panel2); color: var(--text); }
-
-/* paint lanes (added from saved sounds) + the add (+) button */
-.lane-bar { display: flex; align-items: stretch; gap: 8px; margin-top: auto; position: relative; }
-.lanes { display: flex; flex-wrap: wrap; gap: 8px; flex: 1; }
-.lanes:empty { min-height: 0; }
-.lanes .drum-pad { position: relative; }
-.lane-remove {
-  position: absolute; top: -7px; right: -7px;
-  width: 20px; height: 20px; border-radius: 50%;
+.node-dot {
+  position: relative; z-index: 1;
+  width: 40px; height: 40px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center;
-  background: var(--panel2); border: 1px solid var(--line);
-  color: var(--text); font-size: 14px; line-height: 1;
+  font-weight: 700; font-size: 14px;
+  border-radius: 50%;
+  background: var(--bg); border: 1.5px solid var(--vc); color: var(--vc);
 }
-.lane-remove:active { transform: scale(0.9); }
-.add-sound-btn {
-  width: 48px; flex: none; font-size: 22px; line-height: 1;
-  border-style: dashed; color: var(--muted);
-}
-.sound-picker {
-  position: absolute; right: 0; bottom: 56px; z-index: 20;
-  display: flex; flex-direction: column; gap: 4px;
-  background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 10px; padding: 6px; min-width: 200px; max-width: 280px;
-  max-height: 50vh; overflow-y: auto;
-}
-.sound-picker .pick-item {
-  display: flex; align-items: center; gap: 8px; text-align: left;
-  background: transparent; border: none; padding: 9px 10px;
-}
-.sound-picker .pick-item:active { background: var(--panel); }
-.sound-picker .pick-item.in-folder { margin-left: 10px; }
-.sound-picker .hint { padding: 8px 10px; }
-
-/* order editor */
-.order-editor { display: flex; flex-direction: column; gap: 12px; }
-
-.grid-palette { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
-.grid-swatch {
-  aspect-ratio: 1;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 16px; color: #15161a;
-  border: 2px solid transparent; border-radius: 10px;
-}
-.grid-swatch.on { border-color: var(--text); }
-
-.order-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-.order-slot {
-  aspect-ratio: 1;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 20px; color: #15161a;
-  border: 1px solid var(--line); border-radius: 12px;
-}
-.order-slot.empty { color: var(--muted); background: var(--panel); font-weight: 500; }
-.order-slot.playing { outline: 3px solid var(--accent); outline-offset: -3px; }
-
-.grid-wrap { width: 100%; }
-.grid-canvas { width: 100%; display: block; }
-
-.selector { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: auto; }
-.drum-pad { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 4px; font-size: 12px; }
-.drum-pad.on { border-color: var(--text); }
-.swatch { width: 20px; height: 20px; border-radius: 6px; }
+.node-dot.has-sound { background: var(--vc); color: #15161a; }
+.node-dot.editing { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); }
+.node-dot.playing { outline: 2px solid var(--accent); animation: slot-breathe 0.9s ease-in-out infinite; }
+.line-row .node-add { position: relative; z-index: 1; }
 
 /* --- sound view --- */
 .soundview { display: flex; flex-direction: column; gap: 14px; }
@@ -483,25 +409,39 @@ button:active { transform: scale(0.94); }
 }
 .steps-actions { display: flex; gap: 8px; justify-content: center; }
 
-/* Euclidean mode: Manual/Euclid toggle, circle viz, and the 5-voice menu */
-.mode-toggle {
-  display: inline-flex; align-self: center; overflow: hidden; margin-top: 8px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
-}
-.mode-btn { padding: 7px 16px; font-size: 13px; font-weight: 600; background: transparent; border: none; color: var(--muted); }
-.mode-btn.on { background: var(--accent); color: #0b0c0f; }
+/* Sequencer: circle viz + the 6 line rows (accordion — tap a row to expand) */
 .euclid-wrap { display: block; text-align: center; }
 .euclid-canvas { display: inline-block; max-width: 380px; }
 .euclid-menu { display: flex; flex-direction: column; gap: 6px; }
-.euclid-row { display: flex; align-items: flex-end; gap: 6px; }
+/* Row layout: title + node navigation on the first line; the expanded detail
+   (value circles + ×) wraps onto its own full-width line below (order: 10). */
+.euclid-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.euclid-row.open { padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 /* Compact sound-name button so the number values can take centre stage. */
 .euclid-sound {
   flex: 1 1 56px; min-width: 0; display: flex; align-items: center; gap: 5px;
-  justify-content: center; padding: 6px 7px; font-size: 11px;
+  justify-content: center; padding: 8px 9px; font-size: 11px;
   background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .euclid-sound.has-sound { justify-content: flex-start; }
+/* Node position within the chain (shown once the chain has >1 node). */
+.node-pos { margin-left: auto; font-size: 10px; font-weight: 700; opacity: 0.75; }
+/* Node navigation: •— previous / —• next-or-new, in the voice's colour. */
+.node-nav { display: flex; gap: 4px; flex: none; }
+.node-nav-btn {
+  width: 38px; height: 30px; padding: 0; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 15px;
+  background: var(--panel); border: 1px solid var(--line);
+  color: var(--vc, var(--muted));
+}
+.node-nav-btn svg { display: block; }
+/* Expanded detail: the value circles + the × on their own row. */
+.euclid-detail {
+  order: 10; flex: 1 1 100%;
+  display: flex; align-items: flex-end; justify-content: center; gap: 6px;
+}
 /* The four values as a flattened ring: voice-coloured circles on a connecting
    line (--vc = the voice colour, set per row; dim grey when the slot is empty). */
 .euclid-vals { flex: 0 0 auto; display: flex; gap: 6px; position: relative; }
@@ -558,52 +498,6 @@ button:active { transform: scale(0.94); }
 /* Full Parameters opens the deep editor; make it stand out as the last action. */
 .full-params-btn { width: 100%; font-weight: 600; border-color: var(--accent); }
 
-/* key targeting: highlighted sounds get pitched by the row while the key is on */
-.drum-pad.keyed { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-.lane-key {
-  position: absolute; top: -7px; left: -7px;
-  width: 20px; height: 20px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--panel2); border: 1px solid var(--line);
-  color: var(--muted); font-size: 12px; line-height: 1;
-}
-.lane-key.on { background: var(--accent); color: #0b0c0f; border-color: transparent; }
-
-/* preset rhythms modal */
-.rhythm-overlay {
-  position: fixed; inset: 0; z-index: 50; padding: 16px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
-}
-.rhythm-modal {
-  width: 100%; max-width: 420px; max-height: 80vh; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 10px; padding: 12px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
-}
-.rhythm-head { display: flex; align-items: center; gap: 8px; }
-.rhythm-back { flex: none; background: transparent; border: none; color: var(--muted); font-size: 20px; padding: 0 4px; }
-.rhythm-title { flex: 1; font-weight: 600; font-size: 16px; }
-.rhythm-close {
-  flex: none; width: 30px; font-size: 16px; border-radius: 8px;
-  background: var(--panel); border: 1px solid var(--line); color: var(--muted);
-}
-.rhythm-list { display: flex; flex-direction: column; gap: 6px; }
-.rhythm-item {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  text-align: left; padding: 10px 12px; background: var(--panel);
-}
-.rhythm-name { font-weight: 600; font-size: 14px; }
-.rhythm-genre { font-size: 11px; color: var(--muted); }
-.rhythm-assign { display: flex; flex-direction: column; gap: 8px; }
-.rhythm-track { display: flex; align-items: center; gap: 10px; }
-.rhythm-track-name { flex: none; width: 108px; font-size: 13px; }
-.rhythm-pick { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; }
-.rhythm-pick.has-sound { justify-content: flex-start; }
-.rhythm-apply {
-  width: 100%; padding: 12px; border: none; border-radius: 10px;
-  font-weight: 700; color: #0b0c0f; background: linear-gradient(135deg, #6c5cff, #00ffc8);
-}
-.rhythm-modal .sound-picker { position: static; max-width: none; max-height: 50vh; }
 .mixer-head { display: flex; align-items: center; gap: 12px; }
 .mixer-back { background: transparent; border: none; color: var(--muted); padding: 6px 4px; font-size: 15px; }
 .mixer-back:active { color: var(--text); }
@@ -708,7 +602,7 @@ button:active { transform: scale(0.94); }
 }
 
 /* Popups land with a soft drop. */
-.voice-shuffle, .menu-panel, .preset-grid, .sound-picker, .saved-list, .rhythm-modal {
+.voice-shuffle, .menu-panel, .preset-grid {
   animation: pop-in 0.18s ease-out;
 }
 @keyframes pop-in {
@@ -716,15 +610,11 @@ button:active { transform: scale(0.94); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* The playing order slot breathes instead of sitting still. */
-.order-slot.playing { animation: slot-breathe 0.9s ease-in-out infinite; }
+/* The playing node breathes instead of sitting still (see .node-dot.playing). */
 @keyframes slot-breathe {
   0%, 100% { outline-color: var(--accent); transform: scale(1); }
   50% { outline-color: #fff; transform: scale(1.05); }
 }
-
-/* Selected pattern circle pops. */
-.pat-btn.on { transform: scale(1.06); }
 
 /* Mute/Solo glow when engaged. */
 .mix-toggle.mute.on { box-shadow: 0 0 10px rgba(255, 69, 58, 0.5); }
@@ -735,11 +625,10 @@ button:active { transform: scale(0.94); }
   .logo-letter, #start, .play-btn.playing,
   .euclid-sound .dice, .shuffle-big .dice, .dice.rolled,
   .shuffle-summary span:last-child, .euclid-sound.hit-flash,
-  .preset-tile, .voice-shuffle, .menu-panel, .preset-grid, .sound-picker,
-  .saved-list, .rhythm-modal, .order-slot.playing {
+  .preset-tile, .voice-shuffle, .menu-panel, .preset-grid,
+  .node-dot.playing {
     animation: none;
   }
-  .pat-btn.on { transform: none; }
 }
 
 /* confetti burst on save */

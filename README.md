@@ -23,16 +23,19 @@ system, and UI, including the non-obvious algorithms.
 
 - **Mobile-first, single-page, dark-themed** web app. Installable PWA with offline
   support. Portrait orientation.
-- **Six patterns** ("grids"), each an independent Euclidean sequencer with **six
-  voices** (concentric circles — one per letter of the logo). A voice is a synth sound
-  plus a Euclidean rhythm (`hits` spread over `steps`, rotated by `start`, optionally
-  split unevenly).
+- **Six voice LINES** (concentric rings — one per letter of the logo), each a chain of
+  **NODES**. A node is a synth sound plus a Euclidean rhythm (`hits` spread over
+  `steps`, rotated by `start`, optionally split unevenly) that holds its line for
+  `bars` bars; then the line moves to its next node, wrapping at the end of the chain.
+- **Every line loops independently.** Lines can have different total lengths (and
+  nodes different step counts), so the piece is a **long-form polymeter** — there is
+  no global "pattern switch" where every voice changes at once; each voice flows
+  through its own chain.
 - **One visual language: dots on lines.** The logo is the word "Euclid" drawn from
   dots joined by thin lines (one voice colour per letter, `src/ui/logo.ts`); voice
-  values are coloured circles on a connecting line; the BPM slider is a white dot on
-  a white line; toolbar buttons are colour-ringed circles.
-- **A 20-slot loop order** chains patterns into a song. Consecutive identical slots make
-  a pattern play longer; different patterns hand off to each other.
+  values are coloured circles on a connecting line; a node chain is literally circles
+  on a line; the BPM slider is a white dot on a white line; toolbar buttons are
+  colour-ringed circles.
 - **Shuffle is the core creative act.** Instead of dialing a synth, you randomise a
   voice's entire sound within a chosen "character window" until you find something you
   like. The synth is deep enough (≈10⁷³ distinct settings per voice) that shuffling keeps
@@ -65,11 +68,10 @@ src/style.css              → single global stylesheet (dark theme tokens in :r
 
 src/ui/app.ts              → App: owns engine + arrangement + kit + UI + all views
 src/ui/logo.ts             → the "Euclid" wordmark as dot-and-line SVG letters
-src/ui/euclidView.ts       → circular canvas visualization of one grid's 6 voices
-src/ui/voiceShuffleMenu.ts → per-voice inline shuffle popup
-src/ui/soundView.ts        → full per-parameter editor for one voice
-src/ui/gridView.ts         → LEGACY 5×16 note-painting grid (not used by the UI)
-src/ui/confetti.ts         → LEGACY (unused)
+src/ui/euclidView.ts       → circular canvas visualization of the 6 lines' nodes
+src/ui/voiceShuffleMenu.ts → per-node inline shuffle popup
+src/ui/soundView.ts        → full per-parameter editor for one node
+src/ui/confetti.ts         → confetti burst (used by the shuffle menu's breed action)
 
 src/audio/engineHost.ts    → main-thread wrapper around the worklet (message API + offline render)
 src/audio/wav.ts           → AudioBuffer → 16-bit PCM WAV Blob
@@ -80,8 +82,8 @@ src/model/drums.ts         → the 12 drum "characters" (DrumType) + the 5 named
 src/model/presets.ts       → factory presets (character windows + "Full Range")
 src/model/drumKit.ts       → editable params, the Shuffle algorithm, undo, length model
 src/model/euclid.ts        → Euclidean/split pattern generation
-src/model/melodyGrid.ts    → MelodyGrid (voices+cells) + WipArrangement (6 grids + order) + loop math
-src/model/melodyScale.ts   → row→note key/scale mapping (manual mode + engine parity)
+src/model/lines.ts         → VoiceNode/VoiceLine + LineArrangement (6 node chains) + loop math
+src/model/melodyScale.ts   → key/scale intervals (used by the shuffle's Key pitch snap)
 src/model/project.ts       → serialize/deserialize (versioned JSON, migrations)
 src/model/soundLibrary.ts  → LEGACY saved-sound folders (not used by the UI)
 src/model/rhythms.ts       → LEGACY rhythm presets (not used by the UI)
@@ -89,11 +91,10 @@ src/model/rhythms.ts       → LEGACY rhythm presets (not used by the UI)
 public/worklet/engine.js   → the entire DSP engine (voice + channel + FX + sequencer clock)
 ```
 
-> **Legacy note.** `gridView.ts`, `confetti.ts`, `soundLibrary.ts`, `rhythms.ts`, and the
-> manual note-painting path are inherited from MobileSequencer and are **not wired into
-> the Euclid UI**. The engine still supports manual grids for back-compat, but new grids
-> open in Euclidean mode and the UI only exposes Euclidean editing. A fresh recreation can
-> omit the legacy files entirely.
+> **Legacy note.** `soundLibrary.ts` and `rhythms.ts` are inherited from MobileSequencer
+> and are **not wired into the Euclid UI**; a fresh recreation can omit them. The manual
+> note-painting grids of earlier versions are gone entirely — old saves are migrated
+> into node lines on load (§5.3).
 
 ---
 
@@ -103,8 +104,8 @@ public/worklet/engine.js   → the entire DSP engine (voice + channel + FX + seq
 the audio thread a compact description of the sounds and the pattern.
 
 **Audio thread** (`EngineProcessor` in `engine.js`) owns the clock and all synthesis. It
-holds a **sound table** (id → parameters) and a **pattern** (6 grids + 20-slot order),
-runs a step sequencer, and renders audio.
+holds a **sound table** (id → parameters) and the **6 voice lines** (node chains with
+precomputed patterns), runs a step sequencer, and renders audio.
 
 ### Message protocol (`engineHost.ts` ⇄ `engine.js`)
 
@@ -113,7 +114,7 @@ Main → worklet (`port.postMessage`):
 | message | payload | effect |
 |---|---|---|
 | `setSounds` | `sounds: {id, snap, lo, hi, tail}[]` | replace the whole sound table |
-| `pattern` | `blocks, order, restart` | replace the pattern; while playing and `!restart` it's **staged** and applied at the next loop boundary; `restart` (or stopped) applies immediately and resets the transport to step 0 |
+| `lines` | `lines: {nodes:{soundId, steps, lenSteps, pattern[]}[]}[], restart` | replace the 6 voice lines; while playing and `!restart` it's **staged** and applied at the next **bar boundary**; `restart` (or stopped) applies immediately and resets the transport to step 0 |
 | `tempo` | `bpm` | set tempo |
 | `play` | `maxSteps` | start from step 0; `maxSteps>0` stops sequencing after that many steps (used by offline export), letting tails ring |
 | `stop` | — | stop sequencing (tails keep ringing) |
@@ -123,7 +124,7 @@ Worklet → main:
 
 | message | payload | effect |
 |---|---|---|
-| `playhead` | `{grid, col, slot, fired[]}` | drives the circle playhead highlight, the order-slot highlight, and the mixer flash LEDs. Sent only when it changes. |
+| `playhead` | `{lines: {node, step}[] \| null, fired[]}` | per line: the active node index + the step within its pattern cycle (each line has its own phase). Posted once per 16th step while playing; `lines: null` once on stop. Drives the ring highlights, the loop view's playing-node breathe, and the mixer flash LEDs. |
 
 A **sound** in the table is `{ id, snap:number[], lo, hi, tail }` where `snap` is the full
 parameter snapshot, `lo`/`hi` are the Pitch range (for key mapping), and `tail` is the
@@ -134,7 +135,7 @@ on demand** (see §4.4), so any number of distinct sounds can share 32 channels.
 
 `renderToBuffer()` creates an `OfflineAudioContext`, adds the same worklet module, and
 constructs the node with **`processorOptions`** carrying the whole render config
-(`{render:true, sounds, blocks, order, tempo, maxSteps}`). The processor constructor
+(`{render:true, sounds, lines, tempo, maxSteps}`). The processor constructor
 applies that config **synchronously** and sets `playing=true`. This is essential:
 `startRendering()` runs to completion immediately, so port messages posted just before it
 would race the render and produce silence — passing config via `processorOptions`
@@ -330,44 +331,48 @@ channel already bound to `id`, else a free channel, else **steals the most idle*
 — their `tail` pushes `busyUntil` later). Stealing resets that channel's FX so the old
 tail doesn't bleed. A reserved id (`AUDITION = -2`) is used for one-shot previews.
 
-### 4.5 Melody key mapping (manual grids + parity)
+### 4.5 Pitch & key
 
-For **manual** grids only, `frequencyFor(row, root, scale, lo, hi)` maps a grid row to a
-scale degree and centres it inside the sound's Pitch range (octave-shifted to the range
-centre). Scales: Major, Minor, Major/Minor pentatonic. The same math exists in
-`melodyScale.ts` for UI note labels. **Euclidean voices play their sound as-is** (no key
-mapping) — each voice carries its own pitch character from its snapshot.
+Nodes play their sound **as-is** — each carries its own pitch character in its snapshot;
+the engine does no key mapping. Key/scale exist only in the **shuffle's pitch snap**
+(`drumKit.ts applyPitchSnap`, intervals from `melodyScale.ts`): shuffled pitches can
+quantise to a semitone or to the arrangement's global `root`/`scale`, so tonal voices
+land in tune with each other by construction rather than by remapping at play time.
 
 ---
 
 ## 5. Data model & persistence
 
-### 5.1 Arrangement (`melodyGrid.ts`)
+### 5.1 Arrangement (`lines.ts`)
 
-- `WipArrangement` holds **6 `MelodyGrid`s** and an **`order: Int8Array(20)`** (each slot
-  = grid index 0–5, or `-1` empty). Defaults: 6 empty grids, `order[0] = 0`.
-- A `MelodyGrid` in **Euclidean mode** (default) has **5 `EuclidVoice`s**:
+- `LineArrangement` holds **6 `VoiceLine`s** (`NUM_LINES = 6`, one per ring/letter) plus
+  a global `root`/`scale` (only used by the shuffle's Key pitch snap). A line is
+  `{ nodes: VoiceNode[]; mute?; solo? }` — mute/solo are **line-level** (the mixer works
+  per chain, not per node). Every line always has at least one node.
+- A `VoiceNode` is one sound + one rhythm + a duration:
 
   ```ts
-  interface EuclidVoice {
-    soundId: number;      // -1 = empty slot (no circle, no audio)
+  interface VoiceNode {
+    soundId: number;      // -1 = no sound assigned — the node is a REST (it still
+                          //      occupies its bars, so the line's timing holds)
     snapshot: number[];   // the synth parameter snapshot
-    color: string;        // ring/title colour (VOICE_COLORS[slot])
+    color: string;        // ring/title colour (VOICE_COLORS[line])
     name: string;         // auto-generated recap string
     pitch: [number, number];
     hits: number; steps: number; rotation: number; // Euclidean rhythm
     split?: number;       // uneven primary-gap override (undefined = even spread)
-    mute?: boolean; solo?: boolean;                // mixer state
+    bars: number;         // how many bars this node holds the line (1..MAX_BARS=64)
     preset?: string; ranges?: {lo:number[]; hi:number[]}; // shuffle-editor state
   }
   ```
 
-  (A grid also keeps legacy manual state: `cells:Int16Array(5×16)`, `root`, `scale`,
-  `keyEnabled`, `keyedDrums` — retained for back-compat, unused by the UI.)
-
-- `blocksMessage()` serialises grids for the worklet, **precomputing** each assigned
-  voice's boolean Euclidean pattern into `{soundId, steps, pattern:number[]}` (so the
-  worklet stays pattern-only). Empty voices are filtered out.
+- `STEPS_PER_BAR = 16` (4/4 at 16th steps). `lineSteps(li)` = Σ bars × 16;
+  `loopSteps()` = the **LCM of the active lines' lengths** (capped at 16384) — the
+  point where everything realigns, used for the display label and WAV export (the
+  engine itself never needs it; lines wrap independently).
+- `linesMessage()` serialises for the worklet, **precomputing** each node's boolean
+  Euclidean pattern into `{soundId, steps, lenSteps, pattern:number[]}` (so the worklet
+  stays pattern-only). Silent nodes ship too — they hold their bars as rests.
 
 ### 5.2 Snapshots & the kit
 
@@ -380,12 +385,18 @@ can exceed a preset window but never break the engine.
 
 ### 5.3 Persistence (`project.ts`)
 
-`serialize`/`deserialize` to `ProjectJSON` (**version 7**) covering: tempo, all 6 grids
-(cells, root/scale/key, euclid flag, voices), the 20-slot order, and the drum kit
-(snapshots + ranges + preset names). Autosaved to `localStorage["msq010.project"]`
-(debounced 300 ms) and available as **Save/Load JSON file**. Deserialize includes
-migrations from v1–v7 (e.g. pre-v5 stored the sound id under `drum`; v6 added voices; v7
-added split + inline-shuffle editor state).
+`serialize`/`deserialize` to `ProjectJSON` (**version 8**) covering: tempo, the 6 lines
+(each node's sound + rhythm + bars + shuffle-editor state, line mute/solo), the global
+root/scale, and the background drum kit (snapshots + ranges + preset names). Autosaved
+to `localStorage["msq010.project"]` (debounced 300 ms) and available as **Save/Load
+JSON file**.
+
+**Migration (v1–v7 → v8).** Older saves stored 6 grids + a 20-slot order where every
+voice switched grids together. `migrateLegacy` collapses the order into runs of
+consecutive identical grids; per voice slot, each run becomes **one node** copied from
+that grid's voice (or a silent rest node when the voice was empty there) with
+`bars ≈ run steps / 16` — so a migrated project sounds like it used to, and can then
+diverge per line.
 
 ---
 
@@ -401,70 +412,42 @@ added split + inline-shuffle editor state).
 - `voicePattern(hits, steps, rotation, split?)` picks even (no `split`) vs split.
 - `MAX_STEPS = 64`. New voices start blank (`hits=steps=0`, silent) until dialed in.
 
-### 6.2 Timeline: runs, continuous polymeter, and chaining truncation
+### 6.2 Timeline: independent lines of nodes
 
-Implemented in `engine.js fireStep`/`buildTimeline`, and mirrored for the loop-length
-display in `melodyGrid.ts loopSteps()`. This is the defining behavior of the app — read
-carefully.
+Implemented in `engine.js fireStep`, mirrored for the loop-length display in
+`lines.ts loopSteps()`. This is the defining behavior of the app.
 
-- A step counter **`absStep` is monotonic** (reset only on play/restart, never at the loop
-  wrap). Position within the loop is `pos = absStep % total`. Because per-voice phase is
-  read from this continuous counter, **a voice's cycle never resets at the grid-loop
-  boundary — this is true polymeter.** A 14-step voice against a 16-step voice keeps
-  rolling (…13, 0, 1 while the 16 finishes its last two) instead of restarting every 16.
-
-- The order is grouped into **runs**: a run is a maximal group of **consecutive identical
-  grid slots**. A run plays continuously for `slots × referenceSteps` steps, where
-  **`referenceSteps` = the step count of the grid's first assigned voice** (the "reference
-  voice" that connects to the next grid). Placing the same grid in two consecutive slots
-  makes a run of `2 × referenceSteps`.
-
-- **Hard boundary (chaining to a different grid).** At a run's end (the next run is a
-  different grid), any voice whose current cycle would **overrun the run length is
-  dropped** for that cycle — "remove that voice's last sequence". The reference voice
-  always fits (its length divides the run length). Example: grids `[A, A, B]` with A's
-  voices 16 (reference) and 14 → A runs 32 steps continuously; the 14-voice fires steps
-  0–27 (two full cycles) and is **silent 28–31** because a third cycle can't finish before
-  B starts at 32.
-
-- **Soft boundary (a single grid filling the whole order).** With one run, the loop length
-  becomes the **LCM of that grid's voice step counts** (capped at 1024) so every voice's
-  phase realigns at the wrap and there is **no truncation** — pure continuous polymeter.
-  Example: a lone grid with voices 16 & 14 loops every **112** steps.
-
-- **Staging.** Edits while playing are staged and promoted at the loop boundary
-  (`pos == 0`); for soft single-grid loops they're also promoted at each reference-voice
-  downbeat so live edits still take effect promptly.
-
+- A step counter **`absStep` is monotonic** (reset only on play/restart) — the single
+  clock every line reads from. Per line: `local = absStep % lineTotal` (lineTotal = Σ
+  node `lenSteps`), the active node is found by walking cumulative `lenSteps`, and the
+  node's pattern is read at `nodeLocal % steps`.
+- **Lines never wait for each other.** A 4-bar line against a 3-bar line drifts and
+  realigns every 12 bars; a node whose `steps` doesn't divide its window (e.g. 12 steps
+  inside a 16-step bar) cycles freely inside it — polymeter at both the node scale and
+  the chain scale.
+- **Node handoff is seamless**: when a node's window ends the next node's pattern reads
+  from the same clock (`nodeLocal` restarts at 0, putting the new pattern's downbeat on
+  the handoff step). Rest nodes (no sound) hold their bars in silence.
+- **Staging.** Edits while playing are staged and promoted at each **bar boundary**
+  (`absStep % 16 == 0`), so live edits land musically instead of mid-bar.
 - Step timing: 16th notes → `samplesPerStep = sampleRate·60/bpm/4`. Each fired step holds
-  its notes for `STEP_GATE_SEC`.
+  its notes for `STEP_GATE_SEC`. Accent = the first hit of each node-pattern cycle.
 
-### 6.3 Play source: solo a grid vs. play the loop
-
-The play source is **derived from the selected workspace** (`app.ts effectiveOrder()`):
-
-- Selecting a **numbered grid button (1–6)** sends the engine an order of just that grid
-  → **solo playback** of that pattern, ignoring the loop order. While playing, the switch
-  is sent with `restart:true` so it jumps to that grid from step 0 immediately.
-- The **↻ (Loop) button** shows the order editor and sends the real 20-slot order.
-
-The numbered button is simultaneously the **edit target** and the **solo source**, and its
-title fills with the grid's identity colour when selected.
-
-### 6.4 Transport & tempo
+### 6.3 Transport & tempo
 
 - Play/Stop toggles `engine.play()/stop()`. Play always starts the current source from
   step 0.
 - Tempo is a **slider (60–200)** plus a **manual number box (20–300)**; the two stay in
   sync (the slider thumb clamps to its own range while the box may go wider).
 
-### 6.5 WAV export
+### 6.4 WAV export
 
-Menu → **Export WAV** prompts for a number of loop repeats, then `renderToBuffer()`
-renders `loops × loopSteps` steps of the **loop-order arrangement** offline (faster than
-realtime) through the same engine, appends a tail sized to the longest sound so FX ring
-out, encodes 16-bit PCM stereo WAV (`wav.ts`), and downloads `euclid-song.wav`. Mixer
-mute/solo is respected (muted channels are rendered with Volume 0).
+Menu → **Export WAV** prompts for a number of repeats of the **full loop** (the LCM
+realign point from `loopSteps()`), then `renderToBuffer()` renders `loops × loopSteps`
+steps offline (faster than realtime) through the same engine, appends a tail sized to
+the longest sound so FX ring out, encodes 16-bit PCM stereo WAV (`wav.ts`), and
+downloads `euclid-song.wav`. Mixer mute/solo is respected (muted lines are rendered
+with Volume 0).
 
 ---
 
@@ -581,26 +564,31 @@ The dot-and-line `Euclid` wordmark (`logo.ts`, one voice colour per letter) ·
 white line**, and the BPM value in a white circle) · a round purple **menu ≡** (New
 project, Save to file, Load from file, **Export WAV**). Toolbar buttons throughout are
 **circles**, each ringed in its own colour (play green, menu purple, loop ↻ accent,
-mixer blue, remove × red, patterns 1–6 in their grid colours).
+mixer blue, remove × red).
 
-### 8.3 Steps view (the default)
+### 8.3 Sequencer view (the default)
 
-- **Pattern bar**: circular buttons **1–6** (select + solo a grid; each is ringed in its
-  grid colour, dim until selected) and a round **↻** (loop/order view).
-- **Circle visualization** (`euclidView.ts`): 6 nested rings (inner = voice 1). Each
-  assigned voice draws a dot at every step around its ring in the voice's colour, with a
-  radial line to the centre on each hit; the current step lights up white during playback
-  (highlight = `playStep % steps`, so continuous polymeter shows correctly).
-- **Voice menu**: six rows. Each row has:
-  - a **title button** filled with the voice's ring colour (dark text) showing its name —
-    tap to open the **inline shuffle menu**;
-  - **Hits / Steps / Start / Split** drawn as the sequencer's own language: four
-    voice-coloured **circles joined by a line** (`.euclid-vals::before`; dim grey when
-    the slot is empty) — tap to type, or **click-hold and drag vertically to scrub**
-    (`±1` per ~7 px). Split is disabled unless there are ≥2 hits and room to vary the
-    gap; its tooltip shows the gap composition (e.g. `6·6·4`);
-  - a small round **×** remove button sitting on the same line (when the slot is filled).
-- A round blue **🎚** mixer button.
+- **Circle visualization** (`euclidView.ts`): 6 nested rings (inner = line 1). Each ring
+  shows ONE node of its line — the node being **edited** while stopped, the node
+  currently **playing** during playback — as dots around the circle with radial hit
+  lines in the node's colour. Every ring lights its own active step from the per-line
+  playhead (independent phases), so the polymeter is visible.
+- **Voice rows**: six rows, an **accordion** (one expanded at a time). Each row has:
+  - a **title button** filled with the voice colour showing the edited node's name
+    (plus a `k/N` chain-position badge once the chain has >1 node). Tapping a collapsed
+    row **expands** it; tapping the expanded row's title opens the **inline shuffle
+    menu**;
+  - when expanded: **Hits / Steps / Start / Split / Bars** drawn as the sequencer's own
+    language — voice-coloured **circles joined by a line** (dim grey when the node has
+    no sound) — tap to type, or **click-hold and drag vertically to scrub** (`±1` per
+    ~7 px). Split is disabled unless there are ≥2 hits and room to vary the gap; its
+    tooltip shows the gap composition (e.g. `6·6·4`). **Bars** is how long the node
+    holds the line. Plus a small round **×** that removes the node from the chain (or
+    clears the sound when it's the only node — keeping its bars, so timing holds);
+  - **node navigation** on the right, in the dots-and-lines language: **•—** steps to
+    the previous node, **—•** steps to the next node **or grows the chain** with a
+    fresh (rest) node when already at the end.
+- Below: a round accent **↻** (Loop view) and a round blue **🎚** (Mixer).
 
 ### 8.4 Inline shuffle menu (`voiceShuffleMenu.ts`)
 
@@ -608,33 +596,37 @@ A popup anchored under the voice title, dismissed on outside tap: big **🎲 Shu
 recap line with a **▶** re-audition, **Back/Reset**, a **Randomness** slider, **Spread**,
 **Max len** and **Snap** selects (pitch quantisation Off/Semitone/Key), a **Seed** text
 row (type to repeat a shuffle exactly; empty rolls fresh and shows the seed used), a
-**🧬 Breed with…** button (when other voices of the grid have sounds) listing them as
+**🧬 Breed with…** button (when other lines' edited nodes have sounds) listing them as
 coloured tiles — picking one crossbreeds the two sounds — a **Presets** button revealing
 the character-window grid, and **Full Parameters** (opens the deep editor). Every change
-writes the sound back into the voice, resends the sound table (the engine swaps it in on
-the voice's next "on" step), persists, redraws the circle, and auditions once.
+writes the sound back into the node, resends the sound table (the engine swaps it in on
+the node's next "on" step), persists, redraws the rings, and auditions once.
 
 ### 8.5 Sound view (`soundView.ts`)
 
-The full per-parameter editor for one voice: parameters grouped (Tone / Amp / Filter / LFO
+The full per-parameter editor for one node: parameters grouped (Tone / Amp / Filter / LFO
 / Drive & FX / Per-Hit Life / Output), each with a slider + manual numeric entry (clamped
 only to the absolute base range) and, for the LFO block, three independent destination
 sections. Same Shuffle/Back/Reset/Randomness/Spread/Max-len/Snap/Seed controls; works
 live (no saved-sound library).
 
-### 8.6 Order / Loop view
+### 8.6 Loop view (the node chains)
 
-Shows the **loop length** (seconds · steps, from `loopSteps()`), a **grid palette** (pick a
-pattern colour as the brush), and the **20-slot grid** (tap a slot to place the brush,
-tap again to clear). The currently playing slot is outlined during playback.
+Six rows, one per voice line: the chain drawn as **numbered circles on a line** in the
+voice's colour (the number = the node's **bars**; filled = has a sound, hollow = rest;
+ring highlight = the node being edited). A trailing **—•** grows the chain. Tapping a
+node jumps to the sequencer with that node selected and its row expanded. During
+playback each line's **playing node breathes**. The header shows when all lines realign
+("Realigns every … s · … bars", from `loopSteps()`).
 
 ### 8.7 Mixer view
 
-One strip per assigned voice: a colour **flash LED** (pulses when the voice triggers, from
-the `playhead.fired` list), the name, **Mute/Solo** toggles, and **Volume + Reverb + Pan**
-faders (Pan is bipolar and reads `L30 / C / R30`; writing it pads short legacy snapshots
-with param defaults first). Mute/solo are applied at push time by zeroing Volume; when any
-channel is soloed, only soloed channels are audible.
+One strip per LINE (whole node chain): a colour **flash LED** (pulses when any node of
+the line triggers, from the `playhead.fired` list), the name, **Mute/Solo** toggles for
+the line, and **Volume + Reverb + Pan** faders that write into **every node's snapshot**
+(padding short legacy snapshots with param defaults first) so the chain moves as one
+instrument. Mute/solo are applied at push time by zeroing Volume; when any line is
+soloed, only soloed lines are audible.
 
 ---
 
@@ -659,17 +651,19 @@ npm run preview  # preview the production build
 
 1. Vite + TS scaffold, `base:"./"`, single `App` class rendering to `#app`, dark stylesheet.
 2. Port `engine.js` verbatim: voice chain (§4.2), channel FX (§4.3), 32-channel dynamic
-   allocation (§4.4), and the **run-based polymeter sequencer** (§6.2) with a monotonic
-   `absStep`, hard-boundary truncation, and soft single-grid LCM loops.
+   allocation (§4.4), and the **independent-lines sequencer** (§6.2): a monotonic
+   `absStep`, per line `local = absStep % lineTotal` → active node → `pattern[nodeLocal
+   % steps]`, staged edits promoted at bar boundaries.
 3. `EngineHost` message wrapper + `OfflineAudioContext` render via `processorOptions`.
 4. Param model: `ParamId` (append-only), per-drum `paramSpec` ranges, `presets`
    (character windows + Full Range), and the **Shuffle** algorithm with sparsity, noise
    bias, audible-level floor, max-length, and 20-deep undo (§7).
-5. `euclid.ts` pattern generation; `MelodyGrid`/`WipArrangement` with 6 voices per grid and
-   a 20-slot order; `blocksMessage()` precomputing patterns; `loopSteps()` mirroring the
-   engine timeline.
-6. UI: start gate; transport with editable BPM; pattern bar with **per-grid solo + loop**;
-   circular visualization; per-voice rows with drag-scrub Hits/Steps/Start/Split and the
-   inline shuffle menu; order editor; mixer; full sound editor.
-7. Versioned `localStorage` + JSON save/load; **Export WAV**; PWA manifest + network-first
-   service worker; GitHub Pages workflow.
+5. `euclid.ts` pattern generation; `lines.ts` `VoiceNode`/`VoiceLine`/`LineArrangement`
+   (6 node chains, `STEPS_PER_BAR = 16`); `linesMessage()` precomputing patterns;
+   `loopSteps()` = capped LCM of line lengths.
+6. UI: start gate; transport with editable BPM; circular visualization with per-line
+   playheads; accordion voice rows with drag-scrub Hits/Steps/Start/Split/Bars, node
+   navigation (•— / —•), and the inline shuffle menu; the node-chain Loop view; per-line
+   mixer; full sound editor.
+7. Versioned `localStorage` + JSON save/load with the grids→lines migration; **Export
+   WAV**; PWA manifest + network-first service worker; GitHub Pages workflow.

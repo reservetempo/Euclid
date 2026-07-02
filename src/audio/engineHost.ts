@@ -2,11 +2,12 @@
 // the worklet node, and exposes a small message API. The DSP itself lives in
 // public/worklet/engine.js (served verbatim — see that file's header).
 
+// Per-line transport state, posted once per 16th step: the active node index in
+// the line's chain and the step within that node's pattern cycle (each line has
+// its own phase — long-form polymeter). `lines` is null when stopped.
 export interface Playhead {
-  grid: number; // -1 when stopped / nothing playing
-  col: number;
-  slot: number; // index in the order list (-1 when stopped)
-  fired: number[]; // sound ids triggered on this step (for the mixer flash)
+  lines: { node: number; step: number }[] | null;
+  fired: number[]; // sound ids triggered on this step (for flashes/LEDs)
 }
 
 // One entry in the engine's sound table: a painted sound bound to a pool channel on
@@ -49,7 +50,7 @@ export class EngineHost {
     });
     this.node.port.onmessage = (e) => {
       const m = e.data;
-      if (m.type === "playhead") this.onPlayhead?.({ grid: m.grid, col: m.col, slot: m.slot, fired: m.fired ?? [] });
+      if (m.type === "playhead") this.onPlayhead?.({ lines: m.lines ?? null, fired: m.fired ?? [] });
     };
     this.node.connect(this.ctx.destination);
     await this.ctx.resume();
@@ -72,16 +73,11 @@ export class EngineHost {
     this.node?.port.postMessage({ type: "audition", snapshot, gate, tail });
   }
 
-  /** Replace the pattern (6 grids + 20-slot order). Resend on any edit; while playing the
-      engine stages it and applies at the next loop restart. Pass `restart` to apply it now
-      and jump the transport to step 0 — used when switching play source (solo a grid /
-      back to the loop) so the change is heard immediately. */
-  setPattern(
-    blocks: { cells: number[]; root: number; scale: number; keyEnabled: boolean }[],
-    order: number[],
-    restart = false
-  ): void {
-    this.node?.port.postMessage({ type: "pattern", blocks, order, restart });
+  /** Replace the 6 voice lines (node chains with precomputed patterns). Resend on any
+      edit; while playing the engine stages it and applies at the next bar boundary.
+      Pass `restart` to apply immediately and jump the transport back to the top. */
+  setLines(lines: unknown[], restart = false): void {
+    this.node?.port.postMessage({ type: "lines", lines, restart });
   }
 
   setTempo(bpm: number): void {
@@ -96,12 +92,11 @@ export class EngineHost {
     this.node?.port.postMessage({ type: "stop" });
   }
 
-  /** Render the pattern offline (faster than realtime) to an AudioBuffer: fire exactly
+  /** Render the lines offline (faster than realtime) to an AudioBuffer: fire exactly
       `maxSteps` steps then let tails/FX ring for `tailSec`. Uses its own
       OfflineAudioContext + worklet instance, independent of live playback. */
   async renderToBuffer(opts: {
-    blocks: unknown[];
-    order: number[];
+    lines: unknown[];
     sounds: EngineSound[];
     tempo: number;
     maxSteps: number;
@@ -124,8 +119,7 @@ export class EngineHost {
       processorOptions: {
         render: true,
         sounds: opts.sounds,
-        blocks: opts.blocks,
-        order: opts.order,
+        lines: opts.lines,
         tempo: opts.tempo,
         maxSteps: opts.maxSteps,
       },

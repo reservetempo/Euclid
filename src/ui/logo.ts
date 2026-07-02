@@ -3,7 +3,7 @@
 // its own small SVG so the start screen's per-letter bounce/bob animations still
 // apply; the top bar renders the same letterforms without the animation classes.
 
-import { VOICE_COLORS } from "../model/melodyGrid";
+import { VOICE_COLORS } from "../model/lines";
 
 type Pt = [number, number];
 

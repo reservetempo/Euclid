@@ -1,9 +1,9 @@
 // Euclidean rhythm generation. Spreads `hits` triggers as evenly as possible across
 // `steps` positions (a Bresenham spread with the downbeat ON step 0), then rotates so
-// the pattern starts at `rotation`. Used by the per-grid Euclidean sequencer mode
-// (see MelodyGrid.voices).
+// the pattern starts at `rotation`. Used by every node of the voice lines
+// (see lines.ts VoiceNode).
 
-export const EUCLID_VOICES = 6;     // circles / voice slots per Euclidean grid (one per logo letter)
+export const EUCLID_VOICES = 6;     // voice lines / rings (one per logo letter)
 export const MAX_STEPS = 64;        // upper bound on a voice's step count
 
 // New voices start blank — every value is 0, so a freshly assigned circle is silent

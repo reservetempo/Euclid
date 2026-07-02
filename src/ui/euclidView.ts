@@ -1,55 +1,60 @@
-// Circular visualization for a grid's Euclidean mode: 6 nested circles (inner = voice
-// 1, outer = voice 6). Each voice draws a dot at every step around its circle in the
-// sound's colour, with a radial line to the centre on each hit. The dot at the current
-// step lights up during playback. Mirrors GridView's DPR/layout handling.
+// Circular visualization: 6 nested rings, one per voice LINE (inner = line 1,
+// outer = line 6). Each ring shows ONE node of its line — the node being edited
+// while stopped, or the node currently playing during playback — as a dot at every
+// step around the circle in the node's colour, with a radial line to the centre on
+// each hit. Every ring carries its own active step (lines run independent phases —
+// long-form polymeter), lighting up during playback.
 
-import { MelodyGrid } from "../model/melodyGrid";
-import { EUCLID_VOICES, voicePattern } from "../model/euclid";
+import { VoiceNode, NUM_LINES } from "../model/lines";
+import { voicePattern } from "../model/euclid";
 
 const TWO_PI = Math.PI * 2;
 const TOP = -Math.PI / 2; // step 0 sits at 12 o'clock
 const PULSE_MS = 420;     // how long a hit's swell/ripple stays visible
 const PULSE_TAU = 130;    // exponential decay constant of the pulse (ms)
 
+/** What one ring displays: a node (or nothing) + its live step (-1 when stopped). */
+export interface RingState {
+  node: VoiceNode | null;
+  step: number;
+}
+
 export class EuclidView {
   readonly canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
-  private grid: MelodyGrid;
-  private playStep = -1;
-  // Per-voice timestamp of its last fired hit, driving the swell + ripple juice.
-  private fireAt: number[] = new Array(EUCLID_VOICES).fill(-1e9);
+  private rings: RingState[] = Array.from({ length: NUM_LINES }, () => ({ node: null, step: -1 }));
+  // Per-ring timestamp of its last fired hit, driving the swell + ripple juice.
+  private fireAt: number[] = new Array(NUM_LINES).fill(-1e9);
   private animId = 0;
   private reduceMotion =
     typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  constructor(grid: MelodyGrid) {
-    this.grid = grid;
+  constructor() {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "euclid-canvas";
     this.ctx = this.canvas.getContext("2d")!;
   }
 
-  setBlock(grid: MelodyGrid): void {
-    this.grid = grid;
-    this.playStep = -1;
-    this.fireAt.fill(-1e9);
+  /** Replace what the rings display (edited nodes when stopped; live nodes + their
+      per-line steps while playing) and redraw. */
+  setRings(states: RingState[]): void {
+    for (let i = 0; i < NUM_LINES; i++) {
+      this.rings[i] = states[i] ?? { node: null, step: -1 };
+    }
     this.draw();
   }
 
-  setPlayhead(step: number): void {
-    if (step === this.playStep) return;
-    this.playStep = step;
-    this.draw();
-  }
-
-  /** Flash the voices whose sounds just fired: their active dot swells and a ripple
+  /** Flash the rings whose sounds just fired: their active dot swells and a ripple
       ring expands outward, decaying over PULSE_MS (from the playhead handler). */
   pulse(soundIds: number[]): void {
     if (this.reduceMotion || soundIds.length === 0) return;
     const now = performance.now();
     let any = false;
-    this.grid.voices.forEach((v, i) => {
-      if (v.soundId >= 0 && soundIds.includes(v.soundId)) { this.fireAt[i] = now; any = true; }
+    this.rings.forEach((r, i) => {
+      if (r.node && r.node.soundId >= 0 && soundIds.includes(r.node.soundId)) {
+        this.fireAt[i] = now;
+        any = true;
+      }
     });
     if (any) this.ensureAnim();
   }
@@ -93,14 +98,15 @@ export class EuclidView {
     const cy = size / 2;
     const innerR = size * 0.12;
     const outerR = size * 0.45;
-    const radius = (i: number) => innerR + ((outerR - innerR) * i) / (EUCLID_VOICES - 1);
+    const radius = (i: number) => innerR + ((outerR - innerR) * i) / (NUM_LINES - 1);
     const now = performance.now();
 
-    for (let i = 0; i < EUCLID_VOICES; i++) {
+    for (let i = 0; i < NUM_LINES; i++) {
       const r = radius(i);
-      const v = this.grid.voices[i];
+      const st = this.rings[i];
+      const v = st.node;
 
-      // Faint guide ring for every slot so all 5 circles read even when empty.
+      // Faint guide ring for every slot so all 6 circles read even when empty.
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, TWO_PI);
       ctx.strokeStyle = "#2a2d36";
@@ -111,8 +117,8 @@ export class EuclidView {
 
       const steps = Math.max(1, v.steps);
       const pattern = voicePattern(v.hits, steps, v.rotation, v.split);
-      const active = this.playStep >= 0 ? this.playStep % steps : -1;
-      // Hit pulse: 1 right when the voice fired, decaying to 0 over PULSE_MS.
+      const active = st.step >= 0 ? st.step % steps : -1;
+      // Hit pulse: 1 right when the line fired, decaying to 0 over PULSE_MS.
       const age = now - this.fireAt[i];
       const p = age < PULSE_MS ? Math.exp(-age / PULSE_TAU) : 0;
 
