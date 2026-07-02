@@ -33,7 +33,14 @@ const P = {
   // Envelope curvature + layering (shape 0.5 = linear = legacy; decays 0 = follow amp).
   AmpAttackShape: 45, AmpDecayShape: 46,
   ToneDecay: 47, NoiseDecay: 48, ClickLevel: 49, ClickType: 50,
+  // Modal resonators, echo sync/ping-pong, pan, and the per-hit Life params.
+  ModalMix: 51, ModalMaterial: 52, ModalDecay: 53,
+  EchoSync: 54, EchoPing: 55, Pan: 56,
+  AccentAmount: 57, Humanize: 58, HitChance: 59, Ratchet: 60, ChokeGroup: 61,
 };
+
+// Read a snapshot index that may not exist in older saves (undefined/null -> default).
+const rd = (s, idx, def) => (s[idx] === undefined || s[idx] === null ? def : s[idx]);
 
 // LFO destination indices, in sync with LFO_TARGETS in src/model/paramSpec.ts.
 // LFO_NONE disables the LFO (handled by falling through the routing switch).
@@ -57,6 +64,49 @@ const BLIP_HZ = 1100;        // fixed pitch of the "Blip" click sine
 // Master soft-clip knee: linear (transparent) below, tanh-rounded above, so stacked
 // resonant/driven channels saturate gently instead of hard digital clipping at ±1.
 const CLIP_KNEE = 0.9;
+
+// --- Modal resonator bank -----------------------------------------------------
+// Mode frequency ratios / gains / decay weights per material — indices match
+// MODAL_MATERIALS in src/model/paramSpec.ts. Classic measured sets: circular
+// membrane, minor-third church bell, free bar (marimba), singing bowl (detuned
+// pairs beat against each other), thick metal plate (inharmonic spread).
+const MODAL_TABLES = [
+  { r: [1, 1.59, 2.14, 2.30, 2.65, 2.92], g: [1, 0.62, 0.40, 0.35, 0.25, 0.20], d: [1, 0.70, 0.55, 0.45, 0.40, 0.35] },
+  { r: [0.5, 1, 1.2, 1.5, 2.0, 2.67],     g: [0.5, 1, 0.70, 0.60, 0.50, 0.35],  d: [1.4, 1, 0.90, 0.80, 0.70, 0.50] },
+  { r: [1, 2.76, 5.40, 8.93],             g: [1, 0.55, 0.30, 0.15],             d: [1, 0.45, 0.25, 0.15] },
+  { r: [1, 1.004, 2.78, 2.79, 5.18, 8.16], g: [0.8, 0.8, 0.60, 0.55, 0.30, 0.15], d: [1.6, 1.6, 1.1, 1.1, 0.70, 0.40] },
+  { r: [1, 1.32, 1.72, 2.19, 2.71, 3.49], g: [1, 0.75, 0.65, 0.55, 0.45, 0.35], d: [0.8, 0.70, 0.65, 0.55, 0.50, 0.40] },
+];
+const MODAL_BASE_DECAY = 0.45; // seconds of ring for mode 0 at ModalDecay = 0.5
+const MODAL_MAX_MODES = 6;
+
+// --- Vowel formant filter (FilterType 3) ----------------------------------------
+// F1/F2/F3 centre frequencies per vowel; Cutoff (log-mapped 200..8000 Hz) morphs
+// A -> E -> I -> O -> U, so a filter LFO literally makes the sound talk.
+const VOWELS = [
+  [730, 1090, 2440], // A
+  [530, 1840, 2480], // E
+  [390, 1990, 2550], // I
+  [570, 840, 2410],  // O
+  [440, 1020, 2240], // U
+];
+const VOWEL_GAINS = [1, 0.5, 0.25];
+const VOWEL_MAKEUP = 1.5;
+
+// Echo tempo-sync divisions in BEATS (quarter notes) per EchoSync index; 0 = Free
+// (use EchoTime seconds). Mirrors ECHO_SYNC_BEATS in src/model/paramSpec.ts.
+const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
+const ECHO_BUF_SEC = 1.3; // echo buffer length (covers a 1/2-note at >=93 BPM)
+
+// --- Per-hit Life ---------------------------------------------------------------
+const ACCENT_DUCK = 0.5;      // non-accent hits duck to 1 - amount*this
+const GHOST_P = 0.5;          // a missed hit becomes a quiet ghost this often (else skipped)
+const GHOST_LEVEL = 0.3;      // ghost velocity
+const HUMANIZE_LEVEL = 0.25;  // ±level jitter at Humanize = 1
+const HUMANIZE_PITCH = 0.015; // ±pitch jitter (fraction) at Humanize = 1
+const HUMANIZE_CUTOFF = 0.2;  // ±cutoff jitter (fraction) at Humanize = 1
+const RATCHET_VEL_DECAY = 0.85; // each ratchet sub-hit is a bit quieter
+const CHOKE_RELEASE = 0.02;   // seconds — fast fade when a choke group cuts a sound
 
 // Standard 2-sample polyBLEP residual: the correction to add around a unit step
 // discontinuity at phase 0 (t = distance into/before the edge in cycles, dt = phase
@@ -253,6 +303,56 @@ class KarplusComb {
 }
 
 //============================================================================
+// Modal resonator bank: up to 6 two-pole resonators tuned to a material's mode
+// ratios (see MODAL_TABLES) — the classic bells/bars/membranes synthesis. Driven
+// continuously like the comb: feed it the dry signal, blend its ringing output.
+// Each resonator: y[n] = b1·y[n-1] + b2·y[n-2] + g·x[n], with r set from the mode's
+// decay time and g normalised by (1-r) so ring level is decay-independent.
+class ModalBank {
+  constructor() {
+    this.n = 0;
+    this.b1 = new Float32Array(MODAL_MAX_MODES);
+    this.b2 = new Float32Array(MODAL_MAX_MODES);
+    this.g = new Float32Array(MODAL_MAX_MODES);
+    this.y1 = new Float32Array(MODAL_MAX_MODES);
+    this.y2 = new Float32Array(MODAL_MAX_MODES);
+  }
+  // Configure for a material at a base frequency; modes above 0.45·sr are dropped
+  // (they'd alias), which naturally darkens high-pitched modal sounds.
+  setup(material, baseFreq, decayScale, sr) {
+    const t = MODAL_TABLES[clamp(material | 0, 0, MODAL_TABLES.length - 1)];
+    let n = 0;
+    for (let k = 0; k < t.r.length && n < MODAL_MAX_MODES; k++) {
+      const f = baseFreq * t.r[k];
+      if (f > sr * 0.45 || f < 15) continue;
+      const decay = Math.max(0.01, MODAL_BASE_DECAY * t.d[k] * decayScale);
+      const r = Math.exp(-1 / (decay * sr));
+      const w = TWO_PI * f / sr;
+      this.b1[n] = 2 * r * Math.cos(w);
+      this.b2[n] = -r * r;
+      // Unit-order gains suit the impulsive excitation drums provide; the tanh on
+      // the summed output (below) bounds the rare sustained-resonance blow-up the
+      // way the comb's in-loop tanh does (reads as an overdriven ringing bell).
+      this.g[n] = t.g[k] * 0.9;
+      n++;
+    }
+    this.n = n;
+    this.y1.fill(0);
+    this.y2.fill(0);
+  }
+  process(x) {
+    let out = 0;
+    for (let k = 0; k < this.n; k++) {
+      const y = this.b1[k] * this.y1[k] + this.b2[k] * this.y2[k] + x * this.g[k];
+      this.y2[k] = this.y1[k];
+      this.y1[k] = y;
+      out += y;
+    }
+    return Math.tanh(out);
+  }
+}
+
+//============================================================================
 class Voice {
   constructor(sr) {
     this.sr = sr;
@@ -286,8 +386,20 @@ class Voice {
     this.clickLevel = 0; this.clickType = 0; this.clickEnv = 0; this.clickCoef = 0;
     this.clickPhase = 0; this.clickFreq = 0; this.clickPrev = 0;
     this.clickHold = 0; this.clickCtr = 0;
+    // Modal resonator bank + vowel formant filters (formants only run in vowel mode).
+    this.modal = new ModalBank(); this.modalMix = 0;
+    this.vf = [new SVF(), new SVF(), new SVF()];
+    // Per-hit life: velocity scale + ratchet retrigger schedule.
+    this.vel = 1;
+    this.ratchetLeft = 0; this.ratchetInterval = 0; this.ratchetCountdown = 0;
   }
-  start(s, gate) {
+  // `vel` scales the hit (accents/ghosts/humanize); `ratchetCount`/`ratchetInterval`
+  // (samples) re-strike the envelope for drum-roll bursts within the step.
+  start(s, gate, vel, ratchetCount, ratchetInterval) {
+    this.vel = vel === undefined ? 1 : vel;
+    this.ratchetLeft = (ratchetCount | 0) > 1 ? (ratchetCount | 0) - 1 : 0;
+    this.ratchetInterval = Math.max(1, ratchetInterval | 0);
+    this.ratchetCountdown = this.ratchetInterval;
     this.basePitch = s[P.Pitch];
     this.pitchEnvAmount = s[P.PitchEnvAmount];
     this.pitchEnvDecay = Math.max(0.001, s[P.PitchEnvDecay]);
@@ -346,6 +458,15 @@ class Voice {
     this.clickFreq = this.clickType === 3 ? BLIP_HZ : Math.max(60, this.basePitch * 2);
     this.clickPrev = 0; this.clickHold = 0; this.clickCtr = 0;
 
+    // Modal resonator bank, tuned to the note's base pitch. ModalDecay scales every
+    // mode's ring time by 4^(2(v-0.5)) — 0.25x tight .. 4x long ring.
+    this.modalMix = clamp(rd(s, P.ModalMix, 0), 0, 1);
+    if (this.modalMix > 0) {
+      const decayScale = Math.pow(4, (clamp(rd(s, P.ModalDecay, 0.5), 0, 1) - 0.5) * 2);
+      this.modal.setup(Math.round(rd(s, P.ModalMaterial, 0)), this.basePitch, decayScale, this.sr);
+    }
+    for (let i = 0; i < 3; i++) this.vf[i].reset();
+
     this.adsr.setParameters(
       Math.max(0.0001, s[P.AmpAttack]),
       Math.max(0.0001, s[P.AmpDecay]),
@@ -363,6 +484,15 @@ class Voice {
     this.gateSamples = Math.max(1, gate);
     this.adsr.noteOn();
     this.active = true;
+  }
+  // Choke-group cut: force a fast release (~20ms) so the sound ducks out of the way
+  // of the incoming same-group hit instead of being hard-silenced with a click.
+  choke() {
+    if (!this.active) return;
+    this.adsr.release = CHOKE_RELEASE;
+    this.adsr.noteOff();
+    this.noteOffSent = true;
+    this.ratchetLeft = 0;
   }
   // `pw` is the square-wave duty cycle (0..1, 0.5 = symmetric); ignored by sine/tri/saw.
   // `dt` is the per-sample phase increment (freq/sr), used to polyBLEP-smooth the
@@ -418,6 +548,20 @@ class Voice {
     const sr = this.sr;
     const nyquist = sr * 0.5;
     for (let i = 0; i < n; i++) {
+      // Ratchet: re-strike the envelope (and the one-shot transients) on schedule so
+      // one step becomes a 2-4 hit burst. Each sub-hit re-arms its own gate and lands
+      // slightly quieter than the last.
+      if (this.ratchetLeft > 0 && --this.ratchetCountdown <= 0) {
+        this.ratchetLeft--;
+        this.ratchetCountdown = this.ratchetInterval;
+        this.adsr.noteOn();
+        this.pitchEnv = 1;
+        this.toneEnv = 1; this.noiseEnv = 1;
+        if (this.clickLevel > 0) { this.clickEnv = 1; this.clickPhase = 0; }
+        this.vel *= RATCHET_VEL_DECAY;
+        this.samplesPlayed = 0;
+        this.noteOffSent = false;
+      }
       // Evaluate the three LFOs and fold each into its destination's modulator.
       let pitchMul = 1, cutoffMul = 1, ampMul = 1, resoMul = 1, driveAdd = 0, pwOff = 0;
       for (let L = 0; L < 3; L++) {
@@ -439,7 +583,10 @@ class Voice {
         }
       }
 
+      // Bipolar pitch env: positive drops from above; negative starts low/pinned at
+      // the 5Hz floor and RISES into the note as the envelope decays (swells/zaps).
       let freq = this.basePitch * (1 + this.pitchEnvAmount * this.pitchEnv) * pitchMul;
+      if (freq < 5) freq = 5;
       this.pitchEnv *= this.pitchEnvCoef;
 
       // Second operator: a sine modulator at `freq * ratio`, applied as either
@@ -495,9 +642,28 @@ class Voice {
       }
 
       const cutoff = clamp(this.filterCutoff * cutoffMul, 20, nyquist * 0.99);
-      const g = Math.tan(Math.PI * cutoff / sr);
-      const k = 1 / clamp(this.filterReso * resoMul, 0.3, 20);
-      let filtered = this.filter.process(mixed, g, k, this.filterType);
+      let filtered;
+      if (this.filterType === 3) {
+        // Vowel mode: Cutoff (log 200..8000Hz) is a morph position along A-E-I-O-U;
+        // three parallel bandpasses sit on the interpolated formants. The filter LFO
+        // therefore sweeps through vowels — a talking wah.
+        const c = clamp(cutoff, 200, 8000);
+        const pos = (Math.log(c / 200) / Math.log(40)) * (VOWELS.length - 1); // log(8000/200)=log(40)
+        const i0 = clamp(pos | 0, 0, VOWELS.length - 2);
+        const fr = clamp(pos - i0, 0, 1);
+        const kf = 1 / clamp(this.filterReso * resoMul * 3, 0.5, 30); // formants want high Q
+        filtered = 0;
+        for (let f = 0; f < 3; f++) {
+          const ff = VOWELS[i0][f] * (1 - fr) + VOWELS[i0 + 1][f] * fr;
+          const gf = Math.tan(Math.PI * clamp(ff, 40, nyquist * 0.9) / sr);
+          filtered += this.vf[f].process(mixed, gf, kf, 2) * VOWEL_GAINS[f];
+        }
+        filtered *= VOWEL_MAKEUP;
+      } else {
+        const g = Math.tan(Math.PI * cutoff / sr);
+        const k = 1 / clamp(this.filterReso * resoMul, 0.3, 20);
+        filtered = this.filter.process(mixed, g, k, this.filterType);
+      }
 
       // Click transient layer: a few-ms burst injected AFTER the main filter (so a
       // low-pass body can't dull it) and before drive/comb (so drive glues it in and
@@ -533,8 +699,14 @@ class Voice {
         filtered = filtered * (1 - this.combMix) + ringing * this.combMix;
       }
 
+      // Modal resonator bank: bells/bars/membranes ringing at the note's mode set.
+      if (this.modalMix > 0) {
+        const ring = this.modal.process(filtered);
+        filtered = filtered * (1 - this.modalMix) + ring * this.modalMix;
+      }
+
       const env = this.adsr.next() * ampMul;
-      out[i] += filtered * env * VOICE_GAIN;
+      out[i] += filtered * env * VOICE_GAIN * this.vel;
 
       if (!this.noteOffSent && ++this.samplesPlayed >= this.gateSamples) {
         this.adsr.noteOff();
@@ -546,10 +718,11 @@ class Voice {
 }
 
 //============================================================================
-// Simple mono feedback-delay echo.
+// Simple mono feedback-delay echo. Buffer sized for the longest tempo-synced
+// division (a 1/2-note) at reasonable tempos; longer delays clamp to the buffer.
 class Echo {
   constructor(sr) {
-    this.bufLen = ((sr * 0.7) | 0) + 4;
+    this.bufLen = ((sr * ECHO_BUF_SEC) | 0) + 4;
     this.buf = new Float32Array(this.bufLen);
     this.w = 0;
   }
@@ -635,32 +808,48 @@ class Channel {
     // used to choose which channel to steal. See EngineProcessor.allocate.
     this.soundId = -1;
     this.busyUntil = 0;
+    // Ping-pong echo delay lines, allocated lazily the first time a sound here
+    // actually uses ping-pong (they double the echo memory otherwise).
+    this.pingL = null;
+    this.pingR = null;
+    this.pingW = 0;
   }
   setParams(snap) { this.params = snap; }
   hasActiveVoices() {
     for (let i = 0; i < NUM_VOICES; i++) if (this.voices[i].active) return true;
     return false;
   }
-  resetFx() { this.echo.clear(); this.reverb.reset(); }
+  resetFx() {
+    this.echo.clear();
+    this.reverb.reset();
+    if (this.pingL) { this.pingL.fill(0); this.pingR.fill(0); this.pingW = 0; }
+  }
   killVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].active = false; }
-  trigger(snap, gate) {
+  chokeVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].choke(); }
+  trigger(snap, gate, vel, ratchetCount, ratchetInterval) {
     for (let i = 0; i < NUM_VOICES; i++) {
-      if (!this.voices[i].active) { this.voices[i].start(snap, gate); return; }
+      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval); return; }
     }
-    this.voices[this.next].start(snap, gate);
+    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval);
     this.next = (this.next + 1) % NUM_VOICES;
   }
-  // Render `n` samples and ADD into master at `offset`. `scratch` is shared temp.
-  renderInto(master, scratch, offset, n) {
+  // Render `n` samples and ADD into the STEREO master at `offset`. `scratch` is
+  // shared temp; `tempo` sizes tempo-synced echo delays.
+  renderInto(masterL, masterR, scratch, offset, n, tempo) {
     if (!this.params) return;
     for (let i = 0; i < n; i++) scratch[i] = 0;
     for (let v = 0; v < NUM_VOICES; v++) this.voices[v].renderAdding(scratch, n);
 
     const p = this.params;
     const echoMix = p[P.EchoMix];
-    if (echoMix > 0.0001) {
-      const delay = (p[P.EchoTime] * this.sr) | 0;
-      const fb = p[P.EchoFeedback];
+    const ping = echoMix > 0.0001 && rd(p, P.EchoPing, 0) >= 0.5;
+    // Effective echo delay: a tempo division when synced, else free EchoTime seconds.
+    const sync = Math.round(rd(p, P.EchoSync, 0));
+    const beats = ECHO_SYNC_BEATS[sync] || 0;
+    const delaySec = beats > 0 ? (beats * 60) / Math.max(1, tempo || 120) : p[P.EchoTime];
+    const delay = (delaySec * this.sr) | 0;
+    const fb = p[P.EchoFeedback];
+    if (echoMix > 0.0001 && !ping) {
       for (let i = 0; i < n; i++) scratch[i] = this.echo.process(scratch[i], delay, fb, echoMix);
     }
     const verbMix = p[P.ReverbMix];
@@ -669,7 +858,42 @@ class Channel {
       this.reverb.processMono(scratch, n);
     }
     const vol = p[P.Volume];
-    for (let i = 0; i < n; i++) master[offset + i] += scratch[i] * vol;
+    // Constant-power pan, normalised so a CENTRED sound sums into L/R at exactly the
+    // old mono level (legacy projects sound identical); hard-panned sides gain +3dB.
+    const pan = clamp(rd(p, P.Pan, 0), -1, 1);
+    const ang = (pan + 1) * 0.25 * Math.PI;
+    const gl = Math.cos(ang) * Math.SQRT2;
+    const gr = Math.sin(ang) * Math.SQRT2;
+
+    if (ping) {
+      // Stereo ping-pong: the dry (panned) signal feeds the L line, the L line feeds
+      // the R line, and R feeds back into L — repeats bounce L, R, L·fb, R·fb, ...
+      // spread wide regardless of the dry pan position.
+      if (!this.pingL) {
+        this.pingL = new Float32Array(this.echo.bufLen);
+        this.pingR = new Float32Array(this.echo.bufLen);
+        this.pingW = 0;
+      }
+      const len = this.echo.bufLen;
+      const d = clamp(delay, 1, len - 1);
+      for (let i = 0; i < n; i++) {
+        const dry = scratch[i] * vol;
+        let r = this.pingW - d;
+        if (r < 0) r += len;
+        const dl = this.pingL[r], drt = this.pingR[r];
+        this.pingL[this.pingW] = dry + drt * fb;
+        this.pingR[this.pingW] = dl;
+        this.pingW = (this.pingW + 1) % len;
+        masterL[offset + i] += dry * gl * (1 - echoMix) + dl * echoMix;
+        masterR[offset + i] += dry * gr * (1 - echoMix) + drt * echoMix;
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
+        const s = scratch[i] * vol;
+        masterL[offset + i] += s * gl;
+        masterR[offset + i] += s * gr;
+      }
+    }
   }
 }
 
@@ -681,7 +905,8 @@ class EngineProcessor extends AudioWorkletProcessor {
     this.channels = [];
     for (let i = 0; i < NUM_DRUMS; i++) this.channels.push(new Channel(this.sr));
     this.scratch = new Float32Array(128);
-    this.master = new Float32Array(128);
+    this.masterL = new Float32Array(128);
+    this.masterR = new Float32Array(128);
 
     // --- dynamic sound allocation ---
     // Sound table: id -> { snap (base FX/pitch), lo, hi (pitch range), tail (ring secs) }.
@@ -829,12 +1054,56 @@ class EngineProcessor extends AudioWorkletProcessor {
 
   // Trigger sound `id`: bind/steal a channel, load its FX params, mark it busy for the
   // estimated tail, and start a voice with the (possibly key-pitched) snapshot.
-  triggerSound(id, baseSnap, voiceSnap, gate, tailSec) {
+  // `vel` and the ratchet pair come from perHit (accents/ghosts/humanize/rolls).
+  triggerSound(id, baseSnap, voiceSnap, gate, tailSec, vel, ratchetCount, ratchetInterval) {
+    // Choke groups: this hit silences every other sound in its group (fast-release,
+    // not a hard cut) — the classic closed-hat-chokes-open-hat relationship.
+    const group = Math.round(rd(baseSnap, P.ChokeGroup, 0));
+    if (group > 0) {
+      for (const [sid, ci] of this.soundToChannel) {
+        if (sid === id) continue;
+        const os = this.sounds.get(sid);
+        if (os && Math.round(rd(os.snap, P.ChokeGroup, 0)) === group) this.channels[ci].chokeVoices();
+      }
+    }
     const c = this.allocate(id);
     const ch = this.channels[c];
     ch.setParams(baseSnap);
     ch.busyUntil = this.clock + gate + Math.max(0, tailSec || 0) * this.sr;
-    ch.trigger(voiceSnap, gate);
+    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval);
+  }
+
+  // Per-hit Life: given a sound's snapshot and whether this step is the accent (the
+  // first hit of the cycle), roll velocity/ghosting/ratcheting for ONE hit. Returns
+  // null when the hit is dropped entirely, else { vel, human, count, interval }.
+  // Uses Math.random (not the shuffle's seeded RNG) — this is live feel, not design.
+  perHit(s, isAccent) {
+    let vel = 1;
+    const accent = clamp(rd(s, P.AccentAmount, 0), 0, 1);
+    if (accent > 0 && !isAccent) vel *= 1 - ACCENT_DUCK * accent;
+    const chance = clamp(rd(s, P.HitChance, 1), 0, 1);
+    if (chance < 1 && Math.random() > chance) {
+      if (Math.random() < GHOST_P) vel *= GHOST_LEVEL;
+      else return null; // dropped hit
+    }
+    const human = clamp(rd(s, P.Humanize, 0), 0, 1);
+    if (human > 0) vel *= 1 + (Math.random() * 2 - 1) * HUMANIZE_LEVEL * human;
+    let count = 0, interval = 0;
+    const ratchet = clamp(rd(s, P.Ratchet, 0), 0, 1);
+    if (ratchet > 0 && Math.random() < ratchet) {
+      const r = Math.random();
+      count = r < 0.5 ? 2 : r < 0.8 ? 3 : 4;
+      interval = Math.max(1, Math.round(this.samplesPerStep() / count));
+    }
+    return { vel: Math.max(0.05, vel), human, count, interval };
+  }
+
+  // Humanize jitters the per-hit COPY of the snapshot (a few cents of pitch, a bit
+  // of cutoff) so repeats stop being bit-identical. The base sound is untouched.
+  jitterSnap(voiceSnap, human) {
+    if (human <= 0) return;
+    voiceSnap[P.Pitch] *= 1 + (Math.random() * 2 - 1) * HUMANIZE_PITCH * human;
+    voiceSnap[P.FilterCutoff] *= 1 + (Math.random() * 2 - 1) * HUMANIZE_CUTOFF * human;
   }
 
   // Steps of a grid's reference (first assigned) voice — the length that chains to the
@@ -935,7 +1204,14 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (!vo.pattern[localPos % vs]) continue;
         const snd = this.sounds.get(vo.soundId);
         if (!snd) continue;
-        this.triggerSound(vo.soundId, snd.snap, snd.snap.slice(), gate, snd.tail);
+        // Accent = the first hit of this voice's cycle.
+        let firstHit = 0;
+        for (let h = 0; h < vs; h++) if (vo.pattern[h]) { firstHit = h; break; }
+        const hit = this.perHit(snd.snap, (localPos % vs) === firstHit);
+        if (!hit) continue; // dropped by HitChance
+        const voiceSnap = snd.snap.slice();
+        this.jitterSnap(voiceSnap, hit.human);
+        this.triggerSound(vo.soundId, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval);
         fired.push(vo.soundId);
       }
       this.reportPlayhead(run.grid, localPos, this.slotForPos(run, localPos), fired);
@@ -950,11 +1226,14 @@ class EngineProcessor extends AudioWorkletProcessor {
         const snd = this.sounds.get(id);
         if (!snd) continue; // sound was removed -> skip (no empty-channel trigger)
 
+        const hit = this.perHit(snd.snap, localStep === 0); // accent = the downbeat
+        if (!hit) continue; // dropped by HitChance
         const voiceSnap = snd.snap.slice();
         if (g.keyEnabled !== false && (keyedSet === null || keyedSet.has(id))) {
           voiceSnap[P.Pitch] = frequencyFor(row, g.root, g.scale, snd.lo, snd.hi);
         }
-        this.triggerSound(id, snd.snap, voiceSnap, gate, snd.tail);
+        this.jitterSnap(voiceSnap, hit.human);
+        this.triggerSound(id, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval);
         fired.push(id);
       }
       this.reportPlayhead(run.grid, localStep, this.slotForPos(run, localPos), fired);
@@ -970,8 +1249,24 @@ class EngineProcessor extends AudioWorkletProcessor {
     }
   }
 
-  renderChannels(master, offset, n) {
-    for (let c = 0; c < NUM_DRUMS; c++) this.channels[c].renderInto(master, this.scratch, offset, n);
+  renderChannels(offset, n) {
+    for (let c = 0; c < NUM_DRUMS; c++) {
+      this.channels[c].renderInto(this.masterL, this.masterR, this.scratch, offset, n, this.tempo);
+    }
+  }
+
+  // Soft-knee master clip: transparent below CLIP_KNEE, tanh-rounded above (peaks
+  // asymptote to ±1), so stacked resonant/driven channels saturate gently instead
+  // of hard digital clipping at the DAC.
+  softClip(buf, n) {
+    for (let i = 0; i < n; i++) {
+      const x = buf[i];
+      const a = x < 0 ? -x : x;
+      if (a > CLIP_KNEE) {
+        const soft = CLIP_KNEE + (1 - CLIP_KNEE) * Math.tanh((a - CLIP_KNEE) / (1 - CLIP_KNEE));
+        buf[i] = x < 0 ? -soft : soft;
+      }
+    }
   }
 
   process(_inputs, outputs) {
@@ -980,14 +1275,15 @@ class EngineProcessor extends AudioWorkletProcessor {
     const n = out[0].length;
     if (this.scratch.length < n) {
       this.scratch = new Float32Array(n);
-      this.master = new Float32Array(n);
+      this.masterL = new Float32Array(n);
+      this.masterR = new Float32Array(n);
     }
-    const master = this.master;
-    for (let i = 0; i < n; i++) master[i] = 0;
+    const masterL = this.masterL, masterR = this.masterR;
+    for (let i = 0; i < n; i++) { masterL[i] = 0; masterR[i] = 0; }
     this.clock += n; // sample clock for allocation/steal decisions
 
     if (!this.playing) {
-      this.renderChannels(master, 0, n); // audition / tails keep ringing
+      this.renderChannels(0, n); // audition / tails keep ringing
     } else {
       let pos = 0;
       while (pos < n) {
@@ -997,26 +1293,24 @@ class EngineProcessor extends AudioWorkletProcessor {
         }
         let chunk = Math.min(n - pos, Math.ceil(this.samplesToNextStep));
         if (chunk < 1) chunk = 1;
-        this.renderChannels(master, pos, chunk);
+        this.renderChannels(pos, chunk);
         pos += chunk;
         this.samplesToNextStep -= chunk;
       }
     }
 
-    // Soft-knee master clip: transparent below CLIP_KNEE, tanh-rounded above (peaks
-    // asymptote to ±1), so stacked resonant/driven channels saturate gently instead
-    // of hard digital clipping at the DAC.
-    for (let i = 0; i < n; i++) {
-      const x = master[i];
-      const a = x < 0 ? -x : x;
-      if (a > CLIP_KNEE) {
-        const soft = CLIP_KNEE + (1 - CLIP_KNEE) * Math.tanh((a - CLIP_KNEE) / (1 - CLIP_KNEE));
-        master[i] = x < 0 ? -soft : soft;
+    this.softClip(masterL, n);
+    this.softClip(masterR, n);
+    if (out.length === 1) {
+      // Mono destination: fold the stereo bus down.
+      const o = out[0];
+      for (let i = 0; i < n; i++) o[i] = (masterL[i] + masterR[i]) * 0.5;
+    } else {
+      for (let ch = 0; ch < out.length; ch++) {
+        const o = out[ch];
+        const src = ch === 1 ? masterR : masterL;
+        for (let i = 0; i < n; i++) o[i] = src[i];
       }
-    }
-    for (let ch = 0; ch < out.length; ch++) {
-      const o = out[ch];
-      for (let i = 0; i < n; i++) o[i] = master[i];
     }
     return true;
   }

@@ -8,10 +8,51 @@ import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
 import {
   getParamSpec, baseRange, isDiscrete, LFO_TARGETS, OSC_MOD_TYPES, NOISE_TYPES, CLICK_TYPES,
+  MODAL_MATERIALS, ECHO_SYNC_BEATS,
 } from "./paramSpec";
+import { intervals } from "./melodyScale";
 import { Preset, defaultPresetFor, FACTORY_PRESETS } from "./presets";
 
 export type Snapshot = number[];
+
+// The random source every shuffle draw goes through. Normally Math.random; a seeded
+// generator is swapped in for the duration of a seeded shuffle so the same seed +
+// same preset window reproduces the same sound (exact at 100% randomness, where the
+// draw no longer depends on the pre-shuffle values).
+let rand: () => number = Math.random;
+
+/** Deterministic RNG from a seed string (xmur3 hash into mulberry32). */
+export function seededRng(seed: string): () => number {
+  let h = 1779033703 ^ seed.length;
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let a = (h ^= h >>> 16) >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// How a shuffled Pitch is quantised: free Hz, the nearest semitone, or the nearest
+// note of a key (root + scale from the current grid). Key/Chromatic also snap the
+// musical companions (Osc2Detune to semitones, CombTune to just ratios, OscModRatio
+// to harmonic steps) so tuned modules land consonant.
+export enum PitchSnap { Off, Chromatic, Key }
+
+export interface ShuffleOptions {
+  randomness: number;      // 0..1 draw window (see randomize)
+  curve?: FreqCurve;       // frequency-param spread (default Linear)
+  maxLen?: number;         // cap on estimated audible seconds (0/undefined = off)
+  bpm?: number;            // tempo for synced-echo length estimates (default 120)
+  snap?: PitchSnap;        // pitch quantisation (default Off)
+  root?: number;           // 0-11 semitone root for Key snap
+  scale?: number;          // ScaleType index for Key snap
+  seed?: string;           // deterministic shuffle when non-empty
+}
 
 // Distribution curve for the Shuffle random draw of FREQUENCY params (Pitch &
 // Filter Cutoff). Pitch perception is logarithmic, so a uniform-in-Hz draw
@@ -42,6 +83,18 @@ const NOISE_LEVEL_BIAS = 2; // mean ≈ 1/3 of the window
 // season the hit, not dominate it (full-blast clicks stay reachable).
 const CLICK_LEVEL_BIAS = 1.6;
 
+// Per-hit Life draw biases: accents/humanize lean subtle, ratchets are occasional
+// spice, and hit-chance hugs 1 (most voices play straight; ghost-y voices are the
+// exception). Pan draws triangular around the centre so the field stays balanced.
+const ACCENT_BIAS = 1.3;
+const HUMANIZE_BIAS = 1.5;
+const HIT_CHANCE_BIAS = 2.2;
+const RATCHET_BIAS = 2.5;
+
+// Just-intonation ratios CombTune snaps to (Key/Chromatic snap): sub-octaves,
+// fifths/fourths, thirds, octaves and harmonics — tuned comb hits land consonant.
+const JUST_RATIOS = [0.25, 0.5, 2 / 3, 0.75, 1, 1.25, 4 / 3, 1.5, 2, 3, 4];
+
 // Upward bias on the shuffled decay SHAPE: real drums decay exponentially (fast drop,
 // long quiet tail = shape > 0.5), so the draw is `hi - r^BIAS * span` — percussive
 // shapes are common, linear occasional, gated (hold-then-drop) rare but reachable.
@@ -71,7 +124,7 @@ const NOISE_COLOUR_GAIN = [1, 1, 1, 0.65, 0.5, 1, 0.7];
 // all — see soundModules). Weighted toward a handful so a sound is usually doing a
 // few things, but it can occasionally run most of them at once for a dense result.
 function sparsityBudget(): number {
-  const r = Math.random();
+  const r = rand();
   if (r < 0.08) return 1;
   if (r < 0.24) return 2;
   if (r < 0.44) return 3;
@@ -85,8 +138,8 @@ function sparsityBudget(): number {
 
 // A standard-normal sample via Box–Muller.
 function randNormal(): number {
-  const u1 = Math.random() || 1e-9; // avoid log(0)
-  const u2 = Math.random();
+  const u1 = rand() || 1e-9; // avoid log(0)
+  const u2 = rand();
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }
 
@@ -98,6 +151,18 @@ const ECHO_EPS = 0.03; // echo repeat quieter than this is inaudible
 const VERB_EPS = 0.05; // reverb mix below this adds no usable tail
 const RV_BASE = 0.3;   // shortest reverb tail (size 0), seconds
 const RV_SPAN = 2.2;   // extra tail at size 1, seconds
+// Modal ring-time model, mirroring MODAL_BASE_DECAY and the longest per-material
+// decay weight in engine.js MODAL_TABLES; ModalDecay scales it by 4^(2(v-0.5)).
+const MODAL_RING_BASE = 0.45;
+const MODAL_RING_MAX_D = [1, 1.4, 1, 1.6, 0.8]; // Membrane/Bell/Bar/Bowl/Plate
+
+// Ring time of the modal bank for a snapshot (0 when the bank is off/silent).
+function modalTail(snap: number[]): number {
+  if ((snap[ParamId.ModalMix] || 0) <= 0.02) return 0;
+  const mat = Math.round(snap[ParamId.ModalMaterial] || 0);
+  const dec = typeof snap[ParamId.ModalDecay] === "number" ? snap[ParamId.ModalDecay] : 0.5;
+  return MODAL_RING_BASE * (MODAL_RING_MAX_D[mat] ?? 1) * Math.pow(4, (dec - 0.5) * 2);
+}
 
 // How many audible repeats a feedback echo produces at the given feedback/mix.
 function echoRepeats(fb: number, mix: number): number {
@@ -106,40 +171,60 @@ function echoRepeats(fb: number, mix: number): number {
   return Math.max(1, 1 + Math.log(ECHO_EPS / mix) / Math.log(fb));
 }
 
+/** The echo's effective per-repeat delay in seconds: EchoTime when free, or the
+    synced division at the given tempo. Tolerates old snapshots (no EchoSync). */
+export function effectiveEchoTime(snap: number[], bpm: number): number {
+  const sync = Math.round(snap[ParamId.EchoSync] || 0);
+  const beats = ECHO_SYNC_BEATS[sync] || 0;
+  return beats > 0 ? (beats * 60) / Math.max(1, bpm) : snap[ParamId.EchoTime];
+}
+
 /** Rough audible length (seconds) of a sound from its parameter snapshot: the amp
     body (attack + decay + sustain-weighted release) plus the dominant FX tail
     (echo/reverb). Used for the shuffle recap, the length cap, and the engine's
-    channel-stealing "tail" (so long-ringing sounds keep their channel). */
-export function estimateLength(snap: number[]): number {
+    channel-stealing "tail" (so long-ringing sounds keep their channel). `bpm` sizes
+    a tempo-synced echo's tail (harmless default for free echoes). */
+export function estimateLength(snap: number[], bpm = 120): number {
   const body =
     snap[ParamId.AmpAttack] +
     snap[ParamId.AmpDecay] +
     snap[ParamId.AmpSustain] * snap[ParamId.AmpRelease];
   const echoTail =
     snap[ParamId.EchoMix] > ECHO_EPS
-      ? snap[ParamId.EchoTime] * echoRepeats(snap[ParamId.EchoFeedback], snap[ParamId.EchoMix])
+      ? effectiveEchoTime(snap, bpm) * echoRepeats(snap[ParamId.EchoFeedback], snap[ParamId.EchoMix])
       : 0;
   const verbTail =
     snap[ParamId.ReverbMix] > VERB_EPS
       ? RV_BASE + snap[ParamId.ReverbSize] * RV_SPAN
       : 0;
-  return body + Math.max(echoTail, verbTail);
+  return body + Math.max(echoTail, verbTail, modalTail(snap));
 }
 
 // Draw a frequency in [lo, hi] (both > 0) shaped by `curve`. Log/Gaussian options
 // work in normalised log-position p∈[0,1] and map back with lo·(hi/lo)^p.
 export function sampleFreq(curve: FreqCurve, lo: number, hi: number): number {
   if (hi <= lo) return lo;
-  if (curve === FreqCurve.Linear) return lo + Math.random() * (hi - lo);
+  if (curve === FreqCurve.Linear) return lo + rand() * (hi - lo);
   const ratio = hi / lo;
   let p: number;
   if (curve === FreqCurve.Log) {
-    p = Math.random();
+    p = rand();
   } else {
     const mu = GAUSS_MU[curve] ?? 0.5;
     p = Math.min(1, Math.max(0, mu + GAUSS_SIGMA * randNormal()));
   }
   return lo * Math.pow(ratio, p);
+}
+
+// Nearest entry of `table` to `x` in LOG distance (right for ratios/frequencies).
+function nearestLog(x: number, table: number[]): number {
+  let best = table[0];
+  let bestD = Infinity;
+  for (const t of table) {
+    const d = Math.abs(Math.log(x / t));
+    if (d < bestD) { bestD = d; best = t; }
+  }
+  return best;
 }
 
 export class DrumParameters {
@@ -204,13 +289,13 @@ export class DrumParameters {
     return this.values.slice();
   }
 
-  /** Restore values from a snapshot. Tolerates short (pre-LFO2/3) snapshots by
-      filling any missing tail with the param default. */
+  /** Restore values from a snapshot. Tolerates short (pre-expansion) snapshots and
+      JSON null "holes" by filling any missing entry with the param default. */
   restore(snap: Snapshot): void {
     for (let i = 0; i < NUM_PARAMS; i++) {
       const id = i as ParamId;
       const v = snap[i];
-      this.set(id, v === undefined || Number.isNaN(v) ? getParamSpec(this.drum, id).def : v);
+      this.set(id, typeof v !== "number" || Number.isNaN(v) ? getParamSpec(this.drum, id).def : v);
     }
   }
 
@@ -233,65 +318,139 @@ export class DrumParameters {
     }
   }
 
-  /** Randomise ("Shuffle") every randomisable param at once (Volume is never
-      touched). Continuous params are drawn uniformly from a window: current lerped
-      toward each edge of its live (preset) range by `randomness`. Discrete "type"
-      params (Wave/Filter/LFO destinations) reroll to a random choice within their
-      preset range — locked when lo==hi, so a character preset only shuffles its LFO
-      destinations while Full Range also shuffles waves/filters. The shuffle amount
-      is the probability that each discrete param rerolls.
+  /** Randomise ("Shuffle") every randomisable param at once (Volume and ChokeGroup
+      are never touched). Continuous params are drawn uniformly from a window:
+      current lerped toward each edge of its live (preset) range by `randomness`.
+      Discrete "type" params reroll to a random choice within their preset range —
+      locked when lo==hi, so a character preset only shuffles its open discretes
+      (LFO destinations, click type, modal material, echo sync) while Full Range
+      also shuffles waves/filters. The shuffle amount is the probability that each
+      discrete param rerolls.
 
       `curve` reshapes the random draw of the FREQUENCY params (Pitch & Filter
-      Cutoff) so highs don't dominate perceptually — see {@link FreqCurve}. All
-      other continuous params keep a uniform draw.
+      Cutoff) — see {@link FreqCurve}; `snap` then quantises the landed Pitch to a
+      semitone or to a key, and tunes the musical companions (Osc2Detune, CombTune,
+      OscModRatio) to consonant steps. `seed` makes the whole draw deterministic.
 
       After the draw, {@link applySparsity} switches off a random subset of the
       effect/filter modules so a sound is usually only doing 1-3 things at once
       instead of everything at full tilt — the count itself varies per shuffle.
       {@link ensureAudibleLevel} then floors near-silent results and
       {@link tameHarshness} caps stacked-extreme screech (scream-band resonance,
-      runaway FM sidebands, piercing noise colours, crushed high tones).
+      runaway FM sidebands, piercing noise colours, crushed high tones, hard-panned
+      bass).
 
-      `maxLen` (seconds, 0 = off) caps the estimated audible length: FX tails are
-      trimmed first (echo, then reverb), then the amp body, to fit. */
-  randomize(randomness: number, curve: FreqCurve = FreqCurve.Linear, maxLen = 0): void {
-    randomness = Math.min(1, Math.max(0, randomness));
+      `maxLen` (seconds, 0 = off) caps the estimated audible length at `bpm`: FX
+      tails are trimmed first (echo, then reverb), then the amp body, to fit. */
+  randomize(opts: ShuffleOptions): void {
+    const randomness = Math.min(1, Math.max(0, opts.randomness));
+    const curve = opts.curve ?? FreqCurve.Linear;
+    if (opts.seed) rand = seededRng(opts.seed);
+    try {
+      for (let i = 0; i < NUM_PARAMS; i++) {
+        const id = i as ParamId;
+        const s = getParamSpec(this.drum, id);
+        if (!s.randomizable) continue;
+        if (isDiscrete(s)) {
+          const lo = Math.round(this.lo[id]);
+          const hi = Math.round(this.hi[id]);
+          if (hi > lo && rand() < randomness) {
+            this.set(id, lo + Math.floor(rand() * (hi - lo + 1)));
+          }
+          continue;
+        }
+        const cur = this.get(id);
+        const lo = cur + (this.lo[id] - cur) * randomness;
+        const hi = cur + (this.hi[id] - cur) * randomness;
+        const isFreq = id === ParamId.Pitch || id === ParamId.FilterCutoff;
+        // Most params draw uniformly from the window; a few get shaped draws:
+        // frequency params use the perceptual curve, noise/click levels are biased
+        // quiet, the decay shape is biased percussive, the layer decays usually stay
+        // off (= follow amp), the Life params lean subtle, and pan hugs the centre.
+        let v: number;
+        if (isFreq) v = sampleFreq(curve, lo, hi);
+        else if (id === ParamId.NoiseLevel) v = lo + Math.pow(rand(), NOISE_LEVEL_BIAS) * (hi - lo);
+        else if (id === ParamId.ClickLevel) v = lo + Math.pow(rand(), CLICK_LEVEL_BIAS) * (hi - lo);
+        else if (id === ParamId.AmpDecayShape) v = hi - Math.pow(rand(), DECAY_SHAPE_BIAS) * (hi - lo);
+        else if (id === ParamId.ToneDecay) v = rand() < TONE_DECAY_OFF_P ? lo : lo + rand() * (hi - lo);
+        else if (id === ParamId.NoiseDecay) v = rand() < NOISE_DECAY_OFF_P ? lo : lo + rand() * (hi - lo);
+        else if (id === ParamId.AccentAmount) v = lo + Math.pow(rand(), ACCENT_BIAS) * (hi - lo);
+        else if (id === ParamId.Humanize) v = lo + Math.pow(rand(), HUMANIZE_BIAS) * (hi - lo);
+        else if (id === ParamId.HitChance) v = hi - Math.pow(rand(), HIT_CHANCE_BIAS) * (hi - lo);
+        else if (id === ParamId.Ratchet) v = lo + Math.pow(rand(), RATCHET_BIAS) * (hi - lo);
+        else if (id === ParamId.Pan) v = lo + ((rand() + rand()) / 2) * (hi - lo);
+        else v = lo + rand() * (hi - lo);
+        this.set(id, v);
+      }
+      this.applyPitchSnap(opts.snap ?? PitchSnap.Off, opts.root ?? 0, opts.scale ?? 0);
+      this.dedupeLfoTargets();
+      this.applySparsity(randomness);
+      if (randomness > 0) {
+        this.ensureAudibleLevel();
+        this.tameHarshness();
+      }
+      this.clampLength(opts.maxLen ?? 0, opts.bpm ?? 120);
+    } finally {
+      rand = Math.random;
+    }
+  }
+
+  /** Quantise the drawn Pitch to a semitone (Chromatic) or to the nearest note of a
+      key (root + scale), and pull the tuned companions onto consonant steps: whole-
+      semitone Osc2 detunes, just-intonation comb ratios, half-integer FM ratios.
+      Snapped values re-clamp to the base range via set(). */
+  private applyPitchSnap(snap: PitchSnap, root: number, scale: number): void {
+    if (snap === PitchSnap.Off) return;
+    const f = this.get(ParamId.Pitch);
+    const midi = 69 + 12 * Math.log2(f / 440);
+    let target = Math.round(midi);
+    if (snap === PitchSnap.Key) {
+      const allowed = new Set(intervals(scale).map((iv) => (root + iv) % 12));
+      // Walk outward from the rounded semitone to the nearest allowed pitch class.
+      for (let d = 0; d <= 6; d++) {
+        const up = Math.round(midi) + d;
+        const dn = Math.round(midi) - d;
+        if (allowed.has(((up % 12) + 12) % 12)) { target = up; break; }
+        if (allowed.has(((dn % 12) + 12) % 12)) { target = dn; break; }
+      }
+    }
+    this.set(ParamId.Pitch, 440 * Math.pow(2, (target - 69) / 12));
+    this.set(ParamId.Osc2Detune, Math.round(this.get(ParamId.Osc2Detune)));
+    this.set(ParamId.CombTune, nearestLog(this.get(ParamId.CombTune), JUST_RATIOS));
+    this.set(ParamId.OscModRatio, Math.max(0.5, Math.round(this.get(ParamId.OscModRatio) * 2) / 2));
+  }
+
+  /** Crossbreed: replace the current sound with a child of it and `other`. Discrete
+      params coin-flip a parent; continuous params mostly inherit one parent (60%)
+      or land on a random blend (40%), then a light mutation jitters a quarter of
+      them so children aren't pure interpolations. Volume and ChokeGroup stay ours
+      (mix state and kit wiring, not genes). Runs the same audibility/harshness
+      post-passes as a shuffle. Tolerates short (older) `other` snapshots. */
+  breedFrom(other: number[]): void {
+    const MUTATE_P = 0.25;
+    const MUTATE_SPAN = 0.06; // jitter as a fraction of the param's base range
     for (let i = 0; i < NUM_PARAMS; i++) {
       const id = i as ParamId;
+      if (id === ParamId.Volume || id === ParamId.ChokeGroup) continue;
+      const a = this.get(id);
+      const b = other[i];
+      if (b === undefined || Number.isNaN(b)) continue;
       const s = getParamSpec(this.drum, id);
-      if (!s.randomizable) continue;
-      if (isDiscrete(s)) {
-        const lo = Math.round(this.lo[id]);
-        const hi = Math.round(this.hi[id]);
-        if (hi > lo && Math.random() < randomness) {
-          this.set(id, lo + Math.floor(Math.random() * (hi - lo + 1)));
-        }
-        continue;
-      }
-      const cur = this.get(id);
-      const lo = cur + (this.lo[id] - cur) * randomness;
-      const hi = cur + (this.hi[id] - cur) * randomness;
-      const isFreq = id === ParamId.Pitch || id === ParamId.FilterCutoff;
-      // Most params draw uniformly from the window; a few get shaped draws: frequency
-      // params use the perceptual curve, noise/click levels are biased quiet, the decay
-      // shape is biased percussive, and the layer decays usually stay off (= follow amp).
       let v: number;
-      if (isFreq) v = sampleFreq(curve, lo, hi);
-      else if (id === ParamId.NoiseLevel) v = lo + Math.pow(Math.random(), NOISE_LEVEL_BIAS) * (hi - lo);
-      else if (id === ParamId.ClickLevel) v = lo + Math.pow(Math.random(), CLICK_LEVEL_BIAS) * (hi - lo);
-      else if (id === ParamId.AmpDecayShape) v = hi - Math.pow(Math.random(), DECAY_SHAPE_BIAS) * (hi - lo);
-      else if (id === ParamId.ToneDecay) v = Math.random() < TONE_DECAY_OFF_P ? lo : lo + Math.random() * (hi - lo);
-      else if (id === ParamId.NoiseDecay) v = Math.random() < NOISE_DECAY_OFF_P ? lo : lo + Math.random() * (hi - lo);
-      else v = lo + Math.random() * (hi - lo);
+      if (isDiscrete(s)) {
+        v = rand() < 0.5 ? a : b;
+      } else {
+        v = rand() < 0.6 ? (rand() < 0.5 ? a : b) : a + (b - a) * rand();
+        if (rand() < MUTATE_P) {
+          const r = baseRange(id);
+          v += (rand() * 2 - 1) * (r.max - r.min) * MUTATE_SPAN;
+        }
+      }
       this.set(id, v);
     }
     this.dedupeLfoTargets();
-    this.applySparsity(randomness);
-    if (randomness > 0) {
-      this.ensureAudibleLevel();
-      this.tameHarshness();
-    }
-    this.clampLength(maxLen);
+    this.ensureAudibleLevel();
+    this.tameHarshness();
   }
 
   /** Keep a shuffled sound from coming out near-silent. Two common causes on a wide
@@ -376,6 +535,10 @@ export class DrumParameters {
       this.set(ParamId.Crush, Math.min(3, Math.round(this.get(ParamId.Crush))));
       this.set(ParamId.Downsample, Math.min(3, Math.round(this.get(ParamId.Downsample))));
     }
+
+    // Bass belongs in the middle of the stereo field (a hard-panned kick lurches the
+    // mix); pull low-pitched sounds most of the way back to centre.
+    if (pitch < 150) this.set(ParamId.Pan, this.get(ParamId.Pan) * 0.3);
   }
 
   /** The toggleable effect/filter/modulation "modules" of the voice, each with its
@@ -402,14 +565,23 @@ export class DrumParameters {
         on: round(ParamId.OscModType) !== 0 && g(ParamId.OscModAmount) > 0.02,
         off: () => this.set(ParamId.OscModType, 0) },
       { name: "Comb", on: g(ParamId.CombMix) > 0.02, off: () => this.set(ParamId.CombMix, 0) },
+      { name: MODAL_MATERIALS[round(ParamId.ModalMaterial)],
+        on: g(ParamId.ModalMix) > 0.02, off: () => this.set(ParamId.ModalMix, 0) },
       { name: "Crush", on: round(ParamId.Crush) > 0, off: () => this.set(ParamId.Crush, 0) },
       { name: "Downsmpl", on: round(ParamId.Downsample) > 0, off: () => this.set(ParamId.Downsample, 0) },
       { name: CLICK_TYPES[round(ParamId.ClickType)],
         on: g(ParamId.ClickLevel) > 0.02, off: () => this.set(ParamId.ClickLevel, 0) },
       { name: "Drive", on: g(ParamId.Drive) > 0.05, off: () => this.set(ParamId.Drive, 0) },
-      { name: "Punch", on: g(ParamId.PitchEnvAmount) > 0.1, off: () => this.set(ParamId.PitchEnvAmount, 0) },
+      // The pitch envelope is bipolar: positive drops from above (punch), negative
+      // rises into the note (a reverse-ish swell).
+      { name: g(ParamId.PitchEnvAmount) >= 0 ? "Punch" : "Rise",
+        on: Math.abs(g(ParamId.PitchEnvAmount)) > 0.1, off: () => this.set(ParamId.PitchEnvAmount, 0) },
       { name: "Echo", on: g(ParamId.EchoMix) > 0.03, off: () => this.set(ParamId.EchoMix, 0) },
       { name: "Verb", on: g(ParamId.ReverbMix) > 0.05, off: () => this.set(ParamId.ReverbMix, 0) },
+      // Per-hit Life modules — pattern-domain variation rather than timbre.
+      { name: "Accent", on: g(ParamId.AccentAmount) > 0.1, off: () => this.set(ParamId.AccentAmount, 0) },
+      { name: "Ghosts", on: g(ParamId.HitChance) < 0.95, off: () => this.set(ParamId.HitChance, 1) },
+      { name: "Ratchet", on: g(ParamId.Ratchet) > 0.05, off: () => this.set(ParamId.Ratchet, 0) },
     ];
   }
 
@@ -424,12 +596,12 @@ export class DrumParameters {
     if (active.length <= budget) return;
     // Fisher-Yates shuffle so the kept subset is unbiased.
     for (let i = active.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(rand() * (i + 1));
       [active[i], active[j]] = [active[j], active[i]];
     }
     let toDisable = active.length - budget;
     for (let i = 0; i < active.length && toDisable > 0; i++) {
-      if (Math.random() < randomness) { active[i].off(); toDisable--; }
+      if (rand() < randomness) { active[i].off(); toDisable--; }
     }
   }
 
@@ -460,9 +632,9 @@ export class DrumParameters {
   }
 
   /** Trim FX (echo, then reverb), and finally the amp body, so the estimated
-      length fits within `maxLen` seconds. Leaves the dry drum untouched when it
-      already fits. No-op when maxLen <= 0. */
-  private clampLength(maxLen: number): void {
+      length fits within `maxLen` seconds at `bpm`. Leaves the dry drum untouched
+      when it already fits. No-op when maxLen <= 0. */
+  private clampLength(maxLen: number, bpm = 120): void {
     if (maxLen <= 0) return;
     const A = this.get(ParamId.AmpAttack);
     const D = this.get(ParamId.AmpDecay);
@@ -471,13 +643,25 @@ export class DrumParameters {
     const tailBudget = Math.max(0, maxLen - body);
 
     // Echo: shorten the delay to fit the budget; disable if even a minimal echo
-    // (its shortest delay × audible repeats) won't fit.
+    // (its shortest delay × audible repeats) won't fit. A tempo-synced echo can't
+    // shorten freely — step it down to the longest division that fits instead.
     if (this.get(ParamId.EchoMix) > ECHO_EPS) {
       const reps = echoRepeats(this.get(ParamId.EchoFeedback), this.get(ParamId.EchoMix));
-      const minTime = getParamSpec(this.drum, ParamId.EchoTime).min;
       const maxTime = reps > 0 ? tailBudget / reps : Infinity;
-      if (maxTime < minTime) this.set(ParamId.EchoMix, 0);
-      else if (this.get(ParamId.EchoTime) > maxTime) this.set(ParamId.EchoTime, maxTime);
+      const sync = Math.round(this.get(ParamId.EchoSync));
+      if (sync > 0) {
+        const beatSec = 60 / Math.max(1, bpm);
+        let fit = 0; // largest sync index whose delay fits (0 = none)
+        for (let i = 1; i < ECHO_SYNC_BEATS.length; i++) {
+          if (ECHO_SYNC_BEATS[i] * beatSec <= maxTime) fit = i;
+        }
+        if (fit === 0) this.set(ParamId.EchoMix, 0);
+        else if (ECHO_SYNC_BEATS[sync] * beatSec > maxTime) this.set(ParamId.EchoSync, fit);
+      } else {
+        const minTime = getParamSpec(this.drum, ParamId.EchoTime).min;
+        if (maxTime < minTime) this.set(ParamId.EchoMix, 0);
+        else if (this.get(ParamId.EchoTime) > maxTime) this.set(ParamId.EchoTime, maxTime);
+      }
     }
 
     // Reverb: shrink room size to fit; disable mix if even the smallest room
@@ -489,6 +673,18 @@ export class DrumParameters {
         if (this.get(ParamId.ReverbSize) > maxSize) {
           this.set(ParamId.ReverbSize, Math.max(0, maxSize));
         }
+      }
+    }
+
+    // Modal bank: shrink the ring time to fit; drop the bank when even the
+    // tightest ring (0.25x scale) overruns the budget.
+    if (this.get(ParamId.ModalMix) > 0.02) {
+      const mat = Math.round(this.get(ParamId.ModalMaterial));
+      const base = MODAL_RING_BASE * (MODAL_RING_MAX_D[mat] ?? 1);
+      if (tailBudget < base * 0.25) this.set(ParamId.ModalMix, 0);
+      else {
+        const maxDec = 0.5 + Math.log(Math.min(4, tailBudget / base)) / Math.log(4) / 2;
+        if (this.get(ParamId.ModalDecay) > maxDec) this.set(ParamId.ModalDecay, Math.max(0, maxDec));
       }
     }
 
@@ -557,14 +753,15 @@ export class DrumKit {
     this.undo.set(drum, stack);
   }
 
-  shuffleAll(
-    drum: DrumType,
-    randomness: number,
-    curve: FreqCurve = FreqCurve.Linear,
-    maxLen = 0,
-  ): void {
+  shuffleAll(drum: DrumType, opts: ShuffleOptions): void {
     this.pushUndo(drum);
-    this.get(drum).randomize(randomness, curve, maxLen);
+    this.get(drum).randomize(opts);
+  }
+
+  /** Crossbreed the drum's current sound with another snapshot (undoable). */
+  breed(drum: DrumType, other: number[]): void {
+    this.pushUndo(drum);
+    this.get(drum).breedFrom(other);
   }
 
   resetAll(drum: DrumType): void {

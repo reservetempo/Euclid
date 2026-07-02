@@ -7,7 +7,8 @@
 import { EngineHost, EngineSound, Playhead } from "../audio/engineHost";
 import { encodeWavFromBuffer } from "../audio/wav";
 import { DRUMS, DrumType } from "../model/drums";
-import { ParamId } from "../model/params";
+import { ParamId, NUM_PARAMS } from "../model/params";
+import { baseSpec } from "../model/paramSpec";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
@@ -141,7 +142,7 @@ export class App {
     const sounds = this.allLanes().map((lane) => {
       const snap = lane.snapshot.slice();
       if (!this.channelAudible(lane)) snap[ParamId.Volume] = 0;
-      return { id: lane.soundId, snap, lo: lane.pitch[0], hi: lane.pitch[1], tail: estimateLength(snap) };
+      return { id: lane.soundId, snap, lo: lane.pitch[0], hi: lane.pitch[1], tail: estimateLength(snap, this.tempo) };
     });
     for (const blk of this.arr.blocks) {
       if (!blk.euclid) continue;
@@ -149,7 +150,7 @@ export class App {
         if (v.soundId < 0) continue;
         const snap = v.snapshot.slice();
         if (!this.channelAudible(v)) snap[ParamId.Volume] = 0;
-        sounds.push({ id: v.soundId, snap, lo: v.pitch[0], hi: v.pitch[1], tail: estimateLength(snap) });
+        sounds.push({ id: v.soundId, snap, lo: v.pitch[0], hi: v.pitch[1], tail: estimateLength(snap, this.tempo) });
       }
     }
     return sounds;
@@ -341,7 +342,7 @@ export class App {
       new/loaded projects still serialise a valid drum kit + preset. */
   private applyRandomDefault(): void {
     this.kit.applyPreset(this.selectedDrum, FULL_RANGE_PRESET);
-    this.kit.shuffleAll(this.selectedDrum, 1.0); // 100% -> uniform over the full range
+    this.kit.shuffleAll(this.selectedDrum, { randomness: 1.0 }); // uniform over the full range
     this.soundName = "";
   }
 
@@ -669,7 +670,7 @@ export class App {
     if (v.preset) kit.adoptPresetByName(REF_DRUM, v.preset); // Reset target after reload
     if (v.ranges) p.restoreRanges(v.ranges.lo, v.ranges.hi);
     if (v.snapshot.length) p.restore(v.snapshot);
-    ed = { kit, randomness: 1.0, curveIdx: 1, maxLenIdx: 0 };
+    ed = { kit, randomness: 1.0, curveIdx: 1, maxLenIdx: 0, snapIdx: 0, seedText: "", lastSeed: "" };
     this.voiceEditors.set(key, ed);
     return ed;
   }
@@ -701,7 +702,24 @@ export class App {
   private auditionVoice(slot: number): void {
     const p = this.voiceEditorFor(slot).kit.get(REF_DRUM);
     const snap = p.capture();
-    this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap));
+    this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+  }
+
+  /** Key + tempo context passed to the shuffle UIs (Key snap + synced-echo lengths). */
+  private shuffleContext(): { root: number; scale: number; bpm: number } {
+    const blk = this.arr.blocks[this.curBlock()];
+    return { root: blk.root, scale: blk.scale, bpm: this.tempo };
+  }
+
+  /** The other voices of the current grid that carry sounds — crossbreed partners. */
+  private breedMates(slot: number): { name: string; color: string; snapshot: number[] }[] {
+    const blk = this.arr.blocks[this.curBlock()];
+    const out: { name: string; color: string; snapshot: number[] }[] = [];
+    blk.voices.forEach((v, i) => {
+      if (i === slot || v.soundId < 0 || !v.snapshot.length) return;
+      out.push({ name: v.name || `Voice ${i + 1}`, color: v.color, snapshot: v.snapshot.slice() });
+    });
+    return out;
   }
 
   /** Inline shuffle menu for one voice: generate/replace its sound live. Reuses the
@@ -721,6 +739,8 @@ export class App {
       onChange: () => this.writeVoiceFromEditor(slot),
       audition: () => this.auditionVoice(slot),
       onFullParams: openFull,
+      context: () => this.shuffleContext(),
+      mates: () => this.breedMates(slot),
     });
     anchor.parentElement?.append(panel);
     const close = (ev: PointerEvent) => {
@@ -876,14 +896,17 @@ export class App {
     hd.append(led, name, toggles);
     strip.append(hd);
 
-    // Faders: Volume + Reverb send, both 0..1 written into the snapshot.
+    // Faders: Volume + Reverb send (0..1) + Pan (-1..1) written into the snapshot.
     strip.append(this.mixFader("Vol", ch, ParamId.Volume));
     strip.append(this.mixFader("Verb", ch, ParamId.ReverbMix));
+    strip.append(this.mixFader("Pan", ch, ParamId.Pan, -1, 1));
     return strip;
   }
 
-  /** A labelled 0..1 fader bound to one snapshot index of a channel. */
-  private mixFader(label: string, lane: MixChannel, id: ParamId): HTMLElement {
+  /** A labelled fader bound to one snapshot index of a channel. Pan-style bipolar
+      faders show L/C/R; 0..1 faders show percent. Old snapshots may be short — a
+      missing index reads as the param's neutral 0. */
+  private mixFader(label: string, lane: MixChannel, id: ParamId, min = 0, max = 1): HTMLElement {
     const row = document.createElement("div");
     row.className = "mix-fader";
     const lbl = document.createElement("span");
@@ -891,17 +914,24 @@ export class App {
     lbl.textContent = label;
     const slider = document.createElement("input");
     slider.type = "range";
-    slider.min = "0";
-    slider.max = "1";
+    slider.min = String(min);
+    slider.max = String(max);
     slider.step = "0.02";
     slider.value = String(lane.snapshot[id] ?? 0);
     const val = document.createElement("span");
     val.className = "mix-fader-val";
-    const pct = (x: number) => `${Math.round(x * 100)}`;
-    val.textContent = pct(Number(slider.value));
+    const show = (x: number) => {
+      if (min >= 0) return `${Math.round(x * 100)}`;
+      if (Math.abs(x) < 0.01) return "C";
+      return `${x < 0 ? "L" : "R"}${Math.round(Math.abs(x) * 100)}`;
+    };
+    val.textContent = show(Number(slider.value));
     slider.oninput = () => {
+      // Older snapshots are shorter than the newest param indices — pad the gap
+      // with param defaults first so no null "holes" get persisted.
+      for (let i = lane.snapshot.length; i < NUM_PARAMS; i++) lane.snapshot[i] = baseSpec(i as ParamId).def;
       lane.snapshot[id] = Number(slider.value);
-      val.textContent = pct(Number(slider.value));
+      val.textContent = show(Number(slider.value));
       this.pushSounds();
       this.persist();
     };
@@ -1020,6 +1050,7 @@ export class App {
       onChange: () => this.writeVoiceFromEditor(slot),
       onRangeChange: () => this.writeVoiceFromEditor(slot),
       onAudition: () => this.auditionVoice(slot),
+      context: () => this.shuffleContext(),
     });
     v.append(sound.el);
   }

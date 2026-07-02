@@ -5,7 +5,7 @@
 // exceed the preset range (clamped only to the absolute base range); and the LFO block
 // split into three independent sections, each with a destination dropdown.
 
-import { DrumKit, FreqCurve } from "../model/drumKit";
+import { DrumKit, FreqCurve, PitchSnap } from "../model/drumKit";
 import { DrumType } from "../model/drums";
 import {
   ParamId, ParamGroup, NUM_PARAMS, getParamGroup, getParamGroupName,
@@ -15,7 +15,7 @@ import { FACTORY_PRESETS, Preset } from "../model/presets";
 
 const ALL_GROUPS = [
   ParamGroup.Tone, ParamGroup.Amp, ParamGroup.Filter, ParamGroup.Lfo, ParamGroup.Fx,
-  ParamGroup.Output,
+  ParamGroup.Life, ParamGroup.Output,
 ];
 
 // Shuffle frequency spread: how Pitch & Filter Cutoff are randomly distributed.
@@ -43,10 +43,28 @@ export const MAXLEN_OPTIONS: { label: string; seconds: number }[] = [
   { label: "2s", seconds: 2 },
 ];
 
+// Pitch quantisation for shuffled sounds: free Hz, nearest semitone, or the nearest
+// note of the current grid's key (root + scale).
+export const SNAP_OPTIONS: { label: string; snap: PitchSnap }[] = [
+  { label: "Off", snap: PitchSnap.Off },
+  { label: "Semitone", snap: PitchSnap.Chromatic },
+  { label: "Key", snap: PitchSnap.Key },
+];
+
+/** A 6-char shareable seed for a shuffle (shown after every roll). */
+export function randomSeed(): string {
+  let s = "";
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L look-alikes
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
 export interface SoundViewCallbacks {
   onChange: (drum: DrumType) => void;      // a value changed -> resend live params
   onRangeChange: (drum: DrumType) => void; // ranges changed -> resend pitch ranges
   onAudition: (drum: DrumType) => void;    // preview the sound
+  // Key + tempo context for the shuffle (Key snap + synced-echo length estimates).
+  context?: () => { root: number; scale: number; bpm: number };
 }
 
 export class SoundView {
@@ -54,6 +72,9 @@ export class SoundView {
   private randomness = 1.0; // single global shuffle amount (1 = uniform over range)
   private curveIdx = 1; // index into CURVE_OPTIONS (1 = Logarithmic, default)
   private maxLenIdx = 0; // index into MAXLEN_OPTIONS (0 = Off, no length cap)
+  private snapIdx = 0;  // index into SNAP_OPTIONS (0 = Off, free Hz)
+  private seedText = ""; // user-entered seed ("" = roll a fresh one per shuffle)
+  private lastSeed = ""; // the seed the last shuffle actually used (shareable)
 
   constructor(
     private kit: DrumKit,
@@ -163,9 +184,20 @@ export class SoundView {
 
     const shuffle = mkBtn("🎲 Shuffle", "shuffle-big");
     shuffle.onclick = () => {
-      this.kit.shuffleAll(
-        drum, this.randomness, CURVE_OPTIONS[this.curveIdx].curve, MAXLEN_OPTIONS[this.maxLenIdx].seconds,
-      );
+      const ctx = this.cb.context?.() ?? { root: 0, scale: 0, bpm: 120 };
+      // A typed seed repeats exactly (at 100% randomness); empty rolls a fresh one.
+      const seed = this.seedText.trim() || randomSeed();
+      this.lastSeed = seed;
+      this.kit.shuffleAll(drum, {
+        randomness: this.randomness,
+        curve: CURVE_OPTIONS[this.curveIdx].curve,
+        maxLen: MAXLEN_OPTIONS[this.maxLenIdx].seconds,
+        bpm: ctx.bpm,
+        snap: SNAP_OPTIONS[this.snapIdx].snap,
+        root: ctx.root,
+        scale: ctx.scale,
+        seed,
+      });
       this.afterReplace();
     };
     sec.append(shuffle);
@@ -210,14 +242,34 @@ export class SoundView {
     rnd.append(slider, lbl);
     sec.append(rnd);
 
-    // Spread (frequency distribution) + Max length cap.
+    // Spread (frequency distribution) + Max length cap + Pitch snap + Seed.
     sec.append(this.selectRow("Spread", CURVE_OPTIONS.map((o) => o.label), this.curveIdx, (i) => { this.curveIdx = i; }));
     sec.append(this.selectRow("Max len", MAXLEN_OPTIONS.map((o) => o.label), this.maxLenIdx, (i) => { this.maxLenIdx = i; }));
+    sec.append(this.selectRow("Snap", SNAP_OPTIONS.map((o) => o.label), this.snapIdx, (i) => { this.snapIdx = i; }));
+    sec.append(this.seedRow());
 
     // Preset (named + coloured) / Save / Saved — at the bottom of the shuffle div.
     sec.append(this.presetRow());
 
     return sec;
+  }
+
+  // Seed row: type a seed to repeat a shuffle exactly (best at 100% randomness);
+  // leave it empty and every roll shows the fresh seed it used, ready to share.
+  private seedRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "precision";
+    const lbl = document.createElement("span");
+    lbl.className = "precision-lbl";
+    lbl.textContent = "Seed";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "vbox-num seed-input";
+    input.placeholder = this.lastSeed ? `last: ${this.lastSeed}` : "random";
+    input.value = this.seedText;
+    input.onchange = () => { this.seedText = input.value; };
+    row.append(lbl, input);
+    return row;
   }
 
   // A labelled <select> row (used for Spread + Max len).

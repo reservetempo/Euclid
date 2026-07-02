@@ -22,6 +22,17 @@ export const ON_OFF = ["Off", "On"];
 // Snap = white burst, Knock = low sine thud at 2x pitch, Blip = 1.1kHz sine ping,
 // Clank = sample-and-hold metal grit.
 export const CLICK_TYPES = ["Tick", "Snap", "Knock", "Blip", "Clank"];
+// Modal-resonator materials: each names a table of mode frequency ratios + decay
+// weights in the engine (bells/bars/membranes synthesis, a la Collision/Elements).
+export const MODAL_MATERIALS = ["Membrane", "Bell", "Bar", "Bowl", "Plate"];
+// Echo tempo-sync divisions ("Free" = use EchoTime seconds). ECHO_SYNC_BEATS gives
+// each index's length in BEATS (quarter notes) — mirrored in engine.js, keep in sync.
+export const ECHO_SYNCS = ["Free", "1/32", "1/16", "1/16.", "1/8", "1/8.", "1/4", "1/4.", "1/2"];
+export const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
+// Choke groups: a triggering sound silences other sounds in its group (classic
+// closed-hat-chokes-open-hat). Deliberately NOT randomizable — it's a relationship
+// between sounds, so shuffling it would re-wire the kit at random.
+export const CHOKE_GROUPS = ["Off", "A", "B", "C", "D"];
 // Crush bit-depth per index (0 = off); Downsample factor per index (index 0 = 1x off).
 export const CRUSH_CHOICES = ["Off", "12-bit", "10-bit", "8-bit", "6-bit", "5-bit", "4-bit", "3-bit"];
 export const DOWNSAMPLE_CHOICES = ["Off", "2x", "3x", "4x", "6x", "8x", "12x", "16x"];
@@ -49,7 +60,9 @@ function make(
 export function baseSpec(id: ParamId): ParamSpec {
   switch (id) {
     case ParamId.Pitch:          return make("Pitch", 30, 2000, 200, 0.3, 1, "Hz");
-    case ParamId.PitchEnvAmount: return make("Pitch Env", 0, 5, 0, 0.5, 0.05, "x");
+    // Bipolar: negative amounts START the note low and rise into the base pitch
+    // (reverse-cymbal swells, zap risers); positive is the classic drop-from-above.
+    case ParamId.PitchEnvAmount: return make("Pitch Env", -2, 5, 0, 1, 0.05, "x");
     case ParamId.PitchEnvDecay:  return make("Pitch Dec", 0.005, 0.6, 0.06, 0.35, 0.005, "s");
     case ParamId.Waveform:       return make("Wave", 0, 3, 0, 1, 1, "", true, ["Sine", "Tri", "Square", "Saw"]);
     case ParamId.ToneLevel:      return make("Tone", 0, 1, 0.8, 1, 0.02, "");
@@ -58,7 +71,8 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.AmpDecay:       return make("Decay", 0.01, 1.5, 0.2, 0.35, 0.005, "s");
     case ParamId.AmpSustain:     return make("Sustain", 0, 1, 0, 1, 0.02, "");
     case ParamId.AmpRelease:     return make("Release", 0.005, 1.2, 0.08, 0.35, 0.005, "s");
-    case ParamId.FilterType:     return make("Filter", 0, 2, 0, 1, 1, "", true, ["LP", "HP", "BP"]);
+    // "Vowel" = 3 parallel formant bandpasses; Cutoff morphs A→E→I→O→U (LFO-able wah).
+    case ParamId.FilterType:     return make("Filter", 0, 3, 0, 1, 1, "", true, ["LP", "HP", "BP", "Vowel"]);
     case ParamId.FilterCutoff:   return make("Cutoff", 80, 18000, 12000, 0.3, 10, "Hz");
     case ParamId.FilterReso:     return make("Reso", 0.5, 8, 0.7, 0.5, 0.05, "Q");
     case ParamId.LfoTarget:      return make("Dest", 0, 6, 0, 1, 1, "", true, LFO_TARGETS);
@@ -107,6 +121,19 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.NoiseDecay:     return make("Noise Dec", 0, 1.2, 0, 0.35, 0.005, "s");
     case ParamId.ClickLevel:     return make("Click", 0, 1, 0, 1, 0.02, "");
     case ParamId.ClickType:      return make("Click Type", 0, 4, 0, 1, 1, "", true, CLICK_TYPES);
+    // Modal resonator bank, echo sync/ping-pong, pan, and the per-hit Life params.
+    // All defaults are neutral so existing sounds/patterns are unchanged.
+    case ParamId.ModalMix:       return make("Modal", 0, 1, 0, 1, 0.02, "");
+    case ParamId.ModalMaterial:  return make("Material", 0, 4, 0, 1, 1, "", true, MODAL_MATERIALS);
+    case ParamId.ModalDecay:     return make("Modal Dec", 0, 1, 0.5, 1, 0.02, "");
+    case ParamId.EchoSync:       return make("Echo Sync", 0, 8, 0, 1, 1, "", true, ECHO_SYNCS);
+    case ParamId.EchoPing:       return make("Ping-Pong", 0, 1, 0, 1, 1, "", true, ON_OFF);
+    case ParamId.Pan:            return make("Pan", -1, 1, 0, 1, 0.02, "");
+    case ParamId.AccentAmount:   return make("Accent", 0, 1, 0, 1, 0.02, "");
+    case ParamId.Humanize:       return make("Humanize", 0, 1, 0, 1, 0.02, "");
+    case ParamId.HitChance:      return make("Hit Chance", 0.25, 1, 1, 1, 0.01, "");
+    case ParamId.Ratchet:        return make("Ratchet", 0, 1, 0, 1, 0.02, "");
+    case ParamId.ChokeGroup:     return make("Choke", 0, 4, 0, 1, 1, "", false, CHOKE_GROUPS);
     default:                     return make("?", 0, 1, 0, 1, 0.01, "");
   }
 }

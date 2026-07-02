@@ -8,7 +8,7 @@
 import { DrumKit } from "../model/drumKit";
 import { DrumType } from "../model/drums";
 import { FACTORY_PRESETS, Preset } from "../model/presets";
-import { CURVE_OPTIONS, MAXLEN_OPTIONS } from "./soundView";
+import { CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS, randomSeed } from "./soundView";
 
 // The mutable shuffle settings kept per voice (persist across menu opens). The kit
 // holds the live params + ranges + undo stack for this one voice.
@@ -17,6 +17,16 @@ export interface VoiceEditor {
   randomness: number; // 0..1 shuffle amount
   curveIdx: number;   // index into CURVE_OPTIONS
   maxLenIdx: number;  // index into MAXLEN_OPTIONS
+  snapIdx: number;    // index into SNAP_OPTIONS
+  seedText: string;   // user-entered seed ("" = fresh roll per shuffle)
+  lastSeed: string;   // seed the last shuffle used (shown as the placeholder)
+}
+
+// A potential crossbreeding partner: another voice of the same grid with a sound.
+export interface BreedMate {
+  name: string;
+  color: string;
+  snapshot: number[];
 }
 
 export interface VoiceMenuCallbacks {
@@ -27,6 +37,10 @@ export interface VoiceMenuCallbacks {
   audition: () => void;
   // Open the full per-parameter editor for this voice (the "Full Parameters" button).
   onFullParams: () => void;
+  // Key + tempo context for the shuffle (Key snap + synced-echo length estimates).
+  context: () => { root: number; scale: number; bpm: number };
+  // The other voices of this grid that have sounds (crossbreeding partners).
+  mates: () => BreedMate[];
 }
 
 /** Build the voice shuffle popup for `editor` (operating on reference drum `drum`).
@@ -40,6 +54,7 @@ export function buildVoiceShuffleMenu(
   const panel = document.createElement("div");
   panel.className = "voice-shuffle";
   let showPresets = false; // presets stay hidden behind their button until toggled
+  let showMates = false;   // ditto for the crossbreed partner list
 
   // Apply a kit mutation, then push it into the voice, preview it, and refresh the UI.
   const afterChange = () => { cb.onChange(); cb.audition(); render(); };
@@ -50,9 +65,19 @@ export function buildVoiceShuffleMenu(
     // Big primary Shuffle.
     const shuffle = mkBtn("🎲 Shuffle", "shuffle-big");
     shuffle.onclick = () => {
-      editor.kit.shuffleAll(
-        drum, editor.randomness, CURVE_OPTIONS[editor.curveIdx].curve, MAXLEN_OPTIONS[editor.maxLenIdx].seconds,
-      );
+      const ctx = cb.context();
+      const seed = editor.seedText.trim() || randomSeed();
+      editor.lastSeed = seed;
+      editor.kit.shuffleAll(drum, {
+        randomness: editor.randomness,
+        curve: CURVE_OPTIONS[editor.curveIdx].curve,
+        maxLen: MAXLEN_OPTIONS[editor.maxLenIdx].seconds,
+        bpm: ctx.bpm,
+        snap: SNAP_OPTIONS[editor.snapIdx].snap,
+        root: ctx.root,
+        scale: ctx.scale,
+        seed,
+      });
       afterChange();
     };
     panel.append(shuffle);
@@ -97,9 +122,36 @@ export function buildVoiceShuffleMenu(
     rnd.append(slider, lbl);
     panel.append(rnd);
 
-    // Spread (frequency distribution) + Max length cap.
+    // Spread (frequency distribution) + Max length cap + Pitch snap + Seed.
     panel.append(selectRow("Spread", CURVE_OPTIONS.map((o) => o.label), editor.curveIdx, (i) => { editor.curveIdx = i; }));
     panel.append(selectRow("Max len", MAXLEN_OPTIONS.map((o) => o.label), editor.maxLenIdx, (i) => { editor.maxLenIdx = i; }));
+    panel.append(selectRow("Snap", SNAP_OPTIONS.map((o) => o.label), editor.snapIdx, (i) => { editor.snapIdx = i; }));
+    panel.append(seedRow(editor));
+
+    // Crossbreed: pick another voice of this grid, get a child of the two sounds.
+    const mates = cb.mates();
+    if (mates.length > 0) {
+      const breed = mkBtn("🧬 Breed with…", "cat-btn breed-btn");
+      breed.onclick = () => { showMates = !showMates; render(); };
+      panel.append(breed);
+      if (showMates) {
+        const list = document.createElement("div");
+        list.className = "voice-preset-grid";
+        for (const m of mates) {
+          const tile = mkBtn(m.name, "preset-tile");
+          tile.style.background = m.color;
+          tile.style.color = textOn(m.color);
+          tile.style.borderColor = "transparent";
+          tile.onclick = () => {
+            editor.kit.breed(drum, m.snapshot);
+            showMates = false;
+            afterChange();
+          };
+          list.append(tile);
+        }
+        panel.append(list);
+      }
+    }
 
     // Presets live behind a button that shows the active preset's name + colour; tapping
     // it reveals the grid of character windows. Picking one applies it and collapses.
@@ -142,6 +194,24 @@ function presetTile(p: Preset, onPick: () => void): HTMLButtonElement {
   b.style.borderColor = "transparent";
   b.onclick = onPick;
   return b;
+}
+
+// Seed row: type a seed to repeat a shuffle exactly (best at 100% randomness);
+// empty = fresh roll each time, with the used seed shown as the placeholder.
+function seedRow(editor: VoiceEditor): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "precision";
+  const lbl = document.createElement("span");
+  lbl.className = "precision-lbl";
+  lbl.textContent = "Seed";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "vbox-num seed-input";
+  input.placeholder = editor.lastSeed ? `last: ${editor.lastSeed}` : "random";
+  input.value = editor.seedText;
+  input.onchange = () => { editor.seedText = input.value; };
+  row.append(lbl, input);
+  return row;
 }
 
 // A labelled <select> row (mirrors SoundView.selectRow for Spread + Max len).

@@ -147,11 +147,12 @@ A single `AudioWorkletProcessor` named `engine-processor`, 2-channel output. Con
 A sound is a flat `number[]` **snapshot** indexed by `ParamId` (`src/model/params.ts`).
 The order is **append-only** and the worklet's `P` map mirrors it exactly, so old saves
 keep working as parameters are added (missing tail defaults to "off"). Current layout
-(51 values):
+(62 values):
 
 ```
 0  Pitch            Hz, base oscillator frequency
-1  PitchEnvAmount   × multiplier of a per-note pitch envelope
+1  PitchEnvAmount   × multiplier of a per-note pitch envelope; BIPOLAR — negative
+                    starts low (floored at 5Hz) and RISES into the note (swells/zaps)
 2  PitchEnvDecay    s, exponential decay of the pitch envelope
 3  Waveform         Sine / Tri / Square / Saw (square has LFO-able pulse width;
                     square & saw edges are polyBLEP anti-aliased)
@@ -161,7 +162,7 @@ keep working as parameters are added (missing tail defaults to "off"). Current l
 7  AmpDecay         s
 8  AmpSustain       0..1
 9  AmpRelease       s
-10 FilterType       LP / HP / BP
+10 FilterType       LP / HP / BP / Vowel (3 formant BPs; Cutoff morphs A-E-I-O-U)
 11 FilterCutoff     Hz
 12 FilterReso       Q
 13 LfoTarget        Pitch/Filter/Amp/Drive/Reso/Wave/None (LFO 1)
@@ -196,6 +197,17 @@ keep working as parameters are added (missing tail defaults to "off"). Current l
 48 NoiseDecay       s, independent exponential decay for the noise layer (0 = follow amp)
 49 ClickLevel       0..1 transient click layer level (0 = off)
 50 ClickType        Tick / Snap / Knock / Blip / Clank
+51 ModalMix         0..1 modal resonator bank dry/wet (0 = off)
+52 ModalMaterial    Membrane / Bell / Bar / Bowl / Plate (mode ratio+decay tables)
+53 ModalDecay       0..1 ring-time scale (4^(2(v-0.5)) = 0.25x .. 4x)
+54 EchoSync         Free / 1/32 / 1/16 / 1/16. / 1/8 / 1/8. / 1/4 / 1/4. / 1/2
+55 EchoPing         stereo ping-pong echo (Off/On)
+56 Pan              -1..+1 constant-power (centre = exact legacy mono level)
+57 AccentAmount     0..1 how much NON-accent hits duck (accent = cycle's first hit)
+58 Humanize         0..1 per-hit random level/pitch/cutoff jitter
+59 HitChance        0.25..1 probability a hit plays (misses may become quiet ghosts)
+60 Ratchet          0..1 probability a hit becomes a 2-4x retrigger burst
+61 ChokeGroup       Off / A / B / C / D (not randomizable — kit wiring, not a gene)
 ```
 
 `src/model/paramSpec.ts` defines, per parameter, a base `{min, max, def, skew, step, unit,
@@ -233,35 +245,67 @@ Each `Voice` renders sample-by-sample through this chain (order matters):
    gates the whole voice.
 9. **Bitcrusher** (optional): sample-rate **Downsample** (sample-and-hold decimation) then
    **Crush** bit-depth quantisation.
-10. **State-variable filter** (TPT/Zavalishin): LP/HP/BP with resonance; cutoff & Q take
-    their LFO modulation here.
+10. **Filter**: TPT/Zavalishin state-variable LP/HP/BP with resonance (cutoff & Q take
+    their LFO modulation here), OR **Vowel** mode — three parallel formant bandpasses
+    (F1/F2/F3 from the `VOWELS` table) whose morph position (A→E→I→O→U) is the
+    log-mapped Cutoff, so a filter LFO literally makes the sound talk.
 11. **Click transient layer** (optional): a few-ms one-shot burst (`ClickLevel`,
     `ClickType`: Tick = violet spike ~1.5ms, Snap = white burst ~6ms, Knock = sine thud at
     2× pitch ~12ms, Blip = 1.1kHz sine ping ~4ms, Clank = S&H metal grit ~8ms; decays in
     `CLICK_DECAY`). Injected **after** the main filter (an LP body can't dull it) and
-    before drive/comb (drive glues it in, and it can pluck the resonator).
+    before drive/comb (drive glues it in, and it can pluck the resonators).
 12. **Drive** (optional): `tanh(x · (1 + drive·5))`.
 13. **Karplus-Strong / comb resonator** (optional): a fractional-delay feedback loop with
     a one-pole damping filter and `tanh` soft-clip, tuned to `freq · CombTune`. Low
     feedback = a pluck; high feedback (`CombDecay→1`) = a sustained string.
-14. **Amp ADSR** × amp LFO. Segments are **shaped**: each advances a linear phase `t` and
-    maps it through a power curve (`shapeExp(s) = 4^(2s−1)`, so shape 0.5 = exponent 1 =
-    exactly linear). Attack = `t^aExp`; decay = `sustain + (1−sustain)·(1−t)^dExp`;
-    release reuses the decay shape from the current value. Segment TIMES are unchanged by
-    the shape — only the contour bends. The note-off fires after `gate` samples; the
-    voice deactivates when the envelope reaches 0.
+14. **Modal resonator bank** (optional): up to 6 two-pole resonators at a material's
+    mode ratios (`MODAL_TABLES`: Membrane, minor-third Bell, free Bar, Bowl with beating
+    detuned pairs, inharmonic Plate), tuned to the note, decay scaled by `ModalDecay`
+    (`4^(2(v−0.5))`). Modes above 0.45·sr are dropped (auto-darkening). Unit-order mode
+    gains suit impulsive excitation; a `tanh` on the summed output bounds sustained
+    resonance (reads as an overdriven ringing bell). Mixed like the comb.
+15. **Amp ADSR** × amp LFO **× per-hit velocity**. Segments are **shaped**: each
+    advances a linear phase `t` and maps it through a power curve
+    (`shapeExp(s) = 4^(2s−1)`, so shape 0.5 = exponent 1 = exactly linear). Attack =
+    `t^aExp`; decay = `sustain + (1−sustain)·(1−t)^dExp`; release reuses the decay shape
+    from the current value. Segment TIMES are unchanged by the shape — only the contour
+    bends. The note-off fires after `gate` samples; the voice deactivates when the
+    envelope reaches 0. A **ratchet** schedule re-strikes the envelope (and pitch/click/
+    layer transients) every `interval` samples, each sub-hit ×0.85 quieter, re-arming its
+    own gate.
 
 ### 4.3 Channel chain (after summing 6 voices)
 
-Per `Channel`: **mono feedback Echo** (delay/feedback/mix) → **Freeverb reverb** (port of
-`juce::Reverb`: 8 combs + 4 allpass, mono) → **Volume**. FX params are read live from the
-channel's current snapshot (never from the triggering note), so a pitched hit never
-clobbers the base sound.
+Per `Channel`: **feedback Echo** → **Freeverb reverb** (port of `juce::Reverb`: 8 combs
++ 4 allpass, mono) → **Volume** → **constant-power Pan** into the STEREO master. FX
+params are read live from the channel's current snapshot (never from the triggering
+note), so a pitched hit never clobbers the base sound.
 
-The summed master bus gets a **soft-knee clip** before output: linear (transparent) below
-`CLIP_KNEE = 0.9`, tanh-rounded above with peaks asymptoting to ±1, so stacked
-resonant/driven channels saturate gently instead of hard digital clipping at the DAC.
-The offline WAV export renders through the same path.
+- **Echo delay** is `EchoTime` seconds when `EchoSync` = Free, else a tempo division
+  (`ECHO_SYNC_BEATS · 60/bpm` — the engine owns the tempo). Buffer = 1.3s (longer
+  synced delays clamp).
+- **Ping-pong** (`EchoPing`): the mono echo is replaced by two cross-fed delay lines —
+  dry (panned) feeds L, L feeds R, R feeds back into L·fb — so repeats bounce wide
+  regardless of the dry pan. Lines are allocated lazily per channel.
+- **Pan** is normalised so a CENTRED sound sums into L/R at exactly the old mono level
+  (legacy projects sound identical); hard-panned sides gain +3dB.
+
+The stereo master bus gets a per-side **soft-knee clip** before output: linear
+(transparent) below `CLIP_KNEE = 0.9`, tanh-rounded above with peaks asymptoting to ±1,
+so stacked resonant/driven channels saturate gently instead of hard digital clipping at
+the DAC. The offline WAV export renders through the same path (and writes stereo).
+
+### 4.3b Per-hit Life & choke groups
+
+`perHit(snap, isAccent)` rolls each scheduled hit ONCE at trigger time (plain
+`Math.random` — live feel, not sound design): the cycle's first hit is the **accent**
+and other hits duck by `AccentAmount·0.5`; a hit failing its `HitChance` roll becomes a
+**ghost** at 0.3 velocity half the time and is dropped otherwise; **Humanize** jitters
+velocity ±25%, pitch ±1.5% and cutoff ±20% (on the per-hit snapshot copy only); and
+**Ratchet** turns the hit into a 2/3/4-strike burst across the step (weighted 50/30/20).
+Velocity multiplies the voice output. When a sound with a **ChokeGroup** triggers, every
+other sound in that group gets a fast 20ms release (closed hat chokes open hat) — set
+per sound, never shuffled.
 
 ### 4.4 Dynamic channel allocation
 
@@ -434,13 +478,30 @@ made. Implemented in `drumKit.ts` (`randomize` / `shuffleAll`).
   real drums decay exponentially, gated shapes stay rare-but-reachable); the layer decays
   `ToneDecay`/`NoiseDecay` snap to the window's low edge (= off, follow amp) with
   probability 0.7/0.5 so classic single-envelope voices stay common and layered designs
-  arrive as a deliberate minority.
-- **Sparsity.** There are **14 toggleable modules** (3 LFOs, FM/Ring, Osc2/Sync, Fold,
-  Comb, Crush, Downsample, Click, Drive, Pitch-punch, Echo, Reverb). After the draw,
-  Shuffle switches a random subset **off** so the number of simultaneously active modules
-  **varies per shuffle** — weighted toward a handful (≈3–6), sometimes 1, occasionally up
-  to a dozen. The core tone (oscillator, pitch, noise level) and amp envelope are never
-  disabled. Higher randomness enforces the budget more strictly.
+  arrive as a deliberate minority; the Life params lean subtle (Accent `r^1.3`, Humanize
+  `r^1.5`, Ratchet `r^2.5`, HitChance hugging 1 via `hi − r^2.2·span`); and `Pan` draws
+  triangular around the centre (`(r+r)/2`) so the stereo field stays balanced.
+- **Pitch snap.** After the draw, the landed Pitch can quantise to the nearest
+  **semitone** or to the nearest note of the current grid's **key** (root + scale), and
+  the tuned companions snap consonant: `Osc2Detune` to whole semitones, `CombTune` to
+  just-intonation ratios, `OscModRatio` to half-integer (harmonic) steps — so tonal
+  voices land in tune with each other.
+- **Seeded shuffles.** Every draw goes through a swappable RNG; a seed string (xmur3 →
+  mulberry32) makes the whole shuffle deterministic. At 100% randomness the draw no
+  longer depends on pre-shuffle values, so *seed + preset window = the same sound on any
+  device* — seeds are shareable. The UI rolls and shows a fresh 6-char seed per shuffle.
+- **Crossbreed.** `breedFrom(other)` replaces the sound with a child of it and another
+  voice's sound: discretes coin-flip a parent, continuous params inherit one parent
+  (60%) or a random blend (40%), then ~25% of them get a ±6%-of-range mutation. Volume
+  and ChokeGroup stay ours (mix state / kit wiring, not genes). Runs the same
+  audibility + harshness post-passes; fully undoable.
+- **Sparsity.** There are **18 toggleable modules** (3 LFOs, FM/Ring, Osc2/Sync, Fold,
+  Comb, Modal, Crush, Downsample, Click, Drive, Pitch-punch/Rise, Echo, Reverb, Accent,
+  Ghosts, Ratchet). After the draw, Shuffle switches a random subset **off** so the
+  number of simultaneously active modules **varies per shuffle** — weighted toward a
+  handful (≈3–6), sometimes 1, occasionally up to a dozen. The core tone (oscillator,
+  pitch, noise level) and amp envelope are never disabled. Higher randomness enforces
+  the budget more strictly.
 - **Duplicate-LFO de-dup.** Two LFOs aimed at the same destination collapse (the later
   one is set to "None").
 - **Audible-level floor.** If a wide draw leaves both source levels low, or the filter
@@ -458,9 +519,13 @@ made. Implemented in `drumKit.ts` (`randomize` / `shuffleAll`).
   bandwidth cap** (Carson's rule: trim `OscModAmount` so `(β+1)·pitch·ratio ≤ 9 kHz`,
   β = amount·FM_INDEX; ring mod scaled likewise); **crush cap** (above 1 kHz pitch,
   Crush/Downsample indices clamp to ≤3 — decimation images of high tones are pure
-  shriek).
-- **Max length.** An optional cap on a hit's estimated audible length; Shuffle trims the
-  longest tail first (echo, then reverb), then scales the amp body, to fit.
+  shriek); **bass stays centred** (below 150 Hz pitch, Pan is pulled ×0.3 toward the
+  middle so a hard-panned kick can't lurch the mix).
+- **Max length.** An optional cap on a hit's estimated audible length; Shuffle trims
+  tails first (a free echo shortens, a synced echo steps down to the longest division
+  that fits, reverb shrinks, the modal ring tightens), then scales the amp body, to
+  fit. `estimateLength(snap, bpm)` is tempo-aware for synced echoes and includes the
+  modal ring (also sizing the engine's channel-steal "tail").
 - **Undo / Reset / recap.** A 20-deep undo stack captures values + ranges, so **Back**
   reverses the last shuffle/preset/reset exactly; **Reset** returns to the active preset's
   values. `describe()` produces a one-line recap of the sound (wave, pitch, noise colour,
@@ -470,12 +535,12 @@ made. Implemented in `drumKit.ts` (`randomize` / `shuffleAll`).
 
 ### How big is the sound-verse? (marketing/intuition)
 
-Counting only the exposed choices for one voice: 14 on/off modules → 16,384 module
-combinations; the discrete "type" switches alone (now incl. 4 waves and 5 click types) →
-≈7 billion setups before a single continuous knob moves; including every continuous
-parameter at on-screen resolution → roughly **10⁸⁵ distinct settings per voice** — far
-more than grains of sand on Earth (~10¹⁹). Neighbouring settings often sound alike, but
-it's why Shuffle keeps surprising.
+Counting only the exposed choices for one voice: 18 on/off modules → 262,144 module
+combinations; the discrete "type" switches alone (4 waves, 4 filters, 5 click types, 5
+modal materials, 9 echo syncs…) → ≈10¹² setups before a single continuous knob moves;
+including every continuous parameter at on-screen resolution → roughly **10⁹⁹ distinct
+settings per voice** — about a googol of drums, versus ~10¹⁹ grains of sand on Earth.
+Neighbouring settings often sound alike, but it's why Shuffle keeps surprising.
 
 ---
 
@@ -516,19 +581,22 @@ saved project (or seeds a random Full-Range default) and shows the main view.
 ### 8.4 Inline shuffle menu (`voiceShuffleMenu.ts`)
 
 A popup anchored under the voice title, dismissed on outside tap: big **🎲 Shuffle**, the
-recap line with a **▶** re-audition, **Back/Reset**, a **Randomness** slider, **Spread**
-and **Max len** selects, a **Presets** button revealing the character-window grid, and
-**Full Parameters** (opens the deep editor). Every change writes the sound back into the
-voice, resends the sound table (the engine swaps it in on the voice's next "on" step),
-persists, redraws the circle, and auditions once.
+recap line with a **▶** re-audition, **Back/Reset**, a **Randomness** slider, **Spread**,
+**Max len** and **Snap** selects (pitch quantisation Off/Semitone/Key), a **Seed** text
+row (type to repeat a shuffle exactly; empty rolls fresh and shows the seed used), a
+**🧬 Breed with…** button (when other voices of the grid have sounds) listing them as
+coloured tiles — picking one crossbreeds the two sounds — a **Presets** button revealing
+the character-window grid, and **Full Parameters** (opens the deep editor). Every change
+writes the sound back into the voice, resends the sound table (the engine swaps it in on
+the voice's next "on" step), persists, redraws the circle, and auditions once.
 
 ### 8.5 Sound view (`soundView.ts`)
 
 The full per-parameter editor for one voice: parameters grouped (Tone / Amp / Filter / LFO
-/ Drive & FX / Output), each with a slider + manual numeric entry (clamped only to the
-absolute base range) and, for the LFO block, three independent destination sections. Same
-Shuffle/Back/Reset/Randomness/Spread/Max-len controls; works live (no saved-sound
-library).
+/ Drive & FX / Per-Hit Life / Output), each with a slider + manual numeric entry (clamped
+only to the absolute base range) and, for the LFO block, three independent destination
+sections. Same Shuffle/Back/Reset/Randomness/Spread/Max-len/Snap/Seed controls; works
+live (no saved-sound library).
 
 ### 8.6 Order / Loop view
 
@@ -539,9 +607,10 @@ tap again to clear). The currently playing slot is outlined during playback.
 ### 8.7 Mixer view
 
 One strip per assigned voice: a colour **flash LED** (pulses when the voice triggers, from
-the `playhead.fired` list), the name, **Mute/Solo** toggles, and **Volume + Reverb** send
-faders. Mute/solo are applied at push time by zeroing Volume; when any channel is soloed,
-only soloed channels are audible.
+the `playhead.fired` list), the name, **Mute/Solo** toggles, and **Volume + Reverb + Pan**
+faders (Pan is bipolar and reads `L30 / C / R30`; writing it pads short legacy snapshots
+with param defaults first). Mute/solo are applied at push time by zeroing Volume; when any
+channel is soloed, only soloed channels are audible.
 
 ---
 

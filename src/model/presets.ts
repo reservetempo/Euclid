@@ -8,12 +8,14 @@ import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
 import { getParamSpec, baseSpec, isDiscrete } from "./paramSpec";
 
-// Discrete params that stay open (shuffle) on EVERY preset: LFO destinations and
-// the click-layer flavour — they're spice, not identity. Other discrete "type"
-// params (Wave/Filter/Noise colour) only shuffle on Full Range (their range is
-// locked otherwise) so a character preset stays in character.
+// Discrete params that stay open (shuffle) on EVERY preset: LFO destinations, the
+// click-layer flavour, the modal material, and the echo sync/ping-pong — they're
+// spice, not identity. Other discrete "type" params (Wave/Filter/Noise colour) only
+// shuffle on Full Range (their range is locked otherwise) so a character preset
+// stays in character. ChokeGroup is not randomizable at all (see paramSpec).
 const OPEN_DISCRETE_IDS = new Set<ParamId>([
   ParamId.LfoTarget, ParamId.Lfo2Target, ParamId.Lfo3Target, ParamId.ClickType,
+  ParamId.ModalMaterial, ParamId.EchoSync, ParamId.EchoPing,
 ]);
 
 export interface Preset {
@@ -55,8 +57,9 @@ function presetForDrum(drum: DrumType, name: string, color: string): Preset {
   return { name, color, ranges, values };
 }
 
-// Widest possible ranges, values at the centre of each range. Discrete params and
-// Volume keep their base default (centring a "type" or going quiet makes no sense).
+// Widest possible ranges, values at the centre of each range. Discrete params,
+// Volume, and HitChance keep their base default (centring a "type", going quiet,
+// or silently dropping hits makes no sense as a starting value).
 function fullRangePreset(): Preset {
   const ranges: { lo: number; hi: number }[] = [];
   const values: number[] = [];
@@ -64,7 +67,7 @@ function fullRangePreset(): Preset {
     const id = i as ParamId;
     const s = baseSpec(id);
     ranges.push({ lo: s.min, hi: s.max });
-    const centred = isDiscrete(s) || id === ParamId.Volume;
+    const centred = isDiscrete(s) || id === ParamId.Volume || id === ParamId.HitChance;
     values.push(centred ? s.def : (s.min + s.max) / 2);
   }
   return { name: "Full Range", color: "#ffffff", values, ranges };

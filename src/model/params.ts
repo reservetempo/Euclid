@@ -65,6 +65,22 @@ export enum ParamId {
   NoiseDecay,     // independent exponential decay for the noise layer (0 = follow amp)
   ClickLevel,     // transient click layer level (0 = off)
   ClickType,      // Tick / Snap / Knock / Blip / Clank
+  // Fourth wave: modal percussion, space, and per-hit life. Modal = a bank of tuned
+  // resonators (bells/bars/membranes); Echo gains tempo-sync + stereo ping-pong; Pan
+  // places the channel in the stereo field; the Life params vary each HIT (accents,
+  // ghosts, humanize, ratchets) instead of the sound itself; ChokeGroup lets one
+  // sound cut another (closed hat chokes open hat).
+  ModalMix,       // tuned-resonator bank dry/wet (0 = off)
+  ModalMaterial,  // Membrane / Bell / Bar / Bowl / Plate (mode ratio+decay tables)
+  ModalDecay,     // scales every mode's ring time (0 = tight, 1 = long ring)
+  EchoSync,       // Free (use EchoTime) or a tempo division (1/32 .. 1/2)
+  EchoPing,       // stereo ping-pong echo (Off/On)
+  Pan,            // -1 (L) .. +1 (R), constant-power
+  AccentAmount,   // how much NON-accent hits duck (accent = first hit of the cycle)
+  Humanize,       // per-hit random level/pitch/cutoff jitter
+  HitChance,      // probability a scheduled hit plays (misses may become ghosts)
+  Ratchet,        // probability a hit becomes a 2-4x retrigger burst
+  ChokeGroup,     // Off / A / B / C / D — triggering chokes same-group sounds
   NumParams,
 }
 
@@ -76,6 +92,7 @@ export enum ParamGroup {
   Filter,
   Lfo,
   Fx,
+  Life,
   Output,
 }
 
@@ -113,6 +130,9 @@ export function getParamGroup(id: ParamId): ParamGroup {
     case ParamId.CombMix:
     case ParamId.CombTune:
     case ParamId.CombDecay:
+    case ParamId.ModalMix:
+    case ParamId.ModalMaterial:
+    case ParamId.ModalDecay:
       return ParamGroup.Filter;
     case ParamId.LfoTarget:
     case ParamId.LfoRate:
@@ -131,12 +151,21 @@ export function getParamGroup(id: ParamId): ParamGroup {
     case ParamId.EchoTime:
     case ParamId.EchoFeedback:
     case ParamId.EchoMix:
+    case ParamId.EchoSync:
+    case ParamId.EchoPing:
     case ParamId.ReverbSize:
     case ParamId.ReverbMix:
     case ParamId.Crush:
     case ParamId.Downsample:
       return ParamGroup.Fx;
+    case ParamId.AccentAmount:
+    case ParamId.Humanize:
+    case ParamId.HitChance:
+    case ParamId.Ratchet:
+    case ParamId.ChokeGroup:
+      return ParamGroup.Life;
     case ParamId.Volume:
+    case ParamId.Pan:
       return ParamGroup.Output;
     default:
       return ParamGroup.Tone;
@@ -150,6 +179,7 @@ export function getParamGroupName(g: ParamGroup): string {
     case ParamGroup.Filter: return "Filter";
     case ParamGroup.Lfo: return "LFO";
     case ParamGroup.Fx: return "Drive & FX";
+    case ParamGroup.Life: return "Per-Hit Life";
     case ParamGroup.Output: return "Output";
   }
 }
