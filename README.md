@@ -2,7 +2,7 @@
 
 A **Euclidean drum machine / polymeter sequencer for the web**, where every sound is
 generated procedurally (no samples) by a single hand-written `AudioWorklet`. You build
-rhythms as **circles of steps** — each of five voices per pattern spreads a number of
+rhythms as **circles of steps** — each of six voices per pattern spreads a number of
 hits evenly around a ring of steps — assign each voice a synthesised sound found by
 **shuffling** a deep synth engine, chain patterns into a loop, and export the result to
 WAV.
@@ -23,9 +23,14 @@ system, and UI, including the non-obvious algorithms.
 
 - **Mobile-first, single-page, dark-themed** web app. Installable PWA with offline
   support. Portrait orientation.
-- **Six patterns** ("grids"), each an independent Euclidean sequencer with **five
-  voices** (concentric circles). A voice is a synth sound plus a Euclidean rhythm
-  (`hits` spread over `steps`, rotated by `start`, optionally split unevenly).
+- **Six patterns** ("grids"), each an independent Euclidean sequencer with **six
+  voices** (concentric circles — one per letter of the logo). A voice is a synth sound
+  plus a Euclidean rhythm (`hits` spread over `steps`, rotated by `start`, optionally
+  split unevenly).
+- **One visual language: dots on lines.** The logo is the word "Euclid" drawn from
+  dots joined by thin lines (one voice colour per letter, `src/ui/logo.ts`); voice
+  values are coloured circles on a connecting line; the BPM slider is a white dot on
+  a white line; toolbar buttons are colour-ringed circles.
 - **A 20-slot loop order** chains patterns into a song. Consecutive identical slots make
   a pattern play longer; different patterns hand off to each other.
 - **Shuffle is the core creative act.** Instead of dialing a synth, you randomise a
@@ -59,7 +64,8 @@ src/main.ts                → new App(#app); registers the service worker in pr
 src/style.css              → single global stylesheet (dark theme tokens in :root)
 
 src/ui/app.ts              → App: owns engine + arrangement + kit + UI + all views
-src/ui/euclidView.ts       → circular canvas visualization of one grid's 5 voices
+src/ui/logo.ts             → the "Euclid" wordmark as dot-and-line SVG letters
+src/ui/euclidView.ts       → circular canvas visualization of one grid's 6 voices
 src/ui/voiceShuffleMenu.ts → per-voice inline shuffle popup
 src/ui/soundView.ts        → full per-parameter editor for one voice
 src/ui/gridView.ts         → LEGACY 5×16 note-painting grid (not used by the UI)
@@ -570,25 +576,31 @@ saved project (or seeds a random Full-Range default) and shows the main view.
 
 ### 8.2 Top bar
 
-`Euclid` title · **transport** (Play ▶/■, tempo slider, editable BPM box) · **menu ≡**
-(New project, Save to file, Load from file, **Export WAV**).
+The dot-and-line `Euclid` wordmark (`logo.ts`, one voice colour per letter) ·
+**transport** (round green Play ▶/■, the tempo slider drawn as a **white dot on a thin
+white line**, and the BPM value in a white circle) · a round purple **menu ≡** (New
+project, Save to file, Load from file, **Export WAV**). Toolbar buttons throughout are
+**circles**, each ringed in its own colour (play green, menu purple, loop ↻ accent,
+mixer blue, remove × red, patterns 1–6 in their grid colours).
 
 ### 8.3 Steps view (the default)
 
-- **Pattern bar**: buttons **1–6** (select + solo a grid; the selected one is highlighted
-  and its title takes the grid colour) and **↻** (loop/order view).
-- **Circle visualization** (`euclidView.ts`): 5 nested rings (inner = voice 1). Each
+- **Pattern bar**: circular buttons **1–6** (select + solo a grid; each is ringed in its
+  grid colour, dim until selected) and a round **↻** (loop/order view).
+- **Circle visualization** (`euclidView.ts`): 6 nested rings (inner = voice 1). Each
   assigned voice draws a dot at every step around its ring in the voice's colour, with a
   radial line to the centre on each hit; the current step lights up white during playback
   (highlight = `playStep % steps`, so continuous polymeter shows correctly).
-- **Voice menu**: five rows. Each row has:
+- **Voice menu**: six rows. Each row has:
   - a **title button** filled with the voice's ring colour (dark text) showing its name —
     tap to open the **inline shuffle menu**;
-  - **Hits / Steps / Start / Split** number boxes — tap to type, or **click-hold and drag
-    vertically to scrub** (`±1` per ~7 px). Split is disabled unless there are ≥2 hits and
-    room to vary the gap; its tooltip shows the gap composition (e.g. `6·6·4`);
-  - a **×** remove button (when the slot is filled).
-- **🎚 Mixer** button.
+  - **Hits / Steps / Start / Split** drawn as the sequencer's own language: four
+    voice-coloured **circles joined by a line** (`.euclid-vals::before`; dim grey when
+    the slot is empty) — tap to type, or **click-hold and drag vertically to scrub**
+    (`±1` per ~7 px). Split is disabled unless there are ≥2 hits and room to vary the
+    gap; its tooltip shows the gap composition (e.g. `6·6·4`);
+  - a small round **×** remove button sitting on the same line (when the slot is filled).
+- A round blue **🎚** mixer button.
 
 ### 8.4 Inline shuffle menu (`voiceShuffleMenu.ts`)
 
@@ -653,7 +665,7 @@ npm run preview  # preview the production build
 4. Param model: `ParamId` (append-only), per-drum `paramSpec` ranges, `presets`
    (character windows + Full Range), and the **Shuffle** algorithm with sparsity, noise
    bias, audible-level floor, max-length, and 20-deep undo (§7).
-5. `euclid.ts` pattern generation; `MelodyGrid`/`WipArrangement` with 5 voices per grid and
+5. `euclid.ts` pattern generation; `MelodyGrid`/`WipArrangement` with 6 voices per grid and
    a 20-slot order; `blocksMessage()` precomputing patterns; `loopSteps()` mirroring the
    engine timeline.
 6. UI: start gate; transport with editable BPM; pattern bar with **per-grid solo + loop**;

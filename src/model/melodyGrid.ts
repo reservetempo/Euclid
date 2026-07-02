@@ -48,6 +48,13 @@ export const GRID_COLORS = [
   "#ff6b6b", "#ffa94d", "#ffd43b", "#69db7c", "#4dabf7", "#b197fc",
 ];
 
+// One distinct hue per voice slot (inner ring → outer ring), and one per letter of
+// the logo — the same six-colour rainbow as the grids, so the whole app speaks one
+// palette. Shared by the circle view, the voice rows, and the wordmark (ui/logo.ts).
+export const VOICE_COLORS = [
+  "#ff6b6b", "#ffa94d", "#ffd43b", "#69db7c", "#4dabf7", "#b197fc",
+];
+
 export class MelodyGrid {
   // cells[row * NUM_STEPS + step] = drum index, or EMPTY.
   readonly cells: Int16Array = new Int16Array(NUM_ROWS * NUM_STEPS).fill(EMPTY);
@@ -73,7 +80,7 @@ export class MelodyGrid {
 
   // --- Euclidean mode ---------------------------------------------------
   // When true, the grid is a Euclidean sequencer: the manual cells are ignored and
-  // `voices` (5 circles) play their Euclidean patterns instead. Cells are kept so
+  // `voices` (6 circles) play their Euclidean patterns instead. Cells are kept so
   // toggling back to Manual restores the painted pattern untouched. New grids open in
   // Euclidean mode by default.
   euclid = true;

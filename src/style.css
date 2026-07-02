@@ -54,8 +54,10 @@ button:active { transform: scale(0.94); }
   justify-content: center;
   gap: 26px;
 }
-/* Logo: one letter per voice colour, bouncing in then gently bobbing forever. */
-.logo { font-size: 42px; font-weight: 800; letter-spacing: 0.04em; margin: 0; display: flex; }
+/* Logo: one letter per voice colour, drawn from the sequencer's dots + lines
+   (ui/logo.ts), bouncing in then gently bobbing forever. */
+.logo { margin: 0; display: flex; align-items: flex-end; gap: 8px; }
+.logo-svg { display: block; }
 .logo-letter {
   display: inline-block;
   animation:
@@ -72,7 +74,8 @@ button:active { transform: scale(0.94); }
 }
 #start {
   font-size: 18px; font-weight: 800; color: #0b0c0f;
-  padding: 16px 38px; border: none; border-radius: 14px;
+  width: 120px; height: 120px; padding: 0; border: none; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
   background: linear-gradient(135deg, #6c5cff, #00ffc8);
   background-size: 180% 180%;
   box-shadow: 0 4px 18px rgba(108, 92, 255, 0.45);
@@ -95,18 +98,23 @@ button:active { transform: scale(0.94); }
 .seg { display: flex; background: var(--panel); border-radius: 10px; padding: 3px; gap: 3px; }
 .seg-btn { border: none; background: transparent; padding: 8px 16px; border-radius: 8px; color: var(--muted); }
 .seg-btn.on { background: var(--panel2); color: var(--text); }
-.app-title {
-  font-size: 18px; font-weight: 800; letter-spacing: 0.02em;
-  /* The brand gradient (same as the Shuffle button) as text. */
-  background: linear-gradient(100deg, #6c5cff, #00ffc8 55%, #ffd60a);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+/* The top-bar wordmark: the same dot-and-line letters as the start screen, small. */
+.app-title { display: flex; align-items: center; gap: 3px; flex: none; }
+
+/* Round, colour-coded control buttons: every toolbar button is a circle with its
+   own hue (a dot in the app's dots-and-lines language). --bc sets the hue. */
+.play-btn, .menu-btn, .loop-view-btn, .pat-btn, .mixer-open-btn {
+  width: 42px; height: 42px; padding: 0; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1.5px solid var(--bc, var(--line));
+  color: var(--bc, var(--text));
+  background: var(--panel);
 }
 
 /* --- menu --- */
 .menu { position: relative; }
-.menu-btn { width: 42px; font-size: 18px; line-height: 1; }
+.menu-btn { --bc: #b197fc; font-size: 18px; line-height: 1; }
 .menu-panel {
   position: absolute;
   right: 0;
@@ -126,12 +134,32 @@ button:active { transform: scale(0.94); }
 .menu-panel button:active { background: var(--panel); }
 
 .transport { display: flex; align-items: center; gap: 10px; }
-.play-btn { width: 46px; text-align: center; font-size: 15px; }
-.tempo { width: 110px; }
+.play-btn { --bc: #69db7c; font-size: 15px; }
+/* BPM slider: a white dot on a thin white line (the sequencer language again). */
+.tempo {
+  width: 110px; height: 24px; margin: 0;
+  -webkit-appearance: none; appearance: none; background: transparent;
+}
+.tempo::-webkit-slider-runnable-track {
+  height: 2px; border-radius: 1px; background: rgba(255, 255, 255, 0.35);
+}
+.tempo::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; margin-top: -6px;
+  border: none; border-radius: 50%; background: #ffffff;
+}
+.tempo::-moz-range-track {
+  height: 2px; border-radius: 1px; background: rgba(255, 255, 255, 0.35);
+}
+.tempo::-moz-range-thumb {
+  width: 14px; height: 14px; border: none; border-radius: 50%; background: #ffffff;
+}
+/* The BPM value: a white circle to match the slider's white dot. */
 .tempo-label {
-  width: 46px; box-sizing: border-box; font: inherit; font-size: 13px; text-align: center;
-  color: var(--text); background: var(--panel2);
-  border: 1px solid var(--line); border-radius: 6px; padding: 3px 2px;
+  width: 42px; height: 42px; flex: none; box-sizing: border-box;
+  font: inherit; font-size: 13px; text-align: center;
+  color: #ffffff; background: transparent;
+  border: 1.5px solid rgba(255, 255, 255, 0.55); border-radius: 50%; padding: 0;
   -moz-appearance: textfield; appearance: textfield;
 }
 /* Hide the number spinners so it reads as a compact BPM box. */
@@ -141,27 +169,24 @@ button:active { transform: scale(0.94); }
 /* --- grid view --- */
 .viewroot { flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px; }
 
-/* pattern picker: numbered buttons (1..6) + loop/order view button */
+/* pattern picker: numbered circles (1..6), each ringed in its grid colour */
 .pattern-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pat-btn {
-  width: 40px; height: 40px; padding: 0; flex: none;
+  width: 40px; height: 40px;
   font-weight: 700; font-size: 15px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 10px; position: relative;
+  color: var(--muted);
+  border-color: color-mix(in srgb, var(--pat) 40%, var(--panel));
 }
-.pat-btn::before {
-  content: ""; position: absolute; top: 5px; left: 5px; right: 5px; height: 3px;
-  border-radius: 2px; background: var(--pat);
-}
-.pat-btn.on { border-color: var(--pat); color: var(--text); background: var(--panel2); }
+.pat-btn.on { border-color: var(--pat); color: var(--pat); background: var(--panel2); }
 .loop-view-btn {
+  --bc: var(--accent);
   margin-left: auto;
-  width: 40px; height: 40px; padding: 0; flex: none;
+  width: 40px; height: 40px;
   font-size: 18px; line-height: 1;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 10px;
+  color: var(--muted);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--panel));
 }
-.loop-view-btn.on { border-color: var(--accent); color: var(--accent); }
+.loop-view-btn.on { border-color: var(--accent); color: var(--accent); background: var(--panel2); }
 
 /* loop time (shown in the loop/order view) */
 .loop-time { display: flex; align-items: baseline; gap: 6px; font-size: 14px; }
@@ -453,12 +478,10 @@ button:active { transform: scale(0.94); }
 
 /* --- mixer --- */
 .mixer-open-btn {
-  width: 100%;
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  font-weight: 600; font-size: 14px; background: var(--panel2);
+  --bc: #4dabf7;
+  width: 48px; height: 48px; font-size: 20px;
 }
-.steps-actions { display: flex; gap: 8px; }
-.steps-actions .mixer-open-btn { width: auto; flex: 1; }
+.steps-actions { display: flex; gap: 8px; justify-content: center; }
 
 /* Euclidean mode: Manual/Euclid toggle, circle viz, and the 5-voice menu */
 .mode-toggle {
@@ -479,19 +502,39 @@ button:active { transform: scale(0.94); }
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .euclid-sound.has-sound { justify-content: flex-start; }
-.euclid-num { flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px; align-items: center; font-size: 10px; color: var(--muted); }
-/* Big, tappable number values (one tap selects the value — see app.ts mkNum). */
-.euclid-num input {
-  width: 52px; box-sizing: border-box; text-align: center; font: inherit; font-size: 22px; font-weight: 600;
-  color: var(--text); background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 8px; padding: 7px 2px;
+/* The four values as a flattened ring: voice-coloured circles on a connecting
+   line (--vc = the voice colour, set per row; dim grey when the slot is empty). */
+.euclid-vals { flex: 0 0 auto; display: flex; gap: 6px; position: relative; }
+.euclid-vals::before {
+  content: ""; position: absolute; left: 23px; right: 23px; bottom: 22px;
+  height: 2px; border-radius: 1px; background: var(--vc, var(--line)); opacity: 0.5;
 }
-/* Small × remove button. */
+.euclid-num {
+  flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px; align-items: center;
+  font-size: 10px; color: var(--muted); position: relative; z-index: 1;
+}
+/* Big, tappable number circles (one tap selects the value — see app.ts mkNum).
+   Opaque background so the connecting line passes behind, not through. */
+.euclid-num input {
+  width: 46px; height: 46px; box-sizing: border-box; text-align: center;
+  font: inherit; font-size: 17px; font-weight: 600;
+  color: var(--vc, var(--text)); background: var(--bg);
+  border: 1.5px solid var(--vc, var(--line));
+  border-radius: 50%; padding: 0;
+  -moz-appearance: textfield; appearance: textfield;
+}
+.euclid-num input::-webkit-inner-spin-button,
+.euclid-num input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.euclid-num input:disabled { opacity: 0.35; }
+/* Small × remove circle, centred on the value dots' line. */
 .euclid-remove {
-  flex: 0 0 auto; align-self: stretch; width: 24px; padding: 0;
+  flex: 0 0 auto; align-self: flex-end; margin-bottom: 10px;
+  width: 26px; height: 26px; padding: 0;
   display: flex; align-items: center; justify-content: center;
-  font-size: 15px; line-height: 1; color: var(--muted);
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 7px;
+  font-size: 14px; line-height: 1; color: #ff6b6b;
+  background: var(--panel);
+  border: 1.5px solid color-mix(in srgb, #ff6b6b 45%, var(--panel));
+  border-radius: 50%;
 }
 .euclid-remove:hover, .euclid-remove:active { color: #ff6b6b; border-color: #ff6b6b; }
 
@@ -680,10 +723,8 @@ button:active { transform: scale(0.94); }
   50% { outline-color: #fff; transform: scale(1.05); }
 }
 
-/* Selected pattern button pops and its colour stripe stretches. */
-.pat-btn::before { transition: left 0.18s ease, right 0.18s ease, height 0.18s ease; }
+/* Selected pattern circle pops. */
 .pat-btn.on { transform: scale(1.06); }
-.pat-btn.on::before { left: 3px; right: 3px; height: 4px; }
 
 /* Mute/Solo glow when engaged. */
 .mix-toggle.mute.on { box-shadow: 0 0 10px rgba(255, 69, 58, 0.5); }

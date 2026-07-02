@@ -13,13 +13,14 @@ import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import {
-  WipArrangement, NUM_BLOCKS, ORDER_SLOTS, EMPTY, GRID_COLORS,
+  WipArrangement, NUM_BLOCKS, ORDER_SLOTS, EMPTY, GRID_COLORS, VOICE_COLORS,
 } from "../model/melodyGrid";
 import { EUCLID_VOICES, clampSteps, MAX_STEPS, VOICE_DEFAULT, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
 import { GridView } from "./gridView";
 import { EuclidView } from "./euclidView";
 import { SoundView } from "./soundView";
 import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
+import { logoLetters } from "./logo";
 
 // A paint lane added from the saved-sound library. Each lane has a stable `soundId`
 // (what grid cells reference); the engine binds ids to physical channels on demand
@@ -52,9 +53,6 @@ const ORDER_VIEW = NUM_BLOCKS; // workspace value for the order list
 // Every voice's inline shuffle editor drives a single-drum DrumKit; the reference drum
 // only picks parameter specs — Full Range opens all ranges so any character is reachable.
 const REF_DRUM = DrumType.Kick;
-
-// One distinct hue per voice slot, so each circle reads clearly in the Euclid view.
-const VOICE_COLORS = ["#ff6b6b", "#ffd43b", "#69db7c", "#4dabf7", "#b197fc"];
 
 type View = "grid" | "sound" | "mixer";
 
@@ -364,18 +362,11 @@ export class App {
     this.root.innerHTML = "";
     const wrap = document.createElement("div");
     wrap.className = "start-screen";
-    // The logo bounces in letter by letter, each in a voice colour — the app's
-    // whole personality (five coloured voices) on the front door.
+    // The logo bounces in letter by letter, each drawn from the sequencer's own
+    // dots-and-lines in its voice colour — six letters, six voices, one language.
     const h = document.createElement("h1");
     h.className = "logo";
-    [..."Euclid"].forEach((letter, i) => {
-      const s = document.createElement("span");
-      s.className = "logo-letter";
-      s.textContent = letter;
-      s.style.color = VOICE_COLORS[i % VOICE_COLORS.length];
-      s.style.setProperty("--i", String(i));
-      h.append(s);
-    });
+    h.append(...logoLetters(46, true));
     const btn = document.createElement("button");
     btn.id = "start";
     btn.textContent = "▶ Start";
@@ -400,9 +391,10 @@ export class App {
 
     const bar = document.createElement("header");
     bar.className = "topbar";
+    // The wordmark, drawn from the sequencer's dots and lines (see ui/logo.ts).
     const title = document.createElement("span");
     title.className = "app-title";
-    title.textContent = "Euclid";
+    title.append(...logoLetters(15, false));
     bar.append(title, this.transport(), this.menu());
     this.root.append(bar);
 
@@ -524,7 +516,7 @@ export class App {
       const blk = this.arr.blocks[this.workspace];
       blk.euclid = true; // the sequencer is Euclidean-only now
 
-      // Circle visualization + the 5-voice shuffle menu.
+      // Circle visualization + the 6-voice shuffle menu.
       this.euclidView.setBlock(blk);
       const wrap = document.createElement("div");
       wrap.className = "euclid-wrap";
@@ -541,7 +533,7 @@ export class App {
     this.updateLoopTime();
   }
 
-  /** The 5-voice Euclidean menu: each row opens a shuffle menu + hits/steps/start. */
+  /** The 6-voice Euclidean menu: each row opens a shuffle menu + hits/steps/start. */
   private euclidMenu(): HTMLElement {
     const blk = this.arr.blocks[this.curBlock()];
     const wrap = document.createElement("div");
@@ -603,7 +595,14 @@ export class App {
       const split = mkNum("Split", voice.split ?? evenGap(voice.hits, voice.steps), "split", splitLocked);
       split.title = `Hit split: ${this.splitLabel(voice.hits, voice.steps, voice.rotation, voice.split)}`;
 
-      r.append(sound, hits, steps, start, split);
+      // The four values read like a flattened ring: voice-coloured circles joined
+      // by a line (the .euclid-vals::before rule). Empty slots stay dim grey.
+      const vals = document.createElement("div");
+      vals.className = "euclid-vals";
+      vals.style.setProperty("--vc", voice.soundId >= 0 ? voice.color : "#4a4e58");
+      vals.append(hits, steps, start, split);
+
+      r.append(sound, vals);
 
       // Remove button: clears the assigned sound from this slot (only shown when filled).
       if (voice.soundId >= 0) {
@@ -844,7 +843,9 @@ export class App {
 
     const mix = document.createElement("button");
     mix.className = "mixer-open-btn";
-    mix.textContent = "🎚 Mixer";
+    mix.textContent = "🎚";
+    mix.title = "Mixer";
+    mix.setAttribute("aria-label", "Mixer");
     mix.onclick = () => { this.view = "mixer"; this.render(); };
 
     row.append(mix);

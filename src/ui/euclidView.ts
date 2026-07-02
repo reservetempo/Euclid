@@ -1,5 +1,5 @@
-// Circular visualization for a grid's Euclidean mode: 5 nested circles (inner = voice
-// 1, outer = voice 5). Each voice draws a dot at every step around its circle in the
+// Circular visualization for a grid's Euclidean mode: 6 nested circles (inner = voice
+// 1, outer = voice 6). Each voice draws a dot at every step around its circle in the
 // sound's colour, with a radial line to the centre on each hit. The dot at the current
 // step lights up during playback. Mirrors GridView's DPR/layout handling.
 

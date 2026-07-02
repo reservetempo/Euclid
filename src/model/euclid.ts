@@ -3,7 +3,7 @@
 // the pattern starts at `rotation`. Used by the per-grid Euclidean sequencer mode
 // (see MelodyGrid.voices).
 
-export const EUCLID_VOICES = 5;     // circles / voice slots per Euclidean grid
+export const EUCLID_VOICES = 6;     // circles / voice slots per Euclidean grid (one per logo letter)
 export const MAX_STEPS = 64;        // upper bound on a voice's step count
 
 // New voices start blank — every value is 0, so a freshly assigned circle is silent
