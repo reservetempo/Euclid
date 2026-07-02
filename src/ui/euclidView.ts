@@ -8,12 +8,19 @@ import { EUCLID_VOICES, voicePattern } from "../model/euclid";
 
 const TWO_PI = Math.PI * 2;
 const TOP = -Math.PI / 2; // step 0 sits at 12 o'clock
+const PULSE_MS = 420;     // how long a hit's swell/ripple stays visible
+const PULSE_TAU = 130;    // exponential decay constant of the pulse (ms)
 
 export class EuclidView {
   readonly canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private grid: MelodyGrid;
   private playStep = -1;
+  // Per-voice timestamp of its last fired hit, driving the swell + ripple juice.
+  private fireAt: number[] = new Array(EUCLID_VOICES).fill(-1e9);
+  private animId = 0;
+  private reduceMotion =
+    typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   constructor(grid: MelodyGrid) {
     this.grid = grid;
@@ -25,6 +32,7 @@ export class EuclidView {
   setBlock(grid: MelodyGrid): void {
     this.grid = grid;
     this.playStep = -1;
+    this.fireAt.fill(-1e9);
     this.draw();
   }
 
@@ -32,6 +40,30 @@ export class EuclidView {
     if (step === this.playStep) return;
     this.playStep = step;
     this.draw();
+  }
+
+  /** Flash the voices whose sounds just fired: their active dot swells and a ripple
+      ring expands outward, decaying over PULSE_MS (from the playhead handler). */
+  pulse(soundIds: number[]): void {
+    if (this.reduceMotion || soundIds.length === 0) return;
+    const now = performance.now();
+    let any = false;
+    this.grid.voices.forEach((v, i) => {
+      if (v.soundId >= 0 && soundIds.includes(v.soundId)) { this.fireAt[i] = now; any = true; }
+    });
+    if (any) this.ensureAnim();
+  }
+
+  // Keep redrawing while any pulse is still visibly decaying; self-stops after.
+  private ensureAnim(): void {
+    if (this.animId) return;
+    const tick = () => {
+      this.animId = 0;
+      this.draw();
+      const now = performance.now();
+      if (this.fireAt.some((t) => now - t < PULSE_MS)) this.animId = requestAnimationFrame(tick);
+    };
+    this.animId = requestAnimationFrame(tick);
   }
 
   /** The square side length (CSS px) the canvas should draw at. */
@@ -62,6 +94,7 @@ export class EuclidView {
     const innerR = size * 0.12;
     const outerR = size * 0.45;
     const radius = (i: number) => innerR + ((outerR - innerR) * i) / (EUCLID_VOICES - 1);
+    const now = performance.now();
 
     for (let i = 0; i < EUCLID_VOICES; i++) {
       const r = radius(i);
@@ -79,6 +112,9 @@ export class EuclidView {
       const steps = Math.max(1, v.steps);
       const pattern = voicePattern(v.hits, steps, v.rotation, v.split);
       const active = this.playStep >= 0 ? this.playStep % steps : -1;
+      // Hit pulse: 1 right when the voice fired, decaying to 0 over PULSE_MS.
+      const age = now - this.fireAt[i];
+      const p = age < PULSE_MS ? Math.exp(-age / PULSE_TAU) : 0;
 
       for (let k = 0; k < steps; k++) {
         const a = TOP + (TWO_PI * k) / steps;
@@ -87,21 +123,23 @@ export class EuclidView {
         const hit = pattern[k];
 
         if (hit) {
-          // Radial line from the hit toward the centre, in the sound's colour.
+          // Radial line from the hit toward the centre, in the sound's colour;
+          // the firing hit's line flashes thicker while the pulse decays.
           ctx.beginPath();
           ctx.moveTo(cx, cy);
           ctx.lineTo(px, py);
           ctx.strokeStyle = v.color;
-          ctx.lineWidth = k === active ? 3 : 1.5;
+          ctx.lineWidth = k === active ? 3 + 3 * p : 1.5;
           ctx.globalAlpha = k === active ? 1 : 0.7;
           ctx.stroke();
           ctx.globalAlpha = 1;
         }
 
-        // Step dot: hits are filled, rests are dim; the current step lights up.
+        // Step dot: hits are filled, rests are dim; the current step lights up and
+        // SWELLS on fire, with a ripple ring expanding outward as the pulse decays.
         const isNow = k === active;
         ctx.beginPath();
-        ctx.arc(px, py, isNow ? 6 : hit ? 4 : 2.5, 0, TWO_PI);
+        ctx.arc(px, py, isNow ? 6 + 5 * p : hit ? 4 : 2.5, 0, TWO_PI);
         if (isNow) ctx.fillStyle = "#ffffff";
         else if (hit) ctx.fillStyle = v.color;
         else ctx.fillStyle = "#4a4e58";
@@ -110,6 +148,15 @@ export class EuclidView {
           ctx.strokeStyle = v.color;
           ctx.lineWidth = 2;
           ctx.stroke();
+          if (p > 0.02) {
+            ctx.beginPath();
+            ctx.arc(px, py, 8 + (1 - p) * 20, 0, TWO_PI);
+            ctx.strokeStyle = v.color;
+            ctx.globalAlpha = p * 0.7;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          }
         }
       }
     }

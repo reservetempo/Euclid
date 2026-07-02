@@ -75,6 +75,7 @@ export class SoundView {
   private snapIdx = 0;  // index into SNAP_OPTIONS (0 = Off, free Hz)
   private seedText = ""; // user-entered seed ("" = roll a fresh one per shuffle)
   private lastSeed = ""; // the seed the last shuffle actually used (shareable)
+  private rolled = false; // one-shot: spin the die on the rebuild right after a shuffle
 
   constructor(
     private kit: DrumKit,
@@ -132,10 +133,12 @@ export class SoundView {
     const panel = document.createElement("div");
     panel.className = "preset-grid";
 
+    let tileIdx = 0;
     const addTile = (label: string, color: string | null, onPick: () => void) => {
       const b = document.createElement("button");
       b.className = "preset-tile";
       b.textContent = label;
+      b.style.setProperty("--i", String(tileIdx++)); // staggered pop-in
       if (color) {
         b.style.background = color;
         b.style.color = textOn(color);
@@ -182,7 +185,12 @@ export class SoundView {
     const sec = document.createElement("section");
     sec.className = "cat shuffle-section";
 
-    const shuffle = mkBtn("🎲 Shuffle", "shuffle-big");
+    const shuffle = mkBtn(" Shuffle", "shuffle-big");
+    const dice = document.createElement("span");
+    dice.className = "dice" + (this.rolled ? " rolled" : "");
+    dice.textContent = "🎲";
+    shuffle.prepend(dice);
+    this.rolled = false;
     shuffle.onclick = () => {
       const ctx = this.cb.context?.() ?? { root: 0, scale: 0, bpm: 120 };
       // A typed seed repeats exactly (at 100% randomness); empty rolls a fresh one.
@@ -198,6 +206,7 @@ export class SoundView {
         scale: ctx.scale,
         seed,
       });
+      this.rolled = true;
       this.afterReplace();
     };
     sec.append(shuffle);

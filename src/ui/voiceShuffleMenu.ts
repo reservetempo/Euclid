@@ -9,6 +9,7 @@ import { DrumKit } from "../model/drumKit";
 import { DrumType } from "../model/drums";
 import { FACTORY_PRESETS, Preset } from "../model/presets";
 import { CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS, randomSeed } from "./soundView";
+import { burstConfetti } from "./confetti";
 
 // The mutable shuffle settings kept per voice (persist across menu opens). The kit
 // holds the live params + ranges + undo stack for this one voice.
@@ -55,6 +56,7 @@ export function buildVoiceShuffleMenu(
   panel.className = "voice-shuffle";
   let showPresets = false; // presets stay hidden behind their button until toggled
   let showMates = false;   // ditto for the crossbreed partner list
+  let rolled = false;      // one-shot: spin the die on the render right after a shuffle
 
   // Apply a kit mutation, then push it into the voice, preview it, and refresh the UI.
   const afterChange = () => { cb.onChange(); cb.audition(); render(); };
@@ -62,8 +64,13 @@ export function buildVoiceShuffleMenu(
   const render = () => {
     panel.innerHTML = "";
 
-    // Big primary Shuffle.
-    const shuffle = mkBtn("🎲 Shuffle", "shuffle-big");
+    // Big primary Shuffle, with a die that spins on every roll.
+    const shuffle = mkBtn(" Shuffle", "shuffle-big");
+    const dice = document.createElement("span");
+    dice.className = "dice" + (rolled ? " rolled" : "");
+    dice.textContent = "🎲";
+    shuffle.prepend(dice);
+    rolled = false;
     shuffle.onclick = () => {
       const ctx = cb.context();
       const seed = editor.seedText.trim() || randomSeed();
@@ -78,6 +85,7 @@ export function buildVoiceShuffleMenu(
         scale: ctx.scale,
         seed,
       });
+      rolled = true;
       afterChange();
     };
     panel.append(shuffle);
@@ -137,18 +145,20 @@ export function buildVoiceShuffleMenu(
       if (showMates) {
         const list = document.createElement("div");
         list.className = "voice-preset-grid";
-        for (const m of mates) {
+        mates.forEach((m, i) => {
           const tile = mkBtn(m.name, "preset-tile");
           tile.style.background = m.color;
           tile.style.color = textOn(m.color);
           tile.style.borderColor = "transparent";
+          tile.style.setProperty("--i", String(i));
           tile.onclick = () => {
             editor.kit.breed(drum, m.snapshot);
             showMates = false;
+            burstConfetti(44); // a birth deserves a little party
             afterChange();
           };
           list.append(tile);
-        }
+        });
         panel.append(list);
       }
     }
@@ -167,13 +177,15 @@ export function buildVoiceShuffleMenu(
     if (showPresets) {
       const presets = document.createElement("div");
       presets.className = "voice-preset-grid";
-      for (const preset of FACTORY_PRESETS) {
-        presets.append(presetTile(preset, () => {
+      FACTORY_PRESETS.forEach((preset, i) => {
+        const tile = presetTile(preset, () => {
           editor.kit.applyPreset(drum, preset);
           showPresets = false;
           afterChange();
-        }));
-      }
+        });
+        tile.style.setProperty("--i", String(i)); // staggered pop-in
+        presets.append(tile);
+      });
       panel.append(presets);
     }
 

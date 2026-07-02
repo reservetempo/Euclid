@@ -96,6 +96,8 @@ export class App {
   private orderSlotEls: HTMLElement[] | null = null;
   // Channel -> flash LED, populated while the Mixer view is shown.
   private mixerLeds: Map<number, HTMLElement> | null = null;
+  // Sound id -> voice title button, for the colour flash when its voice fires.
+  private voiceBtns: Map<number, HTMLElement> | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -124,6 +126,17 @@ export class App {
         led.classList.remove("flash");
         void led.offsetWidth; // restart the fade animation on a repeat trigger
         led.classList.add("flash");
+      }
+    }
+    // Juice: swell + ripple the fired hits on the circle, and flash their voice rows.
+    if (blk && blk.euclid && onCurrent) this.euclidView.pulse(p.fired);
+    if (this.voiceBtns) {
+      for (const ch of p.fired) {
+        const btn = this.voiceBtns.get(ch);
+        if (!btn) continue;
+        btn.classList.remove("hit-flash");
+        void btn.offsetWidth;
+        btn.classList.add("hit-flash");
       }
     }
   }
@@ -351,8 +364,18 @@ export class App {
     this.root.innerHTML = "";
     const wrap = document.createElement("div");
     wrap.className = "start-screen";
+    // The logo bounces in letter by letter, each in a voice colour — the app's
+    // whole personality (five coloured voices) on the front door.
     const h = document.createElement("h1");
-    h.textContent = "Euclid";
+    h.className = "logo";
+    [..."Euclid"].forEach((letter, i) => {
+      const s = document.createElement("span");
+      s.className = "logo-letter";
+      s.textContent = letter;
+      s.style.color = VOICE_COLORS[i % VOICE_COLORS.length];
+      s.style.setProperty("--i", String(i));
+      h.append(s);
+    });
     const btn = document.createElement("button");
     btn.id = "start";
     btn.textContent = "▶ Start";
@@ -373,6 +396,7 @@ export class App {
     this.loopTimeEl = null;
     this.orderSlotEls = null;
     this.mixerLeds = null;
+    this.voiceBtns = null;
 
     const bar = document.createElement("header");
     bar.className = "topbar";
@@ -436,7 +460,14 @@ export class App {
 
     const play = document.createElement("button");
     play.className = "play-btn";
-    play.textContent = this.playing ? "■" : "▶";
+    // While playing the button turns accent and pulses once per beat (see .playing
+    // in style.css; --beat is the beat length so the pulse tracks the tempo).
+    const syncPlay = () => {
+      play.textContent = this.playing ? "■" : "▶";
+      play.classList.toggle("playing", this.playing);
+      play.style.setProperty("--beat", `${(60 / this.tempo).toFixed(4)}s`);
+    };
+    syncPlay();
     play.onclick = () => {
       this.playing = !this.playing;
       if (this.playing) this.engine.play();
@@ -445,7 +476,7 @@ export class App {
         this.gridView.setPlayhead(-1);
         this.euclidView.setPlayhead(-1);
       }
-      play.textContent = this.playing ? "■" : "▶";
+      syncPlay();
     };
 
     const tempo = document.createElement("input");
@@ -515,6 +546,7 @@ export class App {
     const blk = this.arr.blocks[this.curBlock()];
     const wrap = document.createElement("div");
     wrap.className = "euclid-menu";
+    this.voiceBtns = new Map();
 
     for (let i = 0; i < EUCLID_VOICES; i++) {
       const voice = blk.voices[i];
@@ -529,9 +561,15 @@ export class App {
         sound.style.background = voice.color;
         sound.style.borderColor = voice.color;
         sound.style.color = "#15161a"; // dark text for contrast on the light voice hues
+        sound.style.setProperty("--vc", voice.color); // hit-flash glow colour
         sound.textContent = voice.name || `Voice ${i + 1}`;
+        this.voiceBtns.set(voice.soundId, sound);
       } else {
-        sound.textContent = `🎲 Voice ${i + 1}`;
+        // Empty slot: a gently wiggling die invites a first shuffle.
+        const dice = document.createElement("span");
+        dice.className = "dice";
+        dice.textContent = "🎲";
+        sound.append(dice, ` Voice ${i + 1}`);
       }
       sound.onclick = () => this.openVoiceShuffleMenu(sound, i);
 
