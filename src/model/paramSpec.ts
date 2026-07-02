@@ -159,25 +159,45 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
 
   switch (drum) {
     case DrumType.Kick:
+      // A short "Knock" click layers in the beater-on-head transient under the
+      // pitch-enveloped body; a touch of drive and a slightly percussive decay
+      // shape round out the punch.
       if (id === ParamId.Pitch) setRange(s, 35, 95, 50);
       if (id === ParamId.PitchEnvAmount) s.def = 3.0;
       if (id === ParamId.PitchEnvDecay) s.def = 0.07;
       if (id === ParamId.AmpDecay) setRange(s, 0.05, 1.2, 0.45);
+      if (id === ParamId.AmpDecayShape) s.def = 0.62;
       if (id === ParamId.NoiseLevel) setRange(s, 0, 0.5, 0.03);
       if (id === ParamId.ToneLevel) s.def = 1.0;
       if (id === ParamId.FilterCutoff) s.def = 6000;
+      if (id === ParamId.ClickLevel) s.def = 0.25;
+      if (id === ParamId.ClickType) s.def = 2.0; // Knock
+      if (id === ParamId.Drive) s.def = 0.15;
       break;
 
     case DrumType.Snare:
+      // Pink noise body + a white "Snap" transient for the stick attack, plus a
+      // touch of the modal bank's Plate (inharmonic spread) standing in for the
+      // wire buzz under the tone.
       if (id === ParamId.Pitch) setRange(s, 160, 240, 195);
       if (id === ParamId.NoiseLevel) setRange(s, 0.1, 1.0, 0.7);
+      if (id === ParamId.NoiseType) s.def = 1.0; // Pink
       if (id === ParamId.AmpDecay) setRange(s, 0.04, 0.6, 0.18);
       if (id === ParamId.PitchEnvAmount) s.def = 0.6;
       if (id === ParamId.FilterType) s.def = 2.0; // BP
       if (id === ParamId.FilterCutoff) s.def = 2500;
+      if (id === ParamId.ClickLevel) s.def = 0.3;
+      if (id === ParamId.ClickType) s.def = 1.0; // Snap
+      if (id === ParamId.ModalMix) s.def = 0.15;
+      if (id === ParamId.ModalMaterial) s.def = 4.0; // Plate
+      if (id === ParamId.ModalDecay) s.def = 0.3;
       break;
 
     case DrumType.Clap:
+      // Real clap circuits (808/909) fire several quick noise bursts, not one hit —
+      // Ratchet's per-hit retrigger stands in for that flutter, narrowed high so
+      // it's almost always on (shuffle can thin it out, but rarely to a flat single
+      // hit, which would lose the identity).
       if (id === ParamId.Pitch) setRange(s, 700, 1050, 850);
       if (id === ParamId.NoiseLevel) setRange(s, 0.4, 1.0, 0.95);
       if (id === ParamId.ToneLevel) s.def = 0.1;
@@ -185,12 +205,16 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       if (id === ParamId.FilterType) s.def = 2.0; // BP
       if (id === ParamId.FilterCutoff) s.def = 1500;
       if (id === ParamId.FilterReso) s.def = 1.5;
+      if (id === ParamId.Ratchet) setRange(s, 0.4, 1.0, 0.7);
       break;
 
     case DrumType.ClosedHat:
+      // Metal (sample-and-hold decimated) noise reads as gritty analog-drum-machine
+      // hat instead of plain hiss.
       if (id === ParamId.Pitch) setRange(s, 1300, 2400, 1700);
       if (id === ParamId.Waveform) s.def = 2.0; // Square
       if (id === ParamId.NoiseLevel) setRange(s, 0.4, 1.0, 0.95);
+      if (id === ParamId.NoiseType) s.def = 6.0; // Metal
       if (id === ParamId.ToneLevel) s.def = 0.2;
       if (id === ParamId.AmpDecay) setRange(s, 0.01, 0.2, 0.05);
       if (id === ParamId.FilterType) s.def = 1.0; // HP
@@ -198,9 +222,12 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       break;
 
     case DrumType.OpenHat:
+      // Same Metal noise source as the Closed Hat (one physical instrument, two
+      // envelopes) so the pair reads as matched hardware.
       if (id === ParamId.Pitch) setRange(s, 1300, 2400, 1700);
       if (id === ParamId.Waveform) s.def = 2.0; // Square
       if (id === ParamId.NoiseLevel) setRange(s, 0.4, 1.0, 0.95);
+      if (id === ParamId.NoiseType) s.def = 6.0; // Metal
       if (id === ParamId.ToneLevel) s.def = 0.2;
       if (id === ParamId.AmpDecay) setRange(s, 0.08, 0.9, 0.35);
       if (id === ParamId.FilterType) s.def = 1.0; // HP
@@ -208,37 +235,60 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       break;
 
     case DrumType.LowTom:
+      // Membrane modal resonance under the pitch-enveloped tone stands in for the
+      // drum shell — toms are literal membranophones, the modal bank's most
+      // natural home in the kit. Ring scales with tom size (low = longest).
       if (id === ParamId.Pitch) setRange(s, 80, 130, 95);
       if (id === ParamId.PitchEnvAmount) s.def = 1.0;
       if (id === ParamId.AmpDecay) setRange(s, 0.1, 0.9, 0.4);
+      if (id === ParamId.AmpDecayShape) s.def = 0.6;
       if (id === ParamId.NoiseLevel) setRange(s, 0, 0.3, 0.05);
+      if (id === ParamId.ModalMix) s.def = 0.2;
+      if (id === ParamId.ModalMaterial) s.def = 0.0; // Membrane
+      if (id === ParamId.ModalDecay) s.def = 0.6;
       break;
 
     case DrumType.MidTom:
       if (id === ParamId.Pitch) setRange(s, 140, 190, 160);
       if (id === ParamId.PitchEnvAmount) s.def = 1.0;
       if (id === ParamId.AmpDecay) setRange(s, 0.1, 0.9, 0.35);
+      if (id === ParamId.AmpDecayShape) s.def = 0.6;
       if (id === ParamId.NoiseLevel) setRange(s, 0, 0.3, 0.05);
+      if (id === ParamId.ModalMix) s.def = 0.18;
+      if (id === ParamId.ModalMaterial) s.def = 0.0; // Membrane
+      if (id === ParamId.ModalDecay) s.def = 0.5;
       break;
 
     case DrumType.HighTom:
       if (id === ParamId.Pitch) setRange(s, 200, 270, 235);
       if (id === ParamId.PitchEnvAmount) s.def = 1.0;
       if (id === ParamId.AmpDecay) setRange(s, 0.08, 0.7, 0.3);
+      if (id === ParamId.AmpDecayShape) s.def = 0.6;
       if (id === ParamId.NoiseLevel) setRange(s, 0, 0.3, 0.05);
+      if (id === ParamId.ModalMix) s.def = 0.15;
+      if (id === ParamId.ModalMaterial) s.def = 0.0; // Membrane
+      if (id === ParamId.ModalDecay) s.def = 0.4;
       break;
 
     case DrumType.Rim:
+      // A violet-noise "Tick" click sharpens the stick-on-rim transient on top of
+      // the short tonal body.
       if (id === ParamId.Pitch) setRange(s, 350, 650, 480);
       if (id === ParamId.Waveform) s.def = 2.0; // Square
       if (id === ParamId.AmpDecay) setRange(s, 0.01, 0.12, 0.03);
       if (id === ParamId.NoiseLevel) setRange(s, 0, 0.5, 0.15);
+      if (id === ParamId.NoiseType) s.def = 4.0; // Violet
       if (id === ParamId.PitchEnvAmount) s.def = 1.5;
       if (id === ParamId.FilterType) s.def = 2.0; // BP
       if (id === ParamId.FilterCutoff) s.def = 3000;
+      if (id === ParamId.ClickLevel) s.def = 0.35;
+      if (id === ParamId.ClickType) s.def = 0.0; // Tick
       break;
 
     case DrumType.Cowbell:
+      // The real TR-808 cowbell circuit mixes two square waves (~540Hz + ~800Hz,
+      // roughly a fifth apart) through a resonant bandpass — Osc2 detuned +7
+      // semitones reproduces that two-oscillator clang.
       if (id === ParamId.Pitch) setRange(s, 540, 820, 600);
       if (id === ParamId.Waveform) s.def = 2.0; // Square
       if (id === ParamId.AmpDecay) setRange(s, 0.05, 0.5, 0.2);
@@ -246,6 +296,9 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       if (id === ParamId.ToneLevel) s.def = 0.9;
       if (id === ParamId.FilterType) s.def = 2.0; // BP
       if (id === ParamId.FilterCutoff) s.def = 2500;
+      if (id === ParamId.FilterReso) s.def = 2.0;
+      if (id === ParamId.Osc2Mix) s.def = 0.55;
+      if (id === ParamId.Osc2Detune) setRange(s, 5, 9, 7); // ~a fifth: the 540/800Hz clang
       break;
 
     case DrumType.Wobble:
@@ -277,7 +330,9 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       break;
 
     case DrumType.SynthBass:
-      // Clean sustained synth bass for basslines/melodies.
+      // Clean sustained synth bass for basslines/melodies. An Osc2 sub layer one
+      // octave down thickens the low end without adding movement (that's Wobble's
+      // job) — no LFO here on purpose.
       if (id === ParamId.Pitch) setRange(s, 40, 200, 90);
       if (id === ParamId.Waveform) s.def = 2.0; // Square
       if (id === ParamId.PitchEnvAmount) s.def = 0.2;
@@ -291,6 +346,8 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       if (id === ParamId.FilterCutoff) setRange(s, 80, 8000, 1200);
       if (id === ParamId.FilterReso) s.def = 1.2;
       if (id === ParamId.Drive) s.def = 0.2;
+      if (id === ParamId.Osc2Mix) s.def = 0.35;
+      if (id === ParamId.Osc2Detune) s.def = -12; // one octave down
       break;
   }
 
