@@ -23,7 +23,7 @@ export interface NodeJSON {
   rotation: number;
   split?: number;
   reps: number;
-  transition?: { fromId: number; toId: number };
+  transition?: { fromId: number; toId: number; mode?: "morph" | "crossfade" };
   preset?: string;
   ranges?: { lo: number[]; hi: number[] };
 }
@@ -65,7 +65,9 @@ const cloneNode = (n: VoiceNode): NodeJSON => ({
   soundId: n.soundId, snapshot: n.snapshot.slice(), color: n.color, name: n.name,
   pitch: [n.pitch[0], n.pitch[1]], hits: n.hits, steps: n.steps, rotation: n.rotation,
   split: n.split, reps: n.reps,
-  transition: n.transition ? { fromId: n.transition.fromId, toId: n.transition.toId } : undefined,
+  transition: n.transition
+    ? { fromId: n.transition.fromId, toId: n.transition.toId, mode: n.transition.mode }
+    : undefined,
   preset: n.preset,
   ranges: n.ranges ? { lo: n.ranges.lo.slice(), hi: n.ranges.hi.slice() } : undefined,
 });
@@ -122,7 +124,7 @@ function readNode(sv: (Partial<NodeJSON> & { bars?: number }) | null | undefined
     n.reps = Math.max(1, Math.min(MAX_REPS, Math.round(defReps)));
   }
   n.transition = sv.transition && typeof sv.transition.fromId === "number" && typeof sv.transition.toId === "number"
-    ? { fromId: sv.transition.fromId, toId: sv.transition.toId }
+    ? { fromId: sv.transition.fromId, toId: sv.transition.toId, mode: sv.transition.mode === "crossfade" ? "crossfade" : "morph" }
     : undefined;
   n.preset = typeof sv.preset === "string" ? sv.preset : undefined;
   n.ranges = sv.ranges && Array.isArray(sv.ranges.lo) && Array.isArray(sv.ranges.hi)

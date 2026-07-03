@@ -21,7 +21,7 @@ import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import {
-  LineArrangement, VoiceNode, emptyNode, nodeLen, nodeBars,
+  LineArrangement, VoiceNode, TransitionMode, emptyNode, nodeLen, nodeBars,
   NUM_LINES, STEPS_PER_BAR, MAX_REPS, VOICE_COLORS,
 } from "../model/lines";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
@@ -656,6 +656,25 @@ export class App {
         detail.className = "euclid-detail";
         detail.append(vals, rm);
         r.append(detail);
+
+        // A transition also gets a Morph/Crossfade toggle so its blend mode can be
+        // changed after it's created.
+        if (node.transition) {
+          const modes = document.createElement("div");
+          modes.className = "tr-modes inline";
+          (["morph", "crossfade"] as TransitionMode[]).forEach((m) => {
+            const b = document.createElement("button");
+            b.className = "tr-mode" + (node.transition!.mode === m ? " on" : "");
+            b.textContent = m === "morph" ? "Morph" : "Crossfade";
+            b.onclick = () => {
+              node.transition!.mode = m;
+              this.syncLines();
+              this.render();
+            };
+            modes.append(b);
+          });
+          r.append(modes);
+        }
       }
 
       // Node navigation, in the dots-and-lines language: •— = previous node,
@@ -932,21 +951,22 @@ export class App {
   }
 
   /** Insert a transition node into line `li` at chain gap `gap` (between nodes
-      gap-1 and gap), morphing the sound of the node before it into the node after.
-      Both neighbours must be sounding (non-transition) nodes. */
-  private insertTransition(li: number, gap: number): void {
+      gap-1 and gap), blending the sound before it into the sound after it. `mode`
+      picks morph vs crossfade; `reps` sets its length. Both neighbours must be
+      sounding (non-transition) nodes. */
+  private insertTransition(li: number, gap: number, mode: TransitionMode, reps: number): void {
     const nodes = this.arr.lines[li].nodes;
     const from = nodes[gap - 1];
     const to = nodes[gap];
     if (!from || !to || from.soundId < 0 || to.soundId < 0 || from.transition || to.transition) return;
     const tr = emptyNode();
     tr.soundId = this.nextSoundId++;      // its own channel id (no table entry needed)
-    tr.transition = { fromId: from.soundId, toId: to.soundId };
+    tr.transition = { fromId: from.soundId, toId: to.soundId, mode };
     tr.color = to.color;                  // ring shows the destination colour
     tr.name = "→";
-    // Inherit the "from" node's rhythm so the morph is heard on a familiar groove.
+    // Inherit the "from" node's rhythm so the blend is heard on a familiar groove.
     tr.hits = from.hits; tr.steps = from.steps; tr.rotation = from.rotation; tr.split = from.split;
-    tr.reps = 1;
+    tr.reps = Math.max(1, Math.min(MAX_REPS, Math.round(reps)));
     nodes.splice(gap, 0, tr);
     this.editNode[li] = gap;
     this.addingTransition = false;
@@ -956,6 +976,117 @@ export class App {
     }
     this.syncLines();
     this.render();
+  }
+
+  /** Popup shown when tapping a ✛ gap: pick the blend mode + length, then insert. If
+      the gap's neighbours aren't both sounding, it explains and offers to jump to the
+      node that needs a sound. */
+  private openTransitionOptions(li: number, gap: number): void {
+    const nodes = this.arr.lines[li].nodes;
+    const from = nodes[gap - 1];
+    const to = nodes[gap];
+    const overlay = document.createElement("div");
+    overlay.className = "tr-overlay";
+    const dialog = document.createElement("div");
+    dialog.className = "tr-dialog";
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    const title = document.createElement("h3");
+    title.className = "tr-title";
+    title.textContent = "Transition";
+    dialog.append(title);
+
+    const bothSound = !!from && !!to && from.soundId >= 0 && to.soundId >= 0 && !from.transition && !to.transition;
+    if (!bothSound) {
+      const msg = document.createElement("p");
+      msg.className = "hint";
+      msg.textContent = "A transition morphs one sound into another, so both neighbouring nodes need a sound. Give the empty one a sound first.";
+      dialog.append(msg);
+      const gapNode = to && to.soundId < 0 ? gap : gap - 1; // the node lacking a sound
+      const edit = document.createElement("button");
+      edit.className = "tr-add";
+      edit.textContent = "Edit that node →";
+      edit.onclick = () => {
+        overlay.remove();
+        this.addingTransition = false;
+        this.editNode[li] = Math.max(0, Math.min(nodes.length - 1, gapNode));
+        this.expanded = li;
+        this.view = "seq";
+        this.render();
+      };
+      const cancel = document.createElement("button");
+      cancel.className = "tr-cancel";
+      cancel.textContent = "Cancel";
+      cancel.onclick = () => overlay.remove();
+      const btns = document.createElement("div");
+      btns.className = "tr-btns";
+      btns.append(cancel, edit);
+      dialog.append(btns);
+      overlay.append(dialog);
+      this.root.append(overlay);
+      return;
+    }
+
+    // Mode toggle: Morph (params) / Crossfade (both sounds).
+    let mode: TransitionMode = "morph";
+    const modeRow = document.createElement("div");
+    modeRow.className = "tr-modes";
+    const morphBtn = document.createElement("button");
+    const crossBtn = document.createElement("button");
+    const syncMode = () => {
+      morphBtn.className = "tr-mode" + (mode === "morph" ? " on" : "");
+      crossBtn.className = "tr-mode" + (mode === "crossfade" ? " on" : "");
+    };
+    morphBtn.textContent = "Morph";
+    morphBtn.title = "One sound's parameters mutate into the other";
+    morphBtn.onclick = () => { mode = "morph"; syncMode(); };
+    crossBtn.textContent = "Crossfade";
+    crossBtn.title = "Both sounds play, one fading out as the other fades in";
+    crossBtn.onclick = () => { mode = "crossfade"; syncMode(); };
+    syncMode();
+    modeRow.append(morphBtn, crossBtn);
+    dialog.append(modeRow);
+
+    // Length stepper (reps of the inherited "from" rhythm), with a bars helper.
+    let reps = 2;
+    const unit = from!.steps >= 1 ? from!.steps : STEPS_PER_BAR;
+    const lenRow = document.createElement("div");
+    lenRow.className = "tr-len";
+    const lbl = document.createElement("span");
+    lbl.textContent = "Length";
+    const minus = document.createElement("button");
+    minus.className = "tr-step";
+    minus.textContent = "−";
+    const val = document.createElement("span");
+    val.className = "tr-len-val";
+    const plus = document.createElement("button");
+    plus.className = "tr-step";
+    plus.textContent = "+";
+    const syncLen = () => {
+      const bars = (reps * unit) / STEPS_PER_BAR;
+      val.textContent = `${reps} rep${reps === 1 ? "" : "s"} · ${Number.isInteger(bars) ? bars : +bars.toFixed(2)} bar${bars === 1 ? "" : "s"}`;
+    };
+    minus.onclick = () => { reps = Math.max(1, reps - 1); syncLen(); };
+    plus.onclick = () => { reps = Math.min(MAX_REPS, reps + 1); syncLen(); };
+    syncLen();
+    lenRow.append(lbl, minus, val, plus);
+    dialog.append(lenRow);
+
+    const cancel = document.createElement("button");
+    cancel.className = "tr-cancel";
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => overlay.remove();
+    const add = document.createElement("button");
+    add.className = "tr-add";
+    add.textContent = "Add transition";
+    add.onclick = () => { overlay.remove(); this.insertTransition(li, gap, mode, reps); };
+    const btns = document.createElement("div");
+    btns.className = "tr-btns";
+    btns.append(cancel, add);
+    dialog.append(btns);
+
+    overlay.append(dialog);
+    this.root.append(overlay);
   }
 
   // --- loop view (the node chains) ----------------------------------------
@@ -989,7 +1120,7 @@ export class App {
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = this.addingTransition
-      ? "Tap a ✛ between two sounds to morph one into the other."
+      ? "Tap a ✛ between two sounds to blend one into the other. A line needs two sounds in a row — add a second node and shuffle it a sound first if you don't see a ✛."
       : "Each voice flows along its line of nodes (the number = bars). The loop is as long as the longest line; shorter lines rest until it comes round. Tap a node to edit it.";
     v.append(hint);
 
@@ -1021,13 +1152,15 @@ export class App {
 
       const dots: HTMLElement[] = [];
       nodes.forEach((n, k) => {
-        // A ✛ gap sits between two adjacent sounding nodes while adding a transition.
-        if (this.addingTransition && k > 0 && sounding(nodes[k - 1]) && sounding(n)) {
+        // A ✛ gap sits after a sounding node while adding a transition (so it's
+        // visible even before the next node has a sound); dimmed until the node
+        // after it is also a sound. The popup guides you either way.
+        if (this.addingTransition && k > 0 && sounding(nodes[k - 1]) && !n.transition) {
           const gap = document.createElement("button");
-          gap.className = "transition-gap";
+          gap.className = "transition-gap" + (sounding(n) ? "" : " dim");
           gap.textContent = "✛";
-          gap.title = "Morph these two sounds";
-          gap.onclick = () => this.insertTransition(li, k);
+          gap.title = sounding(n) ? "Add a transition between these sounds" : "The node after needs a sound";
+          gap.onclick = () => this.openTransitionOptions(li, k);
           row.append(gap);
         }
         const dot = document.createElement("button");

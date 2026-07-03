@@ -12,9 +12,11 @@
 // bar cycles at its own rate — and node chains let a voice change rhythm over the
 // loop.
 //
-// A node may instead be a TRANSITION: it carries `transition:{fromId,toId}` and
-// morphs the sound of the previous node into the next across its window (the engine
-// lerps their snapshots per hit). See engine.js fireStep.
+// A node may instead be a TRANSITION: it carries `transition:{fromId,toId,mode}` and
+// blends the previous node's sound into the next across its window, progressively per
+// hit. `mode` picks how: "morph" lerps their parameters into one voice (one sound
+// mutating into the other); "crossfade" plays BOTH, fading one out as the other in.
+// See engine.js fireStep.
 //
 // This replaces the previous 6-grids + 20-slot-order arrangement (every voice used
 // to switch grids together); see project.ts for the migration of old saves.
@@ -32,6 +34,11 @@ export const VOICE_COLORS = [
   "#ff6b6b", "#ffa94d", "#ffd43b", "#69db7c", "#4dabf7", "#b197fc",
 ];
 
+// How a transition blends its two sounds. "morph" = one voice with parameters lerped
+// between them (the sound itself mutates); "crossfade" = both voices, one fading out
+// as the other fades in.
+export type TransitionMode = "morph" | "crossfade";
+
 // One node of a line: an assigned sound plus its rhythm and repeat count. soundId =
 // EMPTY when no sound is assigned (a REST that still occupies its window, so the
 // line's timing holds). A transition node morphs `transition.fromId`→`toId`.
@@ -46,7 +53,9 @@ export interface VoiceNode {
   rotation: number;
   split?: number; // primary-gap override for an uneven hit split (undefined = even)
   reps: number;   // how many times the pattern repeats (length = reps × steps)
-  transition?: { fromId: number; toId: number }; // morph A→B over this node's window
+  // Transition: blend fromId→toId over this node's window ("morph" params, or
+  // "crossfade" both sounds). Present => this node is a transition, not a sound.
+  transition?: { fromId: number; toId: number; mode: TransitionMode };
   // Inline-shuffle editor state, so a reloaded node keeps shuffling where it left:
   preset?: string;                          // active preset (Reset target + label)
   ranges?: { lo: number[]; hi: number[] };  // live shuffle window per param
@@ -91,7 +100,7 @@ export interface LineMessage {
     steps: number;
     lenSteps: number;
     pattern: number[];
-    transition?: { fromId: number; toId: number };
+    transition?: { fromId: number; toId: number; mode: TransitionMode };
   }[];
 }
 
@@ -140,7 +149,9 @@ export class LineArrangement {
         pattern: n.steps >= 1 && (n.soundId !== EMPTY || n.transition)
           ? voicePattern(n.hits, n.steps, n.rotation, n.split).map((b) => (b ? 1 : 0))
           : [],
-        transition: n.transition ? { fromId: n.transition.fromId, toId: n.transition.toId } : undefined,
+        transition: n.transition
+          ? { fromId: n.transition.fromId, toId: n.transition.toId, mode: n.transition.mode }
+          : undefined,
       })),
     }));
   }

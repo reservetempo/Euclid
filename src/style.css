@@ -212,6 +212,7 @@ button:active { transform: scale(0.94); }
   background: var(--panel2); border: 1.5px dashed var(--muted); color: var(--text);
 }
 .transition-gap:hover, .transition-gap:active { border-color: var(--accent); color: var(--accent); }
+.transition-gap.dim { opacity: 0.45; }
 /* Add-transition toggle in the loop view. */
 .add-transition-btn {
   width: auto; padding: 9px 16px; font-weight: 600; font-size: 13px;
@@ -220,6 +221,39 @@ button:active { transform: scale(0.94); }
 .add-transition-btn.on { border-color: var(--accent); color: var(--accent); background: var(--panel2); }
 /* A transition pill in the sequencer row uses its inline from→to gradient. */
 .euclid-sound.transition { font-weight: 700; }
+
+/* Transition-options popup (tapping a ✛). */
+.tr-overlay {
+  position: fixed; inset: 0; z-index: 60; padding: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.tr-dialog {
+  width: 100%; max-width: 340px;
+  display: flex; flex-direction: column; gap: 14px; padding: 16px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
+  animation: pop-in 0.18s ease-out;
+}
+.tr-title { margin: 0; font-size: 16px; font-weight: 700; }
+.tr-modes { display: flex; gap: 8px; }
+.tr-modes.inline { order: 10; flex: 1 1 100%; margin-top: 2px; }
+.tr-mode {
+  flex: 1; padding: 9px 0; font-weight: 600; font-size: 13px;
+  background: var(--panel); color: var(--muted); border-radius: 9px;
+}
+.tr-mode.on { border-color: var(--accent); color: var(--accent); background: var(--panel2); }
+.tr-len { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.tr-len-val { flex: 1; text-align: center; color: var(--text); font-variant-numeric: tabular-nums; }
+.tr-step {
+  width: 36px; height: 36px; flex: none; padding: 0; font-size: 18px; line-height: 1;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+}
+.tr-btns { display: flex; gap: 8px; }
+.tr-cancel { flex: 1; background: var(--panel); color: var(--muted); }
+.tr-add {
+  flex: 2; font-weight: 700; color: #0b0c0f; border: none;
+  background: linear-gradient(135deg, #6c5cff, #00ffc8);
+}
 
 /* --- sound view --- */
 .soundview { display: flex; flex-direction: column; gap: 14px; }

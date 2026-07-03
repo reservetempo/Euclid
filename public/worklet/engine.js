@@ -1176,33 +1176,53 @@ class EngineProcessor extends AudioWorkletProcessor {
       // Pattern hit? Rests ship an empty pattern, so they fall through here.
       if (vs < 1 || !nd.pattern || !nd.pattern[nodeLocal % vs]) continue;
 
-      // Resolve the snapshot this hit plays. A TRANSITION morphs its from→to sounds
-      // across its window (lerp per hit); a normal node plays its own sound.
-      let snap, tail;
+      // Accent = the first hit of this node's pattern cycle. beat = LFO-sync phase.
+      let firstHit = 0;
+      for (let h = 0; h < vs; h++) if (nd.pattern[h]) { firstHit = h; break; }
+      const isAccent = (nodeLocal % vs) === firstHit;
+      const beat = this.absStep * 0.25;
+
       if (nd.transition) {
         const from = this.sounds.get(nd.transition.fromId);
         const to = this.sounds.get(nd.transition.toId);
-        if (!from || !to) continue; // a neighbour lost its sound — nothing to morph
+        if (!from || !to) continue; // a neighbour lost its sound — nothing to blend
+        // t: 0 at the window start, 1 at its last step — the progressive blend point.
         const ndLen = Math.max(1, nd.lenSteps | 0);
         const t = ndLen > 1 ? clamp(nodeLocal / (ndLen - 1), 0, 1) : 0;
-        snap = this.lerpSnap(from.snap, to.snap, t);
-        tail = Math.max(from.tail || 0, to.tail || 0);
-      } else {
-        const snd = this.sounds.get(nd.soundId);
-        if (!snd) continue;
-        snap = snd.snap;
-        tail = snd.tail;
+        if (nd.transition.mode === "crossfade") {
+          // Play BOTH sounds on their own channels, from fading out as to fades in.
+          const hit = this.perHit(from.snap, isAccent);
+          if (!hit) continue;
+          if (1 - t > 0.02) {
+            const vsA = from.snap.slice(); this.jitterSnap(vsA, hit.human);
+            this.triggerSound(nd.transition.fromId, from.snap, vsA, gate, from.tail, hit.vel * (1 - t), hit.count, hit.interval, beat);
+            fired.push(nd.transition.fromId);
+          }
+          if (t > 0.02) {
+            const vsB = to.snap.slice(); this.jitterSnap(vsB, hit.human);
+            this.triggerSound(nd.transition.toId, to.snap, vsB, gate, to.tail, hit.vel * t, hit.count, hit.interval, beat);
+            fired.push(nd.transition.toId);
+          }
+        } else {
+          // Morph: one voice with its parameters lerped from→to (the sound mutates).
+          const snap = this.lerpSnap(from.snap, to.snap, t);
+          const hit = this.perHit(snap, isAccent);
+          if (!hit) continue;
+          const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
+          this.triggerSound(nd.soundId, snap, voiceSnap, gate, Math.max(from.tail || 0, to.tail || 0), hit.vel, hit.count, hit.interval, beat);
+          fired.push(nd.soundId);
+        }
+        continue;
       }
 
-      // Accent = the first hit of this node's pattern cycle.
-      let firstHit = 0;
-      for (let h = 0; h < vs; h++) if (nd.pattern[h]) { firstHit = h; break; }
-      const hit = this.perHit(snap, (nodeLocal % vs) === firstHit);
+      // Normal node: play its own sound.
+      const snd = this.sounds.get(nd.soundId);
+      if (!snd) continue;
+      const hit = this.perHit(snd.snap, isAccent);
       if (!hit) continue; // dropped by HitChance
-      const voiceSnap = snap.slice();
+      const voiceSnap = snd.snap.slice();
       this.jitterSnap(voiceSnap, hit.human);
-      // absStep is the monotonic 16th counter -> beats since play, for LFO sync.
-      this.triggerSound(nd.soundId, snap, voiceSnap, gate, tail, hit.vel, hit.count, hit.interval, this.absStep * 0.25);
+      this.triggerSound(nd.soundId, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat);
       fired.push(nd.soundId);
     }
     this.reportPlayhead(states, fired);
