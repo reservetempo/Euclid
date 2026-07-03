@@ -37,6 +37,9 @@ const PROJECT_KEY = "msq010.project";
 // only picks parameter specs — Full Range opens all ranges so any character is reachable.
 const REF_DRUM = DrumType.Kick;
 
+// Loop view: the arrangement grid is this many bars wide and pages by this much.
+const LOOP_PAGE_BARS = 8;
+
 type View = "seq" | "loop" | "sound" | "mixer";
 
 // The editable numeric fields of a node (its scrubbable number circles).
@@ -64,6 +67,9 @@ export class App {
   private addingTransition = false; // loop view: picking a gap to insert a transition
   private editingBars = false;      // loop view: tapping a node edits its length, not navigates
   private loopPage = 0;             // loop view: which 8-bar window (page) is on screen
+  private playPageOnly = false;     // loop view: loop just the 8 bars on screen, not the whole track
+  private sheetLine = -1;           // loop view: voice whose editing sheet is open (-1 = none)
+  private soundReturn: View = "seq"; // where the deep sound view's Back button returns to
 
   // Per-node inline shuffle editors, keyed by `${line}:${nodeIndex}`. Lazily created
   // when a node's shuffle menu first opens; cleared on new/load/node-removal
@@ -380,6 +386,10 @@ export class App {
     else if (this.view === "mixer") this.renderMixer();
     else this.renderSound();
 
+    // Loop view: a tapped voice's editing sheet floats above the grid (in front of
+    // everything, appended to the root — not the view — so the topbar is covered too).
+    if (this.view === "loop" && this.sheetLine >= 0) this.renderVoiceSheet();
+
     // Keep the section loop in step with what's on screen (the edit target).
     this.syncSection();
   }
@@ -389,12 +399,18 @@ export class App {
   private currentEditTarget(): { line: number; node: number } | null {
     if (this.view === "sound") return { line: this.soundLine, node: this.editNode[this.soundLine] };
     if (this.view === "seq" && this.expanded >= 0) return { line: this.expanded, node: this.editNode[this.expanded] };
+    if (this.view === "loop" && this.sheetLine >= 0) return { line: this.sheetLine, node: this.editNode[this.sheetLine] };
     return null;
   }
 
   /** While playing with an edit target, loop just that node's window of the loop so
-      the edit is auditioned in context; otherwise play the whole loop. */
+      the edit is auditioned in context; otherwise play the whole loop. The loop view's
+      "these 8 bars" toggle takes precedence — it loops just the visible page. */
   private syncSection(): void {
+    if (this.view === "loop" && this.playPageOnly && this.playing) {
+      this.engine.setSection(this.loopPage * LOOP_PAGE_BARS * STEPS_PER_BAR, LOOP_PAGE_BARS * STEPS_PER_BAR);
+      return;
+    }
     const t = this.currentEditTarget();
     if (!this.playing || !t) { this.engine.setSection(0, 0); return; }
     const nodes = this.arr.lines[t.line].nodes;
@@ -579,6 +595,53 @@ export class App {
     return svg;
   }
 
+  /** The Hits/Steps/Start/Split/Reps/Wait circles for line `li`'s edited node, drawn as
+      voice-coloured dots on a connecting line. Each taps to the numpad or click-drags to
+      scrub. Shared by the sequencer's expanded row and the loop-view voice sheet. */
+  private nodeValueCircles(li: number): HTMLElement {
+    const node = this.node(li);
+    const mkNum = (label: string, value: number, field: NodeField, disabled = false) => {
+      const cell = document.createElement("div");
+      cell.className = "euclid-num";
+      const lab = document.createElement("span");
+      lab.textContent = label;
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.value = String(value);
+      inp.readOnly = true;        // custom numpad handles entry (no native keyboard)
+      inp.inputMode = "none";
+      inp.disabled = disabled;
+      if (!disabled) {
+        // A plain tap opens the numpad (see attachDragScrub); click-hold + drag scrubs.
+        this.attachDragScrub(inp, li, field, label);
+      }
+      cell.append(lab, inp);
+      return cell;
+    };
+
+    const hits = mkNum("Hits", node.hits, "hits");
+    const steps = mkNum("Steps", node.steps, "steps");
+    const start = mkNum("Start", node.rotation, "rotation");
+    // Split: the primary gap between hits (even spread by default). Disabled unless
+    // there are 2+ hits AND room to vary the gap.
+    const splitLocked = node.hits < 2 || maxSplitGap(node.hits, node.steps) <= 1;
+    const split = mkNum("Split", node.split ?? evenGap(node.hits, node.steps), "split", splitLocked);
+    split.title = `Hit split: ${this.splitLabel(node.hits, node.steps, node.rotation, node.split)}`;
+    // Reps: how many times the pattern repeats before the next node takes over
+    // (length = reps × steps). The loop view shows the resulting length in bars.
+    const reps = mkNum("Reps", node.reps, "reps");
+    // Wait: quiet BARS of lead-in silence before the pattern starts, so a voice can
+    // sit out space before it enters. Counts toward the node's length in bars.
+    const wait = mkNum("Wait", node.wait ?? 0, "wait");
+    wait.title = "Quiet bars before this node's pattern starts (lead-in space)";
+
+    const vals = document.createElement("div");
+    vals.className = "euclid-vals";
+    vals.style.setProperty("--vc", (node.soundId >= 0 || node.transition) ? node.color : "#4a4e58");
+    vals.append(hits, steps, start, split, reps, wait);
+    return vals;
+  }
+
   /** The 6-line menu: one row per voice line showing its edited node. Collapsed rows
       are just the title + node navigation; tapping a row expands its value circles
       (accordion). Tapping the title of the EXPANDED row opens the shuffle menu. */
@@ -652,48 +715,8 @@ export class App {
       r.append(left, sound);
 
       if (isOpen) {
-        // A hits/steps/start/split/reps circle: tap to type, or click-hold and drag
-        // up/down to scrub. Drawn as the sequencer's own language — voice-coloured
-        // circles joined by a line (see .euclid-vals in style.css).
-        const mkNum = (label: string, value: number, field: NodeField, disabled = false) => {
-          const cell = document.createElement("div");
-          cell.className = "euclid-num";
-          const lab = document.createElement("span");
-          lab.textContent = label;
-          const inp = document.createElement("input");
-          inp.type = "text";
-          inp.value = String(value);
-          inp.readOnly = true;        // custom numpad handles entry (no native keyboard)
-          inp.inputMode = "none";
-          inp.disabled = disabled;
-          if (!disabled) {
-            // A plain tap opens the numpad (see attachDragScrub); click-hold + drag scrubs.
-            this.attachDragScrub(inp, i, field, label);
-          }
-          cell.append(lab, inp);
-          return cell;
-        };
-
-        const hits = mkNum("Hits", node.hits, "hits");
-        const steps = mkNum("Steps", node.steps, "steps");
-        const start = mkNum("Start", node.rotation, "rotation");
-        // Split: the primary gap between hits (even spread by default). Disabled unless
-        // there are 2+ hits AND room to vary the gap.
-        const splitLocked = node.hits < 2 || maxSplitGap(node.hits, node.steps) <= 1;
-        const split = mkNum("Split", node.split ?? evenGap(node.hits, node.steps), "split", splitLocked);
-        split.title = `Hit split: ${this.splitLabel(node.hits, node.steps, node.rotation, node.split)}`;
-        // Reps: how many times the pattern repeats before the next node takes over
-        // (length = reps × steps). The loop view shows the resulting length in bars.
-        const reps = mkNum("Reps", node.reps, "reps");
-        // Wait: quiet BARS of lead-in silence before the pattern starts, so a voice can
-        // sit out space before it enters. Counts toward the node's length in bars.
-        const wait = mkNum("Wait", node.wait ?? 0, "wait");
-        wait.title = "Quiet bars before this node's pattern starts (lead-in space)";
-
-        const vals = document.createElement("div");
-        vals.className = "euclid-vals";
-        vals.style.setProperty("--vc", (node.soundId >= 0 || node.transition) ? node.color : "#4a4e58");
-        vals.append(hits, steps, start, split, reps, wait);
+        // The hits/steps/start/split/reps/wait circles (shared with the loop-view sheet).
+        const vals = this.nodeValueCircles(i);
 
         // ×: remove this node from the chain (or clear the sound when it's the only one).
         const rm = document.createElement("button");
@@ -1011,6 +1034,7 @@ export class App {
       panel.remove();
       document.removeEventListener("pointerdown", close, true);
       this.soundLine = li;
+      this.soundReturn = "seq"; // opened from the sequencer — Back returns there
       this.view = "sound";
       this.render();
     };
@@ -1242,7 +1266,7 @@ export class App {
 
     // The visible 8-bar window. Pages cover the content, plus one empty page past the
     // end so there's always room to arrange further out; loopPage is clamped to that.
-    const BARS_PER_PAGE = 8;
+    const BARS_PER_PAGE = LOOP_PAGE_BARS;
     const loopBars = this.arr.loopSteps() / STEPS_PER_BAR;
     const maxPage = Math.max(0, Math.ceil(Math.max(loopBars, 0.001) / BARS_PER_PAGE) - 1) + 1;
     this.loopPage = Math.max(0, Math.min(this.loopPage, maxPage));
@@ -1272,7 +1296,13 @@ export class App {
     editBars.className = "add-transition-btn" + (this.editingBars ? " on" : "");
     editBars.textContent = this.editingBars ? "Done" : "✎ Edit bars";
     editBars.onclick = () => { this.editingBars = !this.editingBars; if (this.editingBars) this.addingTransition = false; this.render(); };
-    actions.append(addTr, editBars);
+    // Play scope: loop just the 8 bars on screen, or the whole track (takes effect live).
+    const scope = document.createElement("button");
+    scope.className = "add-transition-btn scope-btn" + (this.playPageOnly ? " on" : "");
+    scope.textContent = this.playPageOnly ? "⟳ These 8 bars" : "⟳ Whole track";
+    scope.title = "What playback loops: just the 8 bars shown, or the whole track";
+    scope.onclick = () => { this.playPageOnly = !this.playPageOnly; this.render(); };
+    actions.append(addTr, editBars, scope);
     v.append(actions);
 
     // Pager: step the visible window backward / forward 8 bars at a time.
@@ -1376,6 +1406,9 @@ export class App {
           block.append(waitEl);
         }
 
+        // Label: the sound's generated name (its identity, matching the mixer/sequencer);
+        // a rest shows its length, a transition an arrow. The name ellipsis-truncates on
+        // narrow blocks — the full name + bars live in the tooltip.
         const label = document.createElement("span");
         label.className = "bar-node-label";
         if (n.transition) {
@@ -1384,10 +1417,12 @@ export class App {
           block.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
           label.textContent = "→";
           block.title = `transition · ${barsLabel(n)} bars${waitNote(n)}`;
+        } else if (isSound) {
+          label.textContent = n.name || barsLabel(n);
+          block.title = `${n.name || "node"} · ${barsLabel(n)} bars${waitNote(n)}`;
         } else {
           label.textContent = barsLabel(n);
-          block.title = (isSound ? (n.name || "node") : "rest — tap to add a sound")
-            + ` · ${barsLabel(n)} bars${waitNote(n)}`;
+          block.title = `rest — tap to add a sound · ${barsLabel(n)} bars${waitNote(n)}`;
         }
         block.append(label);
 
@@ -1395,10 +1430,7 @@ export class App {
           if (this.editingBars) { this.openBarsNumpad(li, k); return; }
           if (this.addingTransition) return; // the ✛ gaps handle transition insertion
           if (!isSound && !n.transition) { this.giveNodeSound(li, k); return; } // rest → sound in place
-          this.editNode[li] = k;
-          this.expanded = li;
-          this.view = "seq";
-          this.render();
+          this.openVoiceSheet(li, k); // a tapped voice's menu floats above the grid
         };
         dots.push(block);
         track.append(block);
@@ -1477,6 +1509,88 @@ export class App {
       seed: randomSeed(),
     });
     this.writeVoiceFromEditor(li); // mints the sound id, captures the snapshot, resends, persists
+  }
+
+  /** Open the editing sheet for a voice (node k on line li) as a modal over the grid. */
+  private openVoiceSheet(li: number, k: number): void {
+    this.editNode[li] = Math.max(0, Math.min(k, this.arr.lines[li].nodes.length - 1));
+    this.expanded = li; // keep the sequencer accordion in step if the user switches views
+    this.sheetLine = li;
+    this.render();
+  }
+
+  private closeVoiceSheet(): void {
+    this.sheetLine = -1;
+    this.render();
+  }
+
+  /** The voice sheet: a modal card in front of everything holding the tapped node's
+      editor — its value circles, a Remove, and either the shuffle menu (sounds) or a
+      blend-mode toggle (transitions). Back returns to the grid. Appended to the root. */
+  private renderVoiceSheet(): void {
+    const li = this.sheetLine;
+    const nodes = this.arr.lines[li].nodes;
+    const node = this.node(li);
+
+    const overlay = document.createElement("div");
+    overlay.className = "voice-sheet-overlay";
+    overlay.onclick = (e) => { if (e.target === overlay) this.closeVoiceSheet(); }; // tap backdrop = back
+
+    const sheet = document.createElement("div");
+    sheet.className = "voice-sheet";
+    sheet.style.setProperty("--vc", (node.soundId >= 0 || node.transition) ? node.color : "#4a4e58");
+
+    // Header: Back to grid + the voice's generated name.
+    const head = document.createElement("div");
+    head.className = "voice-sheet-head";
+    const back = document.createElement("button");
+    back.className = "mixer-back";
+    back.textContent = "‹ Grid";
+    back.onclick = () => this.closeVoiceSheet();
+    const title = document.createElement("h2");
+    title.className = "voice-sheet-title";
+    title.textContent = node.transition ? "Transition" : (node.name || `Voice ${li + 1}`);
+    head.append(back, title);
+    sheet.append(head);
+
+    // Value circles (Hits/Steps/Start/Split/Reps/Wait) + Remove.
+    const detail = document.createElement("div");
+    detail.className = "euclid-detail";
+    const rm = document.createElement("button");
+    rm.className = "euclid-remove";
+    rm.textContent = "×";
+    rm.title = nodes.length > 1 ? "Remove this node" : "Clear this voice's sound";
+    rm.onclick = () => { this.sheetLine = -1; this.removeNode(li); }; // removeNode re-renders
+    detail.append(this.nodeValueCircles(li), rm);
+    sheet.append(detail);
+
+    if (node.transition) {
+      // A transition has no sound of its own — pick how it blends its neighbours.
+      const modes = document.createElement("div");
+      modes.className = "tr-modes";
+      (["morph", "crossfade"] as TransitionMode[]).forEach((m) => {
+        const b = document.createElement("button");
+        b.className = "tr-mode" + (node.transition!.mode === m ? " on" : "");
+        b.textContent = m === "morph" ? "Morph" : "Crossfade";
+        b.onclick = () => { node.transition!.mode = m; this.syncLines(); this.render(); };
+        modes.append(b);
+      });
+      sheet.append(modes);
+    } else {
+      // A real sound: the full shuffle menu, live. Keep the header name current as it
+      // shuffles (writeVoiceFromEditor renames the node but doesn't re-render the sheet).
+      const menu = buildVoiceShuffleMenu(this.voiceEditorFor(li), REF_DRUM, {
+        onChange: () => { this.writeVoiceFromEditor(li); title.textContent = this.node(li).name || `Voice ${li + 1}`; },
+        audition: () => this.auditionVoice(li),
+        onFullParams: () => { this.soundReturn = "loop"; this.soundLine = li; this.view = "sound"; this.render(); },
+        context: () => this.shuffleContext(),
+        mates: () => this.breedMates(li),
+      });
+      sheet.append(menu);
+    }
+
+    overlay.append(sheet);
+    this.root.append(overlay);
   }
 
   // --- mixer view -------------------------------------------------------
@@ -1612,13 +1726,14 @@ export class App {
     const li = this.soundLine;
     const node = this.node(li);
 
-    // Header: Back to the sequencer + the node's current (auto-generated) name.
+    // Header: Back to wherever this editor was opened from (the sequencer, or the loop
+    // view's voice sheet) + the node's current (auto-generated) name.
     const head = document.createElement("div");
     head.className = "mixer-head";
     const back = document.createElement("button");
     back.className = "mixer-back";
-    back.textContent = "‹ Sequencer";
-    back.onclick = () => { this.view = "seq"; this.render(); };
+    back.textContent = this.soundReturn === "loop" ? "‹ Grid" : "‹ Sequencer";
+    back.onclick = () => { this.view = this.soundReturn; this.render(); };
     const title = document.createElement("h2");
     title.className = "mixer-title";
     title.textContent = node.name || `Voice ${li + 1}`;
