@@ -904,15 +904,21 @@ class EngineProcessor extends AudioWorkletProcessor {
     this.clock = 0; // running sample counter, for busyUntil/steal decisions
 
     // --- lines + transport state ---
-    // Active voice lines: [{ nodes: [{soundId, steps, lenSteps, pattern}] } x 6].
-    // Each line loops over the sum of its node lenSteps INDEPENDENTLY (long-form
-    // polymeter): local = absStep % lineTotal picks the active node; the node's own
-    // pattern cycles inside its window (nodeLocal % steps).
+    // Active voice lines: [{ nodes: [{soundId, steps, lenSteps, pattern, transition?}] } x 6].
+    // The loop is the LONGEST line; each reads pos = absStep % loopTotal, plays its
+    // chain once (active node by cumulative lenSteps, pattern cycling via nodeLocal %
+    // steps), then rests once pos passes its own length.
     this.lines = null;
     // Staged lines: edits while playing land here and are promoted at the next BAR
     // boundary, so changes land musically instead of mid-bar.
     this.pendingLines = null;
     this.hasPending = false;
+
+    // Section loop: when the UI is editing one node, the transport loops just that
+    // node's [start, start+len) window of the global loop (every line still plays its
+    // own content there), so you audition the edit in context. 0 len = whole loop.
+    this.sectionStart = 0;
+    this.sectionLen = 0;
 
     this.tempo = 120;
     this.playing = false;
@@ -939,6 +945,8 @@ class EngineProcessor extends AudioWorkletProcessor {
       this.lines = o.lines || null;
       this.tempo = o.tempo || 120;
       this.maxSteps = o.maxSteps | 0;
+      this.sectionStart = o.sectionStart | 0; // optional: render just a section
+      this.sectionLen = o.sectionLen | 0;
       this.playing = true;
       this.absStep = 0;
     }
@@ -968,6 +976,11 @@ class EngineProcessor extends AudioWorkletProcessor {
           this.pendingLines = null;
           if (this.playing) { this.absStep = 0; this.samplesToNextStep = 0; }
         }
+        break;
+      case "section":
+        // Loop just a node's window (immediate). len 0 clears it (whole loop).
+        this.sectionStart = Math.max(0, m.start | 0);
+        this.sectionLen = Math.max(0, m.len | 0);
         break;
       case "tempo": this.tempo = m.bpm; break;
       case "play":
@@ -1092,6 +1105,21 @@ class EngineProcessor extends AudioWorkletProcessor {
     voiceSnap[P.FilterCutoff] *= 1 + (Math.random() * 2 - 1) * HUMANIZE_CUTOFF * human;
   }
 
+  // Linear blend of two parameter snapshots at t∈[0,1] — the per-hit morph a
+  // transition node plays. Continuous params glide; discrete "type" params (waveform,
+  // filter, etc.) land on the nearer end because the voice reads them through
+  // Math.round, so they flip at the midpoint. Tolerates short/older snapshots.
+  lerpSnap(a, b, t) {
+    const len = Math.max(a.length, b.length);
+    const out = new Array(len);
+    for (let i = 0; i < len; i++) {
+      const av = (a[i] === undefined || a[i] === null) ? (b[i] || 0) : a[i];
+      const bv = (b[i] === undefined || b[i] === null) ? (a[i] || 0) : b[i];
+      out[i] = av + (bv - av) * t;
+    }
+    return out;
+  }
+
   // Fire one step. The loop length is the LONGEST line's chain; every line reads its
   // position as `absStep % loopTotal`, plays its chain once (active NODE by cumulative
   // lenSteps, the node's pattern cycling inside its window via `nodeLocal % steps`),
@@ -1115,7 +1143,17 @@ class EngineProcessor extends AudioWorkletProcessor {
       totals.push(total);
       if (total > loopTotal) loopTotal = total;
     }
-    const pos = loopTotal > 0 ? this.absStep % loopTotal : 0;
+    // Section loop: while a node is being edited the transport cycles just that
+    // node's window of the loop (clamped inside it); every line still plays its own
+    // content there, so you hear the edit in the track's context. 0 = whole loop.
+    let pos;
+    if (this.sectionLen > 0 && loopTotal > 0) {
+      const start = Math.min(this.sectionStart, loopTotal - 1);
+      const len = Math.max(1, Math.min(this.sectionLen, loopTotal - start));
+      pos = start + (this.absStep % len);
+    } else {
+      pos = loopTotal > 0 ? this.absStep % loopTotal : 0;
+    }
 
     const fired = [];
     const states = []; // per line: { node, step } for the playhead (-1 = resting)
@@ -1135,18 +1173,36 @@ class EngineProcessor extends AudioWorkletProcessor {
       const vs = nd.steps | 0;
       states.push({ node: ni, step: vs >= 1 ? nodeLocal % vs : -1 });
 
-      if (nd.soundId < 0 || vs < 1 || !nd.pattern || !nd.pattern[nodeLocal % vs]) continue;
-      const snd = this.sounds.get(nd.soundId);
-      if (!snd) continue;
+      // Pattern hit? Rests ship an empty pattern, so they fall through here.
+      if (vs < 1 || !nd.pattern || !nd.pattern[nodeLocal % vs]) continue;
+
+      // Resolve the snapshot this hit plays. A TRANSITION morphs its from→to sounds
+      // across its window (lerp per hit); a normal node plays its own sound.
+      let snap, tail;
+      if (nd.transition) {
+        const from = this.sounds.get(nd.transition.fromId);
+        const to = this.sounds.get(nd.transition.toId);
+        if (!from || !to) continue; // a neighbour lost its sound — nothing to morph
+        const ndLen = Math.max(1, nd.lenSteps | 0);
+        const t = ndLen > 1 ? clamp(nodeLocal / (ndLen - 1), 0, 1) : 0;
+        snap = this.lerpSnap(from.snap, to.snap, t);
+        tail = Math.max(from.tail || 0, to.tail || 0);
+      } else {
+        const snd = this.sounds.get(nd.soundId);
+        if (!snd) continue;
+        snap = snd.snap;
+        tail = snd.tail;
+      }
+
       // Accent = the first hit of this node's pattern cycle.
       let firstHit = 0;
       for (let h = 0; h < vs; h++) if (nd.pattern[h]) { firstHit = h; break; }
-      const hit = this.perHit(snd.snap, (nodeLocal % vs) === firstHit);
+      const hit = this.perHit(snap, (nodeLocal % vs) === firstHit);
       if (!hit) continue; // dropped by HitChance
-      const voiceSnap = snd.snap.slice();
+      const voiceSnap = snap.slice();
       this.jitterSnap(voiceSnap, hit.human);
       // absStep is the monotonic 16th counter -> beats since play, for LFO sync.
-      this.triggerSound(nd.soundId, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, this.absStep * 0.25);
+      this.triggerSound(nd.soundId, snap, voiceSnap, gate, tail, hit.vel, hit.count, hit.interval, this.absStep * 0.25);
       fired.push(nd.soundId);
     }
     this.reportPlayhead(states, fired);

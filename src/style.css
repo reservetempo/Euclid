@@ -198,9 +198,28 @@ button:active { transform: scale(0.94); }
   background: var(--bg); border: 1.5px solid var(--vc); color: var(--vc);
 }
 .node-dot.has-sound { background: var(--vc); color: #15161a; }
+/* Transition dot: a from→to gradient (set inline), dark glyph. */
+.node-dot.transition { color: #15161a; border-color: transparent; font-size: 18px; }
 .node-dot.editing { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); }
 .node-dot.playing { outline: 2px solid var(--accent); animation: slot-breathe 0.9s ease-in-out infinite; }
 .line-row .node-add { position: relative; z-index: 1; }
+/* ✛ gap button shown between two adjacent sounds while adding a transition. */
+.transition-gap {
+  position: relative; z-index: 1;
+  width: 26px; height: 26px; padding: 0; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-size: 14px; line-height: 1;
+  background: var(--panel2); border: 1.5px dashed var(--muted); color: var(--text);
+}
+.transition-gap:hover, .transition-gap:active { border-color: var(--accent); color: var(--accent); }
+/* Add-transition toggle in the loop view. */
+.add-transition-btn {
+  width: auto; padding: 9px 16px; font-weight: 600; font-size: 13px;
+  border-radius: 20px;
+}
+.add-transition-btn.on { border-color: var(--accent); color: var(--accent); background: var(--panel2); }
+/* A transition pill in the sequencer row uses its inline from→to gradient. */
+.euclid-sound.transition { font-weight: 700; }
 
 /* --- sound view --- */
 .soundview { display: flex; flex-direction: column; gap: 14px; }

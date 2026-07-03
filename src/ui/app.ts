@@ -21,7 +21,8 @@ import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import {
-  LineArrangement, VoiceNode, emptyNode, NUM_LINES, STEPS_PER_BAR, MAX_BARS, VOICE_COLORS,
+  LineArrangement, VoiceNode, emptyNode, nodeLen, nodeBars,
+  NUM_LINES, STEPS_PER_BAR, MAX_REPS, VOICE_COLORS,
 } from "../model/lines";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
 import { EuclidView, RingState } from "./euclidView";
@@ -38,7 +39,7 @@ const REF_DRUM = DrumType.Kick;
 type View = "seq" | "loop" | "sound" | "mixer";
 
 // The editable numeric fields of a node (its scrubbable number circles).
-type NodeField = "hits" | "steps" | "rotation" | "split" | "bars";
+type NodeField = "hits" | "steps" | "rotation" | "split" | "reps";
 
 export class App {
   private engine = new EngineHost();
@@ -59,6 +60,7 @@ export class App {
   private editNode: number[] = new Array(NUM_LINES).fill(0);
   private expanded = -1;
   private nextSoundId = 0; // monotonic id for assigned node sounds
+  private addingTransition = false; // loop view: picking a gap to insert a transition
 
   // Per-node inline shuffle editors, keyed by `${line}:${nodeIndex}`. Lazily created
   // when a node's shuffle menu first opens; cleared on new/load/node-removal
@@ -158,7 +160,9 @@ export class App {
     this.arr.lines.forEach((ln, li) => {
       const audible = this.lineAudible(li);
       for (const n of ln.nodes) {
-        if (n.soundId < 0) continue;
+        // Transitions have no snapshot of their own — the engine morphs their
+        // neighbours (whose ids are already in the table), so skip them here.
+        if (n.soundId < 0 || n.transition) continue;
         const snap = n.snapshot.slice();
         if (!audible) snap[ParamId.Volume] = 0;
         sounds.push({ id: n.soundId, snap, lo: n.pitch[0], hi: n.pitch[1], tail: estimateLength(snap, this.tempo) });
@@ -376,6 +380,29 @@ export class App {
     else if (this.view === "loop") this.renderLoop();
     else if (this.view === "mixer") this.renderMixer();
     else this.renderSound();
+
+    // Keep the section loop in step with what's on screen (the edit target).
+    this.syncSection();
+  }
+
+  /** The node currently being edited (its shuffle menu / values are the focus): the
+      expanded sequencer row, or the node the deep sound editor is on. null otherwise. */
+  private currentEditTarget(): { line: number; node: number } | null {
+    if (this.view === "sound") return { line: this.soundLine, node: this.editNode[this.soundLine] };
+    if (this.view === "seq" && this.expanded >= 0) return { line: this.expanded, node: this.editNode[this.expanded] };
+    return null;
+  }
+
+  /** While playing with an edit target, loop just that node's window of the loop so
+      the edit is auditioned in context; otherwise play the whole loop. */
+  private syncSection(): void {
+    const t = this.currentEditTarget();
+    if (!this.playing || !t) { this.engine.setSection(0, 0); return; }
+    const nodes = this.arr.lines[t.line].nodes;
+    let start = 0;
+    for (let k = 0; k < t.node && k < nodes.length; k++) start += nodeLen(nodes[k]);
+    const len = t.node < nodes.length ? nodeLen(nodes[t.node]) : 0;
+    this.engine.setSection(start, len);
   }
 
   private menu(): HTMLElement {
@@ -433,7 +460,7 @@ export class App {
     syncPlay();
     play.onclick = () => {
       this.playing = !this.playing;
-      if (this.playing) this.engine.play();
+      if (this.playing) { this.engine.play(); this.syncSection(); }
       else {
         this.engine.stop();
         this.refreshRings();
@@ -533,11 +560,23 @@ export class App {
       const r = document.createElement("div");
       r.className = "euclid-row" + (isOpen ? " open" : "");
 
-      // Title: the node's sound (voice-coloured pill), or a wiggling die inviting a
-      // first shuffle. Tap = expand the row; tap again (expanded) = shuffle menu.
+      // Title: the node's sound (voice-coloured pill), a transition (from→to
+      // gradient), or a wiggling die inviting a first shuffle. Tap = expand the row;
+      // tap again (expanded, sounding node) = shuffle menu (transitions have none).
+      const k = this.editNode[i];
       const sound = document.createElement("button");
-      sound.className = "euclid-sound" + (node.soundId >= 0 ? " has-sound" : "");
-      if (node.soundId >= 0) {
+      if (node.transition) {
+        const fromC = nodes[k - 1]?.color ?? node.color;
+        const toC = nodes[k + 1]?.color ?? node.color;
+        sound.className = "euclid-sound transition";
+        sound.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
+        sound.style.borderColor = toC;
+        sound.style.color = "#15161a";
+        sound.style.setProperty("--vc", toC);
+        sound.textContent = "→ transition";
+        this.voiceBtns.set(node.soundId, sound);
+      } else if (node.soundId >= 0) {
+        sound.className = "euclid-sound has-sound";
         sound.style.background = node.color;
         sound.style.borderColor = node.color;
         sound.style.color = "#15161a"; // dark text for contrast on the light voice hues
@@ -545,6 +584,7 @@ export class App {
         sound.textContent = node.name || `Voice ${i + 1}`;
         this.voiceBtns.set(node.soundId, sound);
       } else {
+        sound.className = "euclid-sound";
         const dice = document.createElement("span");
         dice.className = "dice";
         dice.textContent = "🎲";
@@ -554,17 +594,17 @@ export class App {
       if (nodes.length > 1) {
         const pos = document.createElement("span");
         pos.className = "node-pos";
-        pos.textContent = `${this.editNode[i] + 1}/${nodes.length}`;
+        pos.textContent = `${k + 1}/${nodes.length}`;
         sound.append(pos);
       }
       sound.onclick = () => {
         if (this.expanded !== i) { this.expanded = i; this.render(); }
-        else this.openVoiceShuffleMenu(sound, i);
+        else if (!node.transition) this.openVoiceShuffleMenu(sound, i);
       };
       r.append(sound);
 
       if (isOpen) {
-        // A hits/steps/start/split/bars circle: tap to type, or click-hold and drag
+        // A hits/steps/start/split/reps circle: tap to type, or click-hold and drag
         // up/down to scrub. Drawn as the sequencer's own language — voice-coloured
         // circles joined by a line (see .euclid-vals in style.css).
         const mkNum = (label: string, value: number, field: NodeField, disabled = false) => {
@@ -595,13 +635,14 @@ export class App {
         const splitLocked = node.hits < 2 || maxSplitGap(node.hits, node.steps) <= 1;
         const split = mkNum("Split", node.split ?? evenGap(node.hits, node.steps), "split", splitLocked);
         split.title = `Hit split: ${this.splitLabel(node.hits, node.steps, node.rotation, node.split)}`;
-        // Bars: how long this node holds the line before the next node takes over.
-        const bars = mkNum("Bars", node.bars, "bars");
+        // Reps: how many times the pattern repeats before the next node takes over
+        // (length = reps × steps). The loop view shows the resulting length in bars.
+        const reps = mkNum("Reps", node.reps, "reps");
 
         const vals = document.createElement("div");
         vals.className = "euclid-vals";
-        vals.style.setProperty("--vc", node.soundId >= 0 ? node.color : "#4a4e58");
-        vals.append(hits, steps, start, split, bars);
+        vals.style.setProperty("--vc", (node.soundId >= 0 || node.transition) ? node.color : "#4a4e58");
+        vals.append(hits, steps, start, split, reps);
 
         // ×: remove this node from the chain (or clear the sound when it's the only one).
         const rm = document.createElement("button");
@@ -640,7 +681,7 @@ export class App {
         } else {
           nodes.push(emptyNode());
           this.editNode[i] = nodes.length - 1;
-          this.syncLines(); // the line just got a bar longer
+          this.syncLines(); // the line's chain just grew
         }
         this.expanded = i;
         this.render();
@@ -675,7 +716,7 @@ export class App {
     return row;
   }
 
-  /** Apply a typed hits/steps/start/split/bars value: update the node, then re-render
+  /** Apply a typed hits/steps/start/split/reps value: update the node, then re-render
       so the inputs show the clamped result. */
   private setNodeNum(li: number, field: NodeField, n: number): void {
     this.applyNodeNum(li, field, n);
@@ -683,19 +724,21 @@ export class App {
   }
 
   /** Core node number update (clamped) + resync + redraw, with NO full render — so
-      drag-scrub can update live without tearing down the input mid-drag. */
+      drag-scrub can update live without tearing down the input mid-drag. The section
+      loop is resynced too (steps/reps change the edited node's window). */
   private applyNodeNum(li: number, field: NodeField, n: number): void {
     const v = this.node(li);
     if (Number.isNaN(n)) n = 0;
     if (field === "steps") v.steps = clampSteps(n);
     else if (field === "hits") v.hits = Math.max(0, Math.min(MAX_STEPS, Math.round(n)));
     else if (field === "rotation") v.rotation = Math.round(n);
-    else if (field === "bars") v.bars = Math.max(1, Math.min(MAX_BARS, Math.round(n)));
+    else if (field === "reps") v.reps = Math.max(1, Math.min(MAX_REPS, Math.round(n)));
     else v.split = Math.max(1, Math.min(maxSplitGap(v.hits, v.steps), Math.round(n))); // primary gap
     // Cap hits at steps only once steps is set (a blank node defaults to 0 steps and
     // shouldn't swallow a hits value the user types first).
     if (v.steps >= 1 && v.hits > v.steps) v.hits = v.steps;
     this.syncLines();
+    this.syncSection(); // the edited node's window may have changed length
     if (!this.playing) this.refreshRings();
     this.updateLoopTime();
   }
@@ -738,7 +781,7 @@ export class App {
       this.applyNodeNum(li, field, startVal + delta);
       const v = this.node(li);
       const shown = field === "steps" ? v.steps : field === "hits" ? v.hits
-        : field === "rotation" ? v.rotation : field === "bars" ? v.bars
+        : field === "rotation" ? v.rotation : field === "reps" ? v.reps
         : (v.split ?? evenGap(v.hits, v.steps));
       input.value = String(shown);
     });
@@ -819,8 +862,11 @@ export class App {
     return out;
   }
 
-  /** Inline shuffle menu for one line's edited node: generate/replace its sound live. */
+  /** Inline shuffle menu for one line's edited node: generate/replace its sound live.
+      Transitions have no sound of their own (they morph their neighbours), so there's
+      nothing to shuffle. */
   private openVoiceShuffleMenu(anchor: HTMLElement, li: number): void {
+    if (this.node(li).transition) return;
     const existing = this.viewRoot.querySelector(".voice-shuffle");
     if (existing) { existing.remove(); return; }
     const editor = this.voiceEditorFor(li);
@@ -850,13 +896,22 @@ export class App {
   }
 
   /** Remove the edited node from a line's chain — or, when it's the only node, just
-      clear its sound and rhythm (a line always keeps at least one node). Keeps
-      `bars` on a clear so the line's timing holds. */
+      clear its sound and rhythm (a line always keeps at least one node). Keeps `reps`
+      on a clear so the line's timing holds. Any transition touching the removed node
+      is dropped too (it has nothing left to morph). */
   private removeNode(li: number): void {
     const nodes = this.arr.lines[li].nodes;
     const k = this.editNode[li];
     if (nodes.length > 1) {
+      const removedId = nodes[k].soundId;
       nodes.splice(k, 1);
+      // Drop transitions orphaned by the removal (they referenced the gone sound, or
+      // sat next to it and now bridge the wrong pair).
+      for (let j = nodes.length - 1; j >= 0; j--) {
+        const t = nodes[j].transition;
+        if (t && (t.fromId === removedId || t.toId === removedId)) nodes.splice(j, 1);
+      }
+      if (nodes.length === 0) nodes.push(emptyNode());
       this.editNode[li] = Math.min(k, nodes.length - 1);
       // Node indices shifted — this line's cached editors are stale.
       for (const key of [...this.voiceEditors.keys()]) {
@@ -864,15 +919,42 @@ export class App {
       }
     } else {
       const v = nodes[0];
-      if (v.soundId < 0) return;
-      const bars = v.bars;
+      if (v.soundId < 0 && !v.transition) return;
+      const reps = v.reps;
       nodes[0] = emptyNode();
-      nodes[0].bars = bars;
+      nodes[0].reps = reps;
       this.voiceEditors.delete(`${li}:0`);
     }
     this.pushSounds(); // drop removed sounds from the engine table
     this.syncLines();
     if (!this.playing) this.refreshRings();
+    this.render();
+  }
+
+  /** Insert a transition node into line `li` at chain gap `gap` (between nodes
+      gap-1 and gap), morphing the sound of the node before it into the node after.
+      Both neighbours must be sounding (non-transition) nodes. */
+  private insertTransition(li: number, gap: number): void {
+    const nodes = this.arr.lines[li].nodes;
+    const from = nodes[gap - 1];
+    const to = nodes[gap];
+    if (!from || !to || from.soundId < 0 || to.soundId < 0 || from.transition || to.transition) return;
+    const tr = emptyNode();
+    tr.soundId = this.nextSoundId++;      // its own channel id (no table entry needed)
+    tr.transition = { fromId: from.soundId, toId: to.soundId };
+    tr.color = to.color;                  // ring shows the destination colour
+    tr.name = "→";
+    // Inherit the "from" node's rhythm so the morph is heard on a familiar groove.
+    tr.hits = from.hits; tr.steps = from.steps; tr.rotation = from.rotation; tr.split = from.split;
+    tr.reps = 1;
+    nodes.splice(gap, 0, tr);
+    this.editNode[li] = gap;
+    this.addingTransition = false;
+    // Editors keyed by node index are now stale for this line.
+    for (const key of [...this.voiceEditors.keys()]) {
+      if (key.startsWith(`${li}:`)) this.voiceEditors.delete(key);
+    }
+    this.syncLines();
     this.render();
   }
 
@@ -906,24 +988,62 @@ export class App {
 
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "Each voice flows along its line of nodes (the number = bars). The loop is as long as the longest line; shorter lines rest until it comes round. Tap a node to edit it.";
+    hint.textContent = this.addingTransition
+      ? "Tap a ✛ between two sounds to morph one into the other."
+      : "Each voice flows along its line of nodes (the number = bars). The loop is as long as the longest line; shorter lines rest until it comes round. Tap a node to edit it.";
     v.append(hint);
+
+    // Add-transition toggle: in this mode a ✛ appears in each gap between two
+    // adjacent sounding nodes; tapping it inserts a morph between them.
+    const actions = document.createElement("div");
+    actions.className = "steps-actions";
+    const addTr = document.createElement("button");
+    addTr.className = "add-transition-btn" + (this.addingTransition ? " on" : "");
+    addTr.textContent = this.addingTransition ? "Cancel" : "✛ Add transition";
+    addTr.onclick = () => { this.addingTransition = !this.addingTransition; this.render(); };
+    actions.append(addTr);
+    v.append(actions);
+
+    // Format a node's length in bars (28 steps = 1.75), trimming trailing zeros.
+    const barsLabel = (n: VoiceNode): string => {
+      const b = nodeBars(n);
+      return Number.isInteger(b) ? String(b) : String(+b.toFixed(2));
+    };
+    const sounding = (n: VoiceNode | undefined): boolean => !!n && n.soundId >= 0 && !n.transition;
 
     const list = document.createElement("div");
     list.className = "line-list";
     for (let li = 0; li < NUM_LINES; li++) {
+      const nodes = this.arr.lines[li].nodes;
       const row = document.createElement("div");
       row.className = "line-row";
       row.style.setProperty("--vc", VOICE_COLORS[li]);
 
       const dots: HTMLElement[] = [];
-      this.arr.lines[li].nodes.forEach((n, k) => {
+      nodes.forEach((n, k) => {
+        // A ✛ gap sits between two adjacent sounding nodes while adding a transition.
+        if (this.addingTransition && k > 0 && sounding(nodes[k - 1]) && sounding(n)) {
+          const gap = document.createElement("button");
+          gap.className = "transition-gap";
+          gap.textContent = "✛";
+          gap.title = "Morph these two sounds";
+          gap.onclick = () => this.insertTransition(li, k);
+          row.append(gap);
+        }
         const dot = document.createElement("button");
         dot.className = "node-dot"
-          + (n.soundId >= 0 ? " has-sound" : "")
+          + (n.transition ? " transition" : n.soundId >= 0 ? " has-sound" : "")
           + (k === this.editNode[li] ? " editing" : "");
-        dot.textContent = String(n.bars);
-        dot.title = n.soundId >= 0 ? `${n.name || "node"} · ${n.bars} bar${n.bars === 1 ? "" : "s"}` : `rest · ${n.bars} bar${n.bars === 1 ? "" : "s"}`;
+        if (n.transition) {
+          const fromC = nodes[k - 1]?.color ?? n.color;
+          const toC = nodes[k + 1]?.color ?? n.color;
+          dot.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
+          dot.textContent = "→";
+          dot.title = `transition · ${barsLabel(n)} bars`;
+        } else {
+          dot.textContent = barsLabel(n);
+          dot.title = (n.soundId >= 0 ? (n.name || "node") : "rest") + ` · ${barsLabel(n)} bars`;
+        }
         dot.onclick = () => {
           this.editNode[li] = k;
           this.expanded = li;
@@ -941,8 +1061,8 @@ export class App {
       add.title = "New node";
       add.append(this.nodeNavIcon(true));
       add.onclick = () => {
-        this.arr.lines[li].nodes.push(emptyNode());
-        this.editNode[li] = this.arr.lines[li].nodes.length - 1;
+        nodes.push(emptyNode());
+        this.editNode[li] = nodes.length - 1;
         this.syncLines();
         this.render();
       };
@@ -991,7 +1111,7 @@ export class App {
   /** A single mixer strip for one voice line. */
   private mixerStrip(li: number): HTMLElement {
     const line = this.arr.lines[li];
-    const firstSound = line.nodes.find((n) => n.soundId >= 0);
+    const firstSound = line.nodes.find((n) => n.soundId >= 0 && !n.transition);
 
     const strip = document.createElement("div");
     strip.className = "mix-strip";
@@ -1045,7 +1165,7 @@ export class App {
       with param defaults first so no null "holes" get persisted). */
   private mixFader(label: string, li: number, id: ParamId, min = 0, max = 1): HTMLElement {
     const line = this.arr.lines[li];
-    const first = line.nodes.find((n) => n.soundId >= 0);
+    const first = line.nodes.find((n) => n.soundId >= 0 && !n.transition);
     const row = document.createElement("div");
     row.className = "mix-fader";
     const lbl = document.createElement("span");
@@ -1068,7 +1188,7 @@ export class App {
     slider.oninput = () => {
       const x = Number(slider.value);
       for (const n of line.nodes) {
-        if (n.soundId < 0) continue;
+        if (n.soundId < 0 || n.transition) continue; // transitions morph their neighbours
         for (let i = n.snapshot.length; i < NUM_PARAMS; i++) n.snapshot[i] = baseSpec(i as ParamId).def;
         n.snapshot[id] = x;
       }

@@ -1,14 +1,15 @@
 // Whole-project save/load: the 6 voice lines (node chains), every drum's sound,
 // and tempo. Plain JSON, used for both localStorage autosave and files.
 //
-// v8 replaced the old 6-grids + 20-slot-order arrangement with per-voice node
-// lines; deserialize() migrates older saves by walking the old order list and
-// turning each run of a grid into one node per voice (bars ≈ the run's length).
+// v9 changed a node's length from `bars` to `reps` (pattern repeats; length =
+// reps × steps). v8 introduced node lines. deserialize() migrates both: v8's `bars`
+// becomes the reps that preserve the node's step length, and v1–v7's grids/order
+// collapse into one node per voice per order-run.
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import {
-  LineArrangement, VoiceNode, emptyNode, NUM_LINES, STEPS_PER_BAR, MAX_BARS, EMPTY,
+  LineArrangement, VoiceNode, emptyNode, NUM_LINES, STEPS_PER_BAR, MAX_REPS, EMPTY,
 } from "./lines";
 
 export interface NodeJSON {
@@ -21,7 +22,8 @@ export interface NodeJSON {
   steps: number;
   rotation: number;
   split?: number;
-  bars: number;
+  reps: number;
+  transition?: { fromId: number; toId: number };
   preset?: string;
   ranges?: { lo: number[]; hi: number[] };
 }
@@ -45,7 +47,7 @@ interface LegacyBlockJSON {
 }
 
 export interface ProjectJSON {
-  version: number; // 8 = node lines; 1-7 = legacy grids/order (migrated on load)
+  version: number; // 9 = reps; 8 = node lines w/ bars; 1-7 = legacy grids/order
   tempo: number;
   lines?: LineJSON[];             // v8
   root?: number;                  // v8: global key context for pitch-snap shuffles
@@ -62,7 +64,9 @@ export interface ProjectJSON {
 const cloneNode = (n: VoiceNode): NodeJSON => ({
   soundId: n.soundId, snapshot: n.snapshot.slice(), color: n.color, name: n.name,
   pitch: [n.pitch[0], n.pitch[1]], hits: n.hits, steps: n.steps, rotation: n.rotation,
-  split: n.split, bars: n.bars, preset: n.preset,
+  split: n.split, reps: n.reps,
+  transition: n.transition ? { fromId: n.transition.fromId, toId: n.transition.toId } : undefined,
+  preset: n.preset,
   ranges: n.ranges ? { lo: n.ranges.lo.slice(), hi: n.ranges.hi.slice() } : undefined,
 });
 
@@ -78,7 +82,7 @@ export function serialize(
     drumPresets[d] = kit.get(d).presetName();
   }
   return {
-    version: 8,
+    version: 9,
     tempo,
     root: arr.root,
     scale: arr.scale,
@@ -94,9 +98,11 @@ export function serialize(
 }
 
 // Restore one node from JSON, tolerating holes (older shapes, hand-edited files).
-function readNode(sv: Partial<NodeJSON> | null | undefined, bars: number): VoiceNode {
+// `defReps` seeds a node with no length info. A v8 `bars` is converted to the reps
+// that reproduce its old step length (bars × 16 = reps × steps).
+function readNode(sv: (Partial<NodeJSON> & { bars?: number }) | null | undefined, defReps: number): VoiceNode {
   const n = emptyNode();
-  if (!sv) { n.bars = bars; return n; }
+  if (!sv) { n.reps = Math.max(1, Math.min(MAX_REPS, Math.round(defReps))); return n; }
   n.soundId = typeof sv.soundId === "number" ? sv.soundId : EMPTY;
   n.snapshot = Array.isArray(sv.snapshot) ? sv.snapshot.slice() : [];
   n.color = sv.color ?? "#888888";
@@ -106,7 +112,18 @@ function readNode(sv: Partial<NodeJSON> | null | undefined, bars: number): Voice
   n.steps = sv.steps ?? 0;
   n.rotation = sv.rotation ?? 0;
   n.split = typeof sv.split === "number" ? sv.split : undefined;
-  n.bars = Math.max(1, Math.min(MAX_BARS, Math.round(typeof sv.bars === "number" ? sv.bars : bars)));
+  if (typeof sv.reps === "number") {
+    n.reps = Math.max(1, Math.min(MAX_REPS, Math.round(sv.reps)));
+  } else if (typeof sv.bars === "number") {
+    // v8 → v9: bars × 16 steps = reps × (steps or a bar), preserving length.
+    const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
+    n.reps = Math.max(1, Math.min(MAX_REPS, Math.round((sv.bars * STEPS_PER_BAR) / unit)));
+  } else {
+    n.reps = Math.max(1, Math.min(MAX_REPS, Math.round(defReps)));
+  }
+  n.transition = sv.transition && typeof sv.transition.fromId === "number" && typeof sv.transition.toId === "number"
+    ? { fromId: sv.transition.fromId, toId: sv.transition.toId }
+    : undefined;
   n.preset = typeof sv.preset === "string" ? sv.preset : undefined;
   n.ranges = sv.ranges && Array.isArray(sv.ranges.lo) && Array.isArray(sv.ranges.hi)
     ? { lo: sv.ranges.lo.slice(), hi: sv.ranges.hi.slice() }
@@ -153,7 +170,11 @@ function migrateLegacy(json: ProjectJSON, arr: LineArrangement): void {
     const nodes: VoiceNode[] = [];
     for (const run of runs) {
       const v = blocks[run.grid]?.voices?.[li];
-      nodes.push(readNode(v && v.soundId >= 0 ? { ...v, bars: run.bars } : null, run.bars));
+      const node = readNode(v && v.soundId >= 0 ? v : null, run.bars);
+      // Length: reproduce the run's step length as pattern repeats.
+      const unit = node.steps >= 1 ? node.steps : STEPS_PER_BAR;
+      node.reps = Math.max(1, Math.min(MAX_REPS, Math.round((run.bars * STEPS_PER_BAR) / unit)));
+      nodes.push(node);
       // Line-level mute/solo: adopt any voice-level flag seen for this slot.
       if (v?.mute) arr.lines[li].mute = true;
       if (v?.solo) arr.lines[li].solo = true;
@@ -175,7 +196,7 @@ export function deserialize(
   arr.root = 0;
   arr.scale = 0;
   const v = json && json.version;
-  if (!json || typeof v !== "number" || v < 1 || v > 8) return 120;
+  if (!json || typeof v !== "number" || v < 1 || v > 9) return 120;
 
   if (v >= 8 && Array.isArray(json.lines)) {
     json.lines.forEach((lj, i) => {

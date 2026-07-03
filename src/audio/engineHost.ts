@@ -84,6 +84,12 @@ export class EngineHost {
     this.node?.port.postMessage({ type: "tempo", bpm });
   }
 
+  /** Loop just a node's window (in 16th steps) of the whole loop, for auditioning an
+      edit in context. `len = 0` clears it (play the whole loop). Applied immediately. */
+  setSection(start: number, len: number): void {
+    this.node?.port.postMessage({ type: "section", start, len });
+  }
+
   play(): void {
     this.node?.port.postMessage({ type: "play" });
   }
