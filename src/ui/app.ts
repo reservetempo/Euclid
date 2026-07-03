@@ -365,11 +365,7 @@ export class App {
 
     const bar = document.createElement("header");
     bar.className = "topbar";
-    // The wordmark, drawn from the sequencer's dots and lines (see ui/logo.ts).
-    const title = document.createElement("span");
-    title.className = "app-title";
-    title.append(...logoLetters(15, false));
-    bar.append(title, this.transport(), this.menu());
+    bar.append(this.loopButton(), this.transport(), this.menu());
     this.root.append(bar);
 
     this.viewRoot = document.createElement("main");
@@ -502,16 +498,51 @@ export class App {
     return t;
   }
 
+  /** The top-left Loop button: a line with three dots (the node chain) that toggles
+      the Loop view. Lives in the top bar (where the logo used to be). */
+  private loopButton(): HTMLElement {
+    const b = document.createElement("button");
+    b.className = "loop-view-btn" + (this.view === "loop" ? " on" : "");
+    b.title = "Loop — the node chains";
+    b.setAttribute("aria-label", "Loop");
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 10");
+    svg.setAttribute("width", "22");
+    svg.setAttribute("height", "10");
+    const line = document.createElementNS(NS, "line");
+    line.setAttribute("x1", "2"); line.setAttribute("x2", "22");
+    line.setAttribute("y1", "5"); line.setAttribute("y2", "5");
+    line.setAttribute("stroke", "currentColor");
+    line.setAttribute("stroke-width", "2"); line.setAttribute("stroke-linecap", "round");
+    svg.append(line);
+    for (const cx of [5, 12, 19]) {
+      const c = document.createElementNS(NS, "circle");
+      c.setAttribute("cx", String(cx)); c.setAttribute("cy", "5"); c.setAttribute("r", "2.6");
+      c.setAttribute("fill", "currentColor");
+      svg.append(c);
+    }
+    b.append(svg);
+    b.onclick = () => { this.view = this.view === "loop" ? "seq" : "loop"; this.render(); };
+    return b;
+  }
+
   // --- sequencer view ----------------------------------------------------
   private renderSeq(): void {
     const v = this.viewRoot;
 
     const wrap = document.createElement("div");
     wrap.className = "euclid-wrap";
-    wrap.append(this.euclidView.canvas);
+    // Mixer button at the top-right of the steps visualiser.
+    const mix = document.createElement("button");
+    mix.className = "mixer-open-btn";
+    mix.textContent = "🎚";
+    mix.title = "Mixer";
+    mix.setAttribute("aria-label", "Mixer");
+    mix.onclick = () => { this.view = "mixer"; this.render(); };
+    wrap.append(mix, this.euclidView.canvas);
     v.append(wrap);
     v.append(this.linesMenu());
-    v.append(this.seqActions());
     if (!this.playing) this.refreshRings();
     // viewRoot is already in the DOM, so size synchronously (reads real width),
     // and again on the next frame as a fallback for first-paint width.
@@ -601,7 +632,21 @@ export class App {
         if (this.expanded !== i) { this.expanded = i; this.render(); }
         else if (!node.transition) this.openVoiceShuffleMenu(sound, i);
       };
-      r.append(sound);
+
+      // Previous-node button on the LEFT of the voice — •— steps back through the
+      // chain. An empty slot keeps rows aligned when there's no earlier node.
+      const left = document.createElement("div");
+      left.className = "node-nav";
+      left.style.setProperty("--vc", node.soundId >= 0 ? node.color : "#9aa0aa");
+      if (this.editNode[i] > 0) {
+        const prev = document.createElement("button");
+        prev.className = "node-nav-btn";
+        prev.title = "Previous node";
+        prev.append(this.nodeNavIcon(false));
+        prev.onclick = () => { this.editNode[i]--; this.expanded = i; this.render(); };
+        left.append(prev);
+      }
+      r.append(left, sound);
 
       if (isOpen) {
         // A hits/steps/start/split/reps circle: tap to type, or click-hold and drag
@@ -677,19 +722,11 @@ export class App {
         }
       }
 
-      // Node navigation, in the dots-and-lines language: •— = previous node,
-      // —• = next node (creates a new one at the end of the chain).
-      const nav = document.createElement("div");
-      nav.className = "node-nav";
-      nav.style.setProperty("--vc", node.soundId >= 0 ? node.color : "#9aa0aa");
-      if (this.editNode[i] > 0) {
-        const prev = document.createElement("button");
-        prev.className = "node-nav-btn";
-        prev.title = "Previous node";
-        prev.append(this.nodeNavIcon(false));
-        prev.onclick = () => { this.editNode[i]--; this.expanded = i; this.render(); };
-        nav.append(prev);
-      }
+      // Next-node button on the RIGHT of the voice — —• steps forward, or grows the
+      // chain with a new node when already at the end.
+      const right = document.createElement("div");
+      right.className = "node-nav";
+      right.style.setProperty("--vc", node.soundId >= 0 ? node.color : "#9aa0aa");
       const next = document.createElement("button");
       next.className = "node-nav-btn";
       next.title = this.editNode[i] < nodes.length - 1 ? "Next node" : "New node";
@@ -705,34 +742,12 @@ export class App {
         this.expanded = i;
         this.render();
       };
-      nav.append(next);
-      r.append(nav);
+      right.append(next);
+      r.append(right);
 
       wrap.append(r);
     }
     return wrap;
-  }
-
-  /** Row below the circle: Loop view + Mixer. */
-  private seqActions(): HTMLElement {
-    const row = document.createElement("div");
-    row.className = "steps-actions";
-
-    const loop = document.createElement("button");
-    loop.className = "loop-view-btn";
-    loop.textContent = "↻";
-    loop.title = "Loop view — the node chains";
-    loop.onclick = () => { this.view = "loop"; this.render(); };
-
-    const mix = document.createElement("button");
-    mix.className = "mixer-open-btn";
-    mix.textContent = "🎚";
-    mix.title = "Mixer";
-    mix.setAttribute("aria-label", "Mixer");
-    mix.onclick = () => { this.view = "mixer"; this.render(); };
-
-    row.append(loop, mix);
-    return row;
   }
 
   /** Apply a typed hits/steps/start/split/reps value: update the node, then re-render

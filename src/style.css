@@ -98,8 +98,6 @@ button:active { transform: scale(0.94); }
 .seg { display: flex; background: var(--panel); border-radius: 10px; padding: 3px; gap: 3px; }
 .seg-btn { border: none; background: transparent; padding: 8px 16px; border-radius: 8px; color: var(--muted); }
 .seg-btn.on { background: var(--panel2); color: var(--text); }
-/* The top-bar wordmark: the same dot-and-line letters as the start screen, small. */
-.app-title { display: flex; align-items: center; gap: 3px; flex: none; }
 
 /* Round, colour-coded control buttons: every toolbar button is a circle with its
    own hue (a dot in the app's dots-and-lines language). --bc sets the hue. */
@@ -169,11 +167,10 @@ button:active { transform: scale(0.94); }
 /* --- main views --- */
 .viewroot { flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px; }
 
-.loop-view-btn {
-  --bc: var(--accent);
-  width: 48px; height: 48px;
-  font-size: 18px; line-height: 1;
-}
+/* Loop button — line-with-three-dots, top-left of the bar (42px, matches play/menu). */
+.loop-view-btn { --bc: var(--accent); line-height: 1; }
+.loop-view-btn.on { background: var(--panel2); }
+.loop-view-btn svg { display: block; }
 
 /* loop time (shown in the Loop view) */
 .loop-time { display: flex; align-items: baseline; gap: 6px; font-size: 14px; }
@@ -456,14 +453,12 @@ button:active { transform: scale(0.94); }
 }
 
 /* --- mixer --- */
-.mixer-open-btn {
-  --bc: #4dabf7;
-  width: 48px; height: 48px; font-size: 20px;
-}
+.mixer-open-btn { --bc: #4dabf7; font-size: 18px; }
 .steps-actions { display: flex; gap: 8px; justify-content: center; }
 
-/* Sequencer: circle viz + the 6 line rows (accordion — tap a row to expand) */
-.euclid-wrap { display: block; text-align: center; }
+/* Sequencer: circle viz (with the Mixer button at its top-right) + the 6 line rows. */
+.euclid-wrap { position: relative; display: block; text-align: center; }
+.euclid-wrap .mixer-open-btn { position: absolute; top: 0; right: 0; z-index: 2; }
 .euclid-canvas { display: inline-block; max-width: 380px; }
 .euclid-menu { display: flex; flex-direction: column; gap: 6px; }
 /* Row layout: title + node navigation on the first line; the expanded detail
@@ -480,8 +475,9 @@ button:active { transform: scale(0.94); }
 .euclid-sound.has-sound { justify-content: flex-start; }
 /* Node position within the chain (shown once the chain has >1 node). */
 .node-pos { margin-left: auto; font-size: 10px; font-weight: 700; opacity: 0.75; }
-/* Node navigation: •— previous / —• next-or-new, in the voice's colour. */
-.node-nav { display: flex; gap: 4px; flex: none; }
+/* Node navigation slots flank the voice: •— previous on the left, —• next-or-new
+   on the right. A fixed-width slot keeps rows aligned when a side is empty. */
+.node-nav { flex: none; width: 40px; display: flex; align-items: center; justify-content: center; }
 .node-nav-btn {
   width: 38px; height: 30px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center;
