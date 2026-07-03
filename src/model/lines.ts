@@ -1,9 +1,11 @@
 // The pattern data: 6 voice LINES, each a chain of NODES. A node is one sound plus
 // one Euclidean rhythm (hits/steps/start/split) that REPEATS `reps` times, so its
 // length in steps is `reps × steps` (a 14-step pattern at 2 reps is 28 steps, NOT
-// padded up to two 16-step bars). A node with no rhythm yet (steps 0) falls back to
-// `reps` whole bars. When a node's window elapses the line moves to its next node,
-// wrapping at the end of the chain.
+// padded up to two 16-step bars). A node may also `wait` a number of quiet reps FIRST
+// — lead-in silence that delays the voice's entry — so its full length is
+// `(wait + reps) × steps`. A node with no rhythm yet (steps 0) falls back to whole
+// bars. When a node's window elapses the line moves to its next node, wrapping at the
+// end of the chain.
 //
 // The loop is as long as the LONGEST line: every line plays its chain ONCE per loop
 // and then rests until the loop comes round, so all lines realign at the top (a
@@ -53,6 +55,8 @@ export interface VoiceNode {
   rotation: number;
   split?: number; // primary-gap override for an uneven hit split (undefined = even)
   reps: number;   // how many times the pattern repeats (length = reps × steps)
+  wait?: number;  // lead-in silence: quiet reps BEFORE the pattern starts (adds
+                  // wait × steps to the length; the voice waits, then plays). 0/unset = none.
   // Transition: blend fromId→toId over this node's window ("morph" params, or
   // "crossfade" both sounds). Present => this node is a transition, not a sound.
   transition?: { fromId: number; toId: number; mode: TransitionMode };
@@ -69,12 +73,23 @@ export function emptyNode(): VoiceNode {
   };
 }
 
-/** A node's length in 16th-note steps: `reps × steps`, or `reps` whole bars when the
-    node has no rhythm yet (steps 0). Single source of truth for the engine message,
-    the loop math, and the section-loop window. */
+/** The step unit a node's reps/wait are counted in: its own step count, or one bar
+    when it has no rhythm yet (steps 0). */
+function nodeUnit(n: VoiceNode): number {
+  return n.steps >= 1 ? n.steps : STEPS_PER_BAR;
+}
+
+/** A node's lead-in silence in 16th-note steps: `wait` quiet reps before the pattern
+    starts (0 when unset). The engine mutes hits inside this leading window. */
+export function waitLen(n: VoiceNode): number {
+  return Math.max(0, (n.wait ?? 0) | 0) * nodeUnit(n);
+}
+
+/** A node's length in 16th-note steps: its lead-in silence plus `reps × steps` (or
+    `reps` whole bars when the node has no rhythm yet, steps 0). Single source of truth
+    for the engine message, the loop math, and the section-loop window. */
 export function nodeLen(n: VoiceNode): number {
-  const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
-  return Math.max(1, n.reps | 0) * unit;
+  return Math.max(1, n.reps | 0) * nodeUnit(n) + waitLen(n);
 }
 
 /** A node's length expressed in bars (for the loop view label) — may be fractional
@@ -99,6 +114,7 @@ export interface LineMessage {
     soundId: number;
     steps: number;
     lenSteps: number;
+    waitSteps: number; // leading silent steps inside lenSteps (lead-in; hits muted here)
     pattern: number[];
     transition?: { fromId: number; toId: number; mode: TransitionMode };
   }[];
@@ -146,6 +162,7 @@ export class LineArrangement {
         soundId: n.soundId,
         steps: n.steps,
         lenSteps: nodeLen(n),
+        waitSteps: waitLen(n),
         pattern: n.steps >= 1 && (n.soundId !== EMPTY || n.transition)
           ? voicePattern(n.hits, n.steps, n.rotation, n.split).map((b) => (b ? 1 : 0))
           : [],

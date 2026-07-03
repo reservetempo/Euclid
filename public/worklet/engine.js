@@ -904,10 +904,11 @@ class EngineProcessor extends AudioWorkletProcessor {
     this.clock = 0; // running sample counter, for busyUntil/steal decisions
 
     // --- lines + transport state ---
-    // Active voice lines: [{ nodes: [{soundId, steps, lenSteps, pattern, transition?}] } x 6].
+    // Active voice lines: [{ nodes: [{soundId, steps, lenSteps, waitSteps, pattern, transition?}] } x 6].
     // The loop is the LONGEST line; each reads pos = absStep % loopTotal, plays its
-    // chain once (active node by cumulative lenSteps, pattern cycling via nodeLocal %
-    // steps), then rests once pos passes its own length.
+    // chain once (active node by cumulative lenSteps; inside a node the leading
+    // waitSteps are silent, then the pattern cycles via activeLocal % steps), then
+    // rests once pos passes its own length.
     this.lines = null;
     // Staged lines: edits while playing land here and are promoted at the next BAR
     // boundary, so changes land musically instead of mid-bar.
@@ -1122,9 +1123,10 @@ class EngineProcessor extends AudioWorkletProcessor {
 
   // Fire one step. The loop length is the LONGEST line's chain; every line reads its
   // position as `absStep % loopTotal`, plays its chain once (active NODE by cumulative
-  // lenSteps, the node's pattern cycling inside its window via `nodeLocal % steps`),
+  // lenSteps, the node's pattern cycling inside its window via `activeLocal % steps`),
   // then RESTS once past its own length — so all lines realign at the top of the loop
-  // instead of a short line repeating under a long one. Silent nodes are rests too.
+  // instead of a short line repeating under a long one. Silent nodes are rests too, and
+  // a node's leading `waitSteps` are silent lead-in (it waits, then its pattern starts).
   fireStep(gate) {
     const lines = this.lines;
     if (!lines) { this.reportPlayhead(null, []); return; }
@@ -1171,24 +1173,30 @@ class EngineProcessor extends AudioWorkletProcessor {
       const nd = nodes[ni];
       const nodeLocal = pos - acc;
       const vs = nd.steps | 0;
-      states.push({ node: ni, step: vs >= 1 ? nodeLocal % vs : -1 });
+      // Lead-in silence: the first `waitSteps` of the window are quiet (the node waits,
+      // then plays), so the pattern clock starts AFTER the wait. <0 = still waiting.
+      const waitSteps = Math.max(0, nd.waitSteps | 0);
+      const activeLocal = nodeLocal - waitSteps;
+      states.push({ node: ni, step: vs >= 1 && activeLocal >= 0 ? activeLocal % vs : -1 });
 
-      // Pattern hit? Rests ship an empty pattern, so they fall through here.
-      if (vs < 1 || !nd.pattern || !nd.pattern[nodeLocal % vs]) continue;
+      // Still waiting (lead-in), or a pattern rest (rests ship an empty pattern)?
+      if (activeLocal < 0) continue;
+      if (vs < 1 || !nd.pattern || !nd.pattern[activeLocal % vs]) continue;
 
       // Accent = the first hit of this node's pattern cycle. beat = LFO-sync phase.
       let firstHit = 0;
       for (let h = 0; h < vs; h++) if (nd.pattern[h]) { firstHit = h; break; }
-      const isAccent = (nodeLocal % vs) === firstHit;
+      const isAccent = (activeLocal % vs) === firstHit;
       const beat = this.absStep * 0.25;
 
       if (nd.transition) {
         const from = this.sounds.get(nd.transition.fromId);
         const to = this.sounds.get(nd.transition.toId);
         if (!from || !to) continue; // a neighbour lost its sound — nothing to blend
-        // t: 0 at the window start, 1 at its last step — the progressive blend point.
-        const ndLen = Math.max(1, nd.lenSteps | 0);
-        const t = ndLen > 1 ? clamp(nodeLocal / (ndLen - 1), 0, 1) : 0;
+        // t: 0 at the sounding window's start (after any lead-in wait), 1 at its last
+        // step — the progressive blend point.
+        const activeLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
+        const t = activeLen > 1 ? clamp(activeLocal / (activeLen - 1), 0, 1) : 0;
         if (nd.transition.mode === "crossfade") {
           // Play BOTH sounds on their own channels, from fading out as to fades in.
           const hit = this.perHit(from.snap, isAccent);

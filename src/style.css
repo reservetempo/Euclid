@@ -200,6 +200,17 @@ button:active { transform: scale(0.94); }
 .node-dot.editing { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); }
 .node-dot.playing { outline: 2px solid var(--accent); animation: slot-breathe 0.9s ease-in-out infinite; }
 .line-row .node-add { position: relative; z-index: 1; }
+/* Edit-bars mode: the node dots read as editable number chips (tapping one opens the
+   numpad on its length instead of jumping to that voice). */
+.line-list.editing-bars .node-dot { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); cursor: text; }
+/* Per-line total at the far right of the row: the voice's whole length in bars.
+   Opaque background so the coloured line passes behind, not through, the text. */
+.line-total {
+  position: relative; z-index: 1; flex: none; margin-left: auto;
+  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+  white-space: nowrap; color: var(--muted);
+  background: var(--bg); padding: 2px 6px; border-radius: 6px;
+}
 /* ✛ gap button shown between two adjacent sounds while adding a transition. */
 .transition-gap {
   position: relative; z-index: 1;
@@ -251,6 +262,41 @@ button:active { transform: scale(0.94); }
   flex: 2; font-weight: 700; color: #0b0c0f; border: none;
   background: linear-gradient(135deg, #6c5cff, #00ffc8);
 }
+
+/* --- custom number pad (fixed overlay; the page behind stays put) --- */
+.numpad-overlay {
+  position: fixed; inset: 0; z-index: 80; padding: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.numpad {
+  --vc: var(--accent);
+  width: 100%; max-width: 260px;
+  display: flex; flex-direction: column; gap: 12px; padding: 16px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 18px;
+  animation: pop-in 0.16s ease-out;
+}
+.numpad-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.numpad-title {
+  font-size: 13px; font-weight: 700; color: var(--vc);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.numpad-hint { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.numpad-display {
+  height: 56px; display: flex; align-items: center; justify-content: center;
+  font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text);
+  background: var(--bg); border: 1.5px solid var(--vc); border-radius: 12px;
+}
+.numpad-display.empty { color: var(--muted); } /* showing the old value as a placeholder */
+.numpad-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.numpad-key {
+  height: 52px; padding: 0; font-size: 20px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+}
+.numpad-key:active { background: var(--panel2); transform: translateY(1px); }
+.numpad-key.back { color: var(--muted); font-size: 22px; }
+.numpad-key.enter { color: #0b0c0f; border: none; font-weight: 800; background: var(--vc); }
 
 /* --- sound view --- */
 .soundview { display: flex; flex-direction: column; gap: 14px; }

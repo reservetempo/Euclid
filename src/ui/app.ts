@@ -4,11 +4,12 @@
 // long-form polymeter with no global pattern switch (see src/model/lines.ts).
 //
 //   Sequencer view — the rings + one row per line. A row shows its line's node
-//     being edited; tap it to expand the Hits/Steps/Start/Split/Bars circles, and
+//     being edited; tap it to expand the Hits/Steps/Start/Split/Reps/Wait circles, and
 //     step along the chain with the —• (next/new node) and •— (previous node)
 //     buttons. Tap the title of the expanded row to open its shuffle menu.
 //   Loop view — the 6 node chains drawn as coloured lines of numbered circles
-//     (the number = bars); tap a node to edit it in the sequencer.
+//     (the number = bars, incl. any lead-in Wait), each line labelled with its total
+//     length; tap a node to edit it in the sequencer.
 //   Mixer — one strip per line (mute/solo/faders act on the whole chain).
 //   Sound view — the deep per-parameter editor for one node.
 
@@ -39,7 +40,7 @@ const REF_DRUM = DrumType.Kick;
 type View = "seq" | "loop" | "sound" | "mixer";
 
 // The editable numeric fields of a node (its scrubbable number circles).
-type NodeField = "hits" | "steps" | "rotation" | "split" | "reps";
+type NodeField = "hits" | "steps" | "rotation" | "split" | "reps" | "wait";
 
 export class App {
   private engine = new EngineHost();
@@ -61,6 +62,7 @@ export class App {
   private expanded = -1;
   private nextSoundId = 0; // monotonic id for assigned node sounds
   private addingTransition = false; // loop view: picking a gap to insert a transition
+  private editingBars = false;      // loop view: tapping a node edits its length, not navigates
 
   // Per-node inline shuffle editors, keyed by `${line}:${nodeIndex}`. Lazily created
   // when a node's shuffle menu first opens; cleared on new/load/node-removal
@@ -653,20 +655,19 @@ export class App {
         // up/down to scrub. Drawn as the sequencer's own language — voice-coloured
         // circles joined by a line (see .euclid-vals in style.css).
         const mkNum = (label: string, value: number, field: NodeField, disabled = false) => {
-          const cell = document.createElement("label");
+          const cell = document.createElement("div");
           cell.className = "euclid-num";
           const lab = document.createElement("span");
           lab.textContent = label;
           const inp = document.createElement("input");
-          inp.type = "number";
+          inp.type = "text";
           inp.value = String(value);
-          inp.min = "0";
-          inp.inputMode = "numeric";
+          inp.readOnly = true;        // custom numpad handles entry (no native keyboard)
+          inp.inputMode = "none";
           inp.disabled = disabled;
           if (!disabled) {
-            inp.onfocus = () => inp.select(); // one tap selects the value, ready to retype
-            inp.onchange = () => { this.setNodeNum(i, field, Number(inp.value)); };
-            this.attachDragScrub(inp, i, field);
+            // A plain tap opens the numpad (see attachDragScrub); click-hold + drag scrubs.
+            this.attachDragScrub(inp, i, field, label);
           }
           cell.append(lab, inp);
           return cell;
@@ -683,11 +684,15 @@ export class App {
         // Reps: how many times the pattern repeats before the next node takes over
         // (length = reps × steps). The loop view shows the resulting length in bars.
         const reps = mkNum("Reps", node.reps, "reps");
+        // Wait: quiet reps of lead-in silence before the pattern starts, so a voice can
+        // sit out space before it enters. Counts toward the node's length in bars.
+        const wait = mkNum("Wait", node.wait ?? 0, "wait");
+        wait.title = "Quiet reps before this node's pattern starts (lead-in space)";
 
         const vals = document.createElement("div");
         vals.className = "euclid-vals";
         vals.style.setProperty("--vc", (node.soundId >= 0 || node.transition) ? node.color : "#4a4e58");
-        vals.append(hits, steps, start, split, reps);
+        vals.append(hits, steps, start, split, reps, wait);
 
         // ×: remove this node from the chain (or clear the sound when it's the only one).
         const rm = document.createElement("button");
@@ -767,6 +772,7 @@ export class App {
     else if (field === "hits") v.hits = Math.max(0, Math.min(MAX_STEPS, Math.round(n)));
     else if (field === "rotation") v.rotation = Math.round(n);
     else if (field === "reps") v.reps = Math.max(1, Math.min(MAX_REPS, Math.round(n)));
+    else if (field === "wait") v.wait = Math.max(0, Math.min(MAX_REPS, Math.round(n))); // lead-in silence
     else v.split = Math.max(1, Math.min(maxSplitGap(v.hits, v.steps), Math.round(n))); // primary gap
     // Cap hits at steps only once steps is set (a blank node defaults to 0 steps and
     // shouldn't swallow a hits value the user types first).
@@ -793,8 +799,8 @@ export class App {
   }
 
   /** Make a number input scrub: click-hold and drag up to increase, down to decrease.
-      A plain tap (no drag) falls through to the normal focus/type behaviour. */
-  private attachDragScrub(input: HTMLInputElement, li: number, field: NodeField): void {
+      A plain tap (no drag) opens the custom numpad for the field. */
+  private attachDragScrub(input: HTMLInputElement, li: number, field: NodeField, label: string): void {
     const PX_PER_STEP = 7; // vertical pixels per ±1
     let startY = 0, startVal = 0, dragging = false, moved = false;
 
@@ -816,6 +822,7 @@ export class App {
       const v = this.node(li);
       const shown = field === "steps" ? v.steps : field === "hits" ? v.hits
         : field === "rotation" ? v.rotation : field === "reps" ? v.reps
+        : field === "wait" ? (v.wait ?? 0)
         : (v.split ?? evenGap(v.hits, v.steps));
       input.value = String(shown);
     });
@@ -823,10 +830,105 @@ export class App {
       if (!dragging) return;
       dragging = false;
       try { input.releasePointerCapture(e.pointerId); } catch { /* already released */ }
-      if (moved) this.render(); // rebuild so every row reflects the clamped values
+      if (moved) { this.render(); return; } // a drag: rebuild so rows reflect clamped values
+      // A plain tap: open the numpad, seeded with this field's value + voice colour.
+      const node = this.node(li);
+      this.openNumpad({
+        title: label,
+        value: startVal,
+        color: (node.soundId >= 0 || node.transition) ? node.color : undefined,
+        onSubmit: (n) => this.setNodeNum(li, field, n),
+      });
     };
     input.addEventListener("pointerup", end);
     input.addEventListener("pointercancel", end);
+  }
+
+  /** A custom on-screen number pad shown as a fixed overlay — the page behind does NOT
+      move (unlike a focused native input). Opens blank (the old value is only a hint);
+      ✓ or Enter submits the typed number, ⌫/Backspace deletes, and Esc or a tap outside
+      cancels (leaving the value unchanged). Integers only, up to 3 digits. */
+  private openNumpad(opts: { title: string; value: number; color?: string; onSubmit: (n: number) => void }): void {
+    document.querySelector(".numpad-overlay")?.remove(); // only one at a time
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+
+    let buf = "";
+    const overlay = document.createElement("div");
+    overlay.className = "numpad-overlay";
+    const pad = document.createElement("div");
+    pad.className = "numpad";
+    if (opts.color) pad.style.setProperty("--vc", opts.color);
+
+    const head = document.createElement("div");
+    head.className = "numpad-head";
+    const title = document.createElement("span");
+    title.className = "numpad-title";
+    title.textContent = opts.title;
+    const hint = document.createElement("span");
+    hint.className = "numpad-hint";
+    hint.textContent = `now ${opts.value}`;
+    head.append(title, hint);
+
+    const display = document.createElement("div");
+    display.className = "numpad-display";
+    const refresh = () => {
+      display.textContent = buf === "" ? String(opts.value) : buf;
+      display.classList.toggle("empty", buf === "");
+    };
+    refresh();
+
+    const close = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); };
+    const submit = () => { if (buf !== "") opts.onSubmit(parseInt(buf, 10)); close(); };
+    const press = (d: string) => { if (buf.length < 3) { buf += d; refresh(); } };
+    const backspace = () => { buf = buf.slice(0, -1); refresh(); };
+
+    const grid = document.createElement("div");
+    grid.className = "numpad-grid";
+    const key = (glyph: string, cls: string, fn: () => void) => {
+      const b = document.createElement("button");
+      b.className = "numpad-key" + (cls ? " " + cls : "");
+      b.textContent = glyph;
+      b.onclick = fn;
+      return b;
+    };
+    ["1", "2", "3", "4", "5", "6", "7", "8", "9"].forEach((d) => grid.append(key(d, "", () => press(d))));
+    grid.append(key("⌫", "back", backspace), key("0", "", () => press("0")), key("✓", "enter", submit));
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key >= "0" && e.key <= "9") press(e.key);
+      else if (e.key === "Backspace") backspace();
+      else if (e.key === "Enter") submit();
+      else if (e.key === "Escape") close();
+      else return;
+      e.preventDefault();
+    };
+    document.addEventListener("keydown", onKey, true);
+    overlay.onclick = (e) => { if (e.target === overlay) close(); }; // tap outside = cancel
+
+    pad.append(head, display, grid);
+    overlay.append(pad);
+    this.root.append(overlay);
+  }
+
+  /** Loop view (Edit-bars mode): set a node's whole length in bars via the numpad. The
+      typed bars become the node's total window (its lead-in Wait included); we solve for
+      the repeat count that lands closest and keep at least one rep. */
+  private openBarsNumpad(li: number, k: number): void {
+    const n = this.arr.lines[li].nodes[k];
+    if (!n) return;
+    this.openNumpad({
+      title: "Bars",
+      value: +nodeBars(n).toFixed(2),
+      color: (n.soundId >= 0 || n.transition) ? n.color : undefined,
+      onSubmit: (bars) => {
+        const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
+        const wait = Math.max(0, n.wait ?? 0);
+        const totalReps = Math.max(1, Math.round((bars * STEPS_PER_BAR) / unit)); // reps + wait
+        n.reps = Math.max(1, Math.min(MAX_REPS, totalReps - wait));
+        this.syncLines();
+        this.render();
+      },
+    });
   }
 
   // --- node sound editing (shuffle menu + sound view) ---------------------
@@ -1136,18 +1238,25 @@ export class App {
     hint.className = "hint";
     hint.textContent = this.addingTransition
       ? "Tap a ✛ between two sounds to blend one into the other. A line needs two sounds in a row — add a second node and shuffle it a sound first if you don't see a ✛."
+      : this.editingBars
+      ? "Tap any node to set its length in bars on the number pad (its lead-in Wait is included). Tap “Done” to go back to editing voices."
       : "Each voice flows along its line of nodes (the number = bars). The loop is as long as the longest line; shorter lines rest until it comes round. Tap a node to edit it.";
     v.append(hint);
 
-    // Add-transition toggle: in this mode a ✛ appears in each gap between two
-    // adjacent sounding nodes; tapping it inserts a morph between them.
+    // Two mutually-exclusive loop-view modes: Add-transition (a ✛ appears in each gap
+    // between adjacent sounds; tapping it inserts a morph) and Edit-bars (tapping a node
+    // opens the numpad on its length instead of jumping to that voice's sequencer).
     const actions = document.createElement("div");
     actions.className = "steps-actions";
     const addTr = document.createElement("button");
     addTr.className = "add-transition-btn" + (this.addingTransition ? " on" : "");
     addTr.textContent = this.addingTransition ? "Cancel" : "✛ Add transition";
-    addTr.onclick = () => { this.addingTransition = !this.addingTransition; this.render(); };
-    actions.append(addTr);
+    addTr.onclick = () => { this.addingTransition = !this.addingTransition; if (this.addingTransition) this.editingBars = false; this.render(); };
+    const editBars = document.createElement("button");
+    editBars.className = "add-transition-btn" + (this.editingBars ? " on" : "");
+    editBars.textContent = this.editingBars ? "Done" : "✎ Edit bars";
+    editBars.onclick = () => { this.editingBars = !this.editingBars; if (this.editingBars) this.addingTransition = false; this.render(); };
+    actions.append(addTr, editBars);
     v.append(actions);
 
     // Format a node's length in bars (28 steps = 1.75), trimming trailing zeros.
@@ -1155,10 +1264,15 @@ export class App {
       const b = nodeBars(n);
       return Number.isInteger(b) ? String(b) : String(+b.toFixed(2));
     };
+    // A " · waits N reps" tooltip suffix when a node has lead-in silence.
+    const waitNote = (n: VoiceNode): string => {
+      const w = Math.max(0, n.wait ?? 0);
+      return w > 0 ? ` · waits ${w} rep${w === 1 ? "" : "s"} first` : "";
+    };
     const sounding = (n: VoiceNode | undefined): boolean => !!n && n.soundId >= 0 && !n.transition;
 
     const list = document.createElement("div");
-    list.className = "line-list";
+    list.className = "line-list" + (this.editingBars ? " editing-bars" : "");
     for (let li = 0; li < NUM_LINES; li++) {
       const nodes = this.arr.lines[li].nodes;
       const row = document.createElement("div");
@@ -1187,12 +1301,13 @@ export class App {
           const toC = nodes[k + 1]?.color ?? n.color;
           dot.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
           dot.textContent = "→";
-          dot.title = `transition · ${barsLabel(n)} bars`;
+          dot.title = `transition · ${barsLabel(n)} bars${waitNote(n)}`;
         } else {
           dot.textContent = barsLabel(n);
-          dot.title = (n.soundId >= 0 ? (n.name || "node") : "rest") + ` · ${barsLabel(n)} bars`;
+          dot.title = (n.soundId >= 0 ? (n.name || "node") : "rest") + ` · ${barsLabel(n)} bars${waitNote(n)}`;
         }
         dot.onclick = () => {
+          if (this.editingBars) { this.openBarsNumpad(li, k); return; }
           this.editNode[li] = k;
           this.expanded = li;
           this.view = "seq";
@@ -1215,6 +1330,16 @@ export class App {
         this.render();
       };
       row.append(add);
+
+      // Trailing total: this whole line's length in bars (every node incl. its wait) —
+      // how long the voice runs before it rests for the remainder of the loop.
+      const total = document.createElement("span");
+      total.className = "line-total";
+      const lineBars = this.arr.lineSteps(li) / STEPS_PER_BAR;
+      const barsNum = Number.isInteger(lineBars) ? lineBars : +lineBars.toFixed(2);
+      total.textContent = `${barsNum} bar${barsNum === 1 ? "" : "s"}`;
+      total.title = "Total length of this line";
+      row.append(total);
 
       list.append(row);
     }
