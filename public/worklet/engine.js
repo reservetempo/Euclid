@@ -1013,16 +1013,17 @@ class EngineProcessor extends AudioWorkletProcessor {
 
   // `lines` = per-line { node, step } (the active node index + the step within its
   // pattern cycle), or null when stopped. `fired` = sound ids triggered this step.
-  // Posted once per 16th step while playing (each line has its own phase, so the
-  // state genuinely changes every step) and once with null on stop.
-  reportPlayhead(lines, fired) {
+  // `pos` = the global loop position in 16th steps (section offset included), for the
+  // UI's bar-grid playhead. Posted once per 16th step while playing (each line has its
+  // own phase, so the state genuinely changes every step) and once with null on stop.
+  reportPlayhead(lines, fired, pos) {
     if (lines === null) {
       if (this.playheadStopped) return;
       this.playheadStopped = true;
     } else {
       this.playheadStopped = false;
     }
-    this.port.postMessage({ type: "playhead", lines, fired: fired || [] });
+    this.port.postMessage({ type: "playhead", lines, fired: fired || [], pos: pos || 0 });
   }
 
   // Pick a pool channel for sound `id`: reuse its current binding, else a free
@@ -1233,7 +1234,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       this.triggerSound(nd.soundId, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat);
       fired.push(nd.soundId);
     }
-    this.reportPlayhead(states, fired);
+    this.reportPlayhead(states, fired, pos);
 
     this.absStep += 1;
     // Apply staged edits at bar boundaries so changes land musically.

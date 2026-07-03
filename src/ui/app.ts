@@ -7,9 +7,9 @@
 //     being edited; tap it to expand the Hits/Steps/Start/Split/Reps/Wait circles, and
 //     step along the chain with the —• (next/new node) and •— (previous node)
 //     buttons. Tap the title of the expanded row to open its shuffle menu.
-//   Loop view — the 6 node chains drawn as coloured lines of numbered circles
-//     (the number = bars, incl. any lead-in Wait), each line labelled with its total
-//     length; tap a node to edit it in the sequencer.
+//   Loop view — the arrangement as a paged 8-bar × 6-voice bar grid (node width =
+//     length in bars) with a sweeping playhead that follows the playing window, and
+//     the rings beneath as a live visualizer; tap a node to open its editing sheet.
 //   Mixer — one strip per line (mute/solo/faders act on the whole chain).
 //   Sound view — the deep per-parameter editor for one node.
 
@@ -82,6 +82,10 @@ export class App {
   private loopTimeEl: HTMLElement | null = null;
   // Loop view: per-line node dot elements, for the playing-node highlight.
   private nodeDotEls: HTMLElement[][] | null = null;
+  // Loop view: the bar grid element (carries the --ph playhead var) and the last
+  // 8-bar window the playhead was in (to follow it across page boundaries).
+  private barGridEl: HTMLElement | null = null;
+  private phPage = -1;
   // Channel -> flash LED, populated while the Mixer view is shown.
   private mixerLeds: Map<number, HTMLElement> | null = null;
   // Sound id -> voice title button, for the colour flash when its node fires.
@@ -110,6 +114,8 @@ export class App {
     if (!p.lines) {
       this.refreshRings(); // stopped: rings back to the edited nodes
       if (this.nodeDotEls) this.nodeDotEls.forEach((els) => els.forEach((el) => el.classList.remove("playing")));
+      this.phPage = -1;
+      this.barGridEl?.classList.remove("ph-live"); // hide the bar-grid playhead
       return;
     }
     // Rings follow each line's LIVE node + step; a resting line falls back to its
@@ -121,13 +127,15 @@ export class App {
     });
     this.euclidView.setRings(states);
     this.euclidView.pulse(p.fired);
-    // Loop view: highlight each line's playing node.
+    // Loop view: highlight each line's playing node, sweep the bar-grid playhead, and
+    // follow the playing 8-bar window.
     if (this.nodeDotEls) {
       this.nodeDotEls.forEach((els, li) => {
         const st = p.lines![li];
         els.forEach((el, k) => el.classList.toggle("playing", !!st && st.node === k));
       });
     }
+    if (this.view === "loop") this.updateLoopPlayhead(p.pos);
     if (this.mixerLeds) {
       for (const ch of p.fired) {
         const led = this.mixerLeds.get(ch);
@@ -146,6 +154,33 @@ export class App {
         btn.classList.add("hit-flash");
       }
     }
+  }
+
+  /** Loop view, while playing: sweep the playhead line across the bar grid (a CSS var
+      every track's ::after reads) and FOLLOW the music — when playback crosses into a
+      new 8-bar window, page the grid to it, so the view always shows the bars being
+      played. Following holds off while the user is mid-edit (voice sheet, numpad or
+      transition dialog open, or a loop-view mode armed) so the page isn't yanked away;
+      the line simply hides while the playhead is off-screen and the next boundary
+      crossing re-syncs. `pos` is the global loop position in 16th steps. */
+  private updateLoopPlayhead(pos: number): void {
+    const bar = pos / STEPS_PER_BAR;
+    const page = Math.floor(bar / LOOP_PAGE_BARS);
+    if (page !== this.phPage) {
+      this.phPage = page;
+      const busy = this.sheetLine >= 0 || this.addingTransition || this.editingBars
+        || !!document.querySelector(".numpad-overlay, .tr-overlay");
+      if (!busy && page !== this.loopPage) {
+        this.loopPage = page;
+        this.render(); // rebuilds the grid (barGridEl) on the new page
+      }
+    }
+    const grid = this.barGridEl;
+    if (!grid) return;
+    const rel = bar / LOOP_PAGE_BARS - this.loopPage; // 0..1 across the visible window
+    const visible = rel >= 0 && rel < 1;
+    grid.classList.toggle("ph-live", visible);
+    if (visible) grid.style.setProperty("--ph", `${(rel * 100).toFixed(3)}%`);
   }
 
   /** Point the rings at each line's EDITED node (the stopped/editing display). */
@@ -369,6 +404,7 @@ export class App {
     this.root.innerHTML = "";
     this.loopTimeEl = null;
     this.nodeDotEls = null;
+    this.barGridEl = null;
     this.mixerLeds = null;
     this.voiceBtns = null;
 
@@ -1454,6 +1490,19 @@ export class App {
       grid.append(row);
     }
     v.append(grid);
+    this.barGridEl = grid; // the playhead line sweeps this via the --ph var
+
+    // The rings beneath the grid: the sequencer's own visual language as a live
+    // visualizer — while playing each ring dances with its line's current node
+    // (handlePlayhead drives it); stopped, it shows the edited nodes.
+    const rings = document.createElement("div");
+    rings.className = "loop-rings";
+    rings.append(this.euclidView.canvas);
+    v.append(rings);
+    if (!this.playing) this.refreshRings();
+    // Size synchronously (viewRoot is in the DOM), and again next frame for first paint.
+    this.euclidView.layout();
+    requestAnimationFrame(() => this.euclidView.layout());
   }
 
   /** Grid click-to-add: drop a fresh sounding node on line `li` so its sound STARTS at

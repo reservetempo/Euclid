@@ -19,10 +19,14 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
   -webkit-text-size-adjust: 100%;
   overscroll-behavior: none;
+  /* The BODY never scrolls — .viewroot scrolls inside instead. A scrolled body is what
+     desyncs tap targets from position:fixed overlays on iOS (worst as a home-screen app
+     with a translucent status bar: taps land ~a status bar too high on the sheet/numpad). */
+  overflow: hidden;
 }
 
 #app {
-  min-height: 100%;
+  height: 100%; /* fixed shell (not min-height): the inner .viewroot is the scroller */
   display: flex;
   flex-direction: column;
   padding: env(safe-area-inset-top) env(safe-area-inset-right)
@@ -165,7 +169,12 @@ button:active { transform: scale(0.94); }
 .tempo-label::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
 /* --- main views --- */
-.viewroot { flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px; }
+/* The app's one scroller (the body is overflow:hidden — see html,body above). min-height:0
+   lets it shrink inside the flex column instead of pushing the shell taller. */
+.viewroot {
+  flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px;
+  min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+}
 
 /* Loop button — line-with-three-dots, top-left of the bar (42px, matches play/menu). */
 .loop-view-btn { --bc: var(--accent); line-height: 1; }
@@ -199,6 +208,17 @@ button:active { transform: scale(0.94); }
   background-image: repeating-linear-gradient(to right, var(--line) 0 1px, transparent 1px 12.5%);
   overflow: hidden;
 }
+/* Playhead: a glowing line sweeping every track at --ph (set on .bar-grid each 16th
+   step while playing; ph-live hides it whenever the playhead is off this page). */
+.bar-track::after {
+  content: ""; position: absolute; top: 0; bottom: 0; z-index: 6;
+  left: var(--ph, 0%); width: 2px; margin-left: -1px; border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent), 0 0 2px var(--accent);
+  opacity: 0; pointer-events: none;
+  transition: left 0.11s linear, opacity 0.2s ease;
+}
+.bar-grid.ph-live .bar-track::after { opacity: 0.85; }
 /* A node block: width = its length in bars (as % of the 8-bar window), placed by `left`. */
 .bar-node {
   position: absolute; top: 4px; bottom: 4px; padding: 0 4px; margin: 0; border: none;
@@ -227,6 +247,9 @@ button:active { transform: scale(0.94); }
 .bar-node:not(.has-sound) .bar-node-wait {
   background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.16) 0 4px, transparent 4px 8px);
 }
+/* The rings visualizer beneath the grid (the sequencer's canvas, centred + capped). */
+.loop-rings { display: flex; justify-content: center; max-width: 340px; margin: 2px auto 0; width: 100%; }
+
 /* Tap-to-add underlay filling the empty tail of a row. */
 .bar-add {
   position: absolute; top: 0; bottom: 0; z-index: 0; padding: 0; border: none;
@@ -257,14 +280,18 @@ button:active { transform: scale(0.94); }
 /* Play-scope toggle reads as a playback control (green when limited to the page). */
 .scope-btn.on { border-color: #69db7c; color: #69db7c; background: var(--panel2); }
 
-/* Voice sheet: a modal card over the whole app when a grid voice is tapped. */
+/* Voice sheet: a modal card over the whole app when a grid voice is tapped. The card
+   margin:auto-centres when it fits and pins to the (safe-area-padded) top when taller
+   than the screen — a plain centered flex child would clip its top unreachably. */
 .voice-sheet-overlay {
   position: fixed; inset: 0; z-index: 200;
   background: rgba(0, 0, 0, 0.55);
-  display: flex; align-items: center; justify-content: center; padding: 16px;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: calc(12px + env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom));
 }
 .voice-sheet {
-  width: 100%; max-width: 560px; max-height: 90vh; overflow-y: auto;
+  width: 100%; max-width: 560px; margin: auto;
+  max-height: 100%; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 12px; padding: 14px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);

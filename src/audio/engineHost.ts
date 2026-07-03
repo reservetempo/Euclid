@@ -8,6 +8,7 @@
 export interface Playhead {
   lines: { node: number; step: number }[] | null;
   fired: number[]; // sound ids triggered on this step (for flashes/LEDs)
+  pos: number;     // global loop position in 16th steps (for the bar-grid playhead)
 }
 
 // One entry in the engine's sound table: a painted sound bound to a pool channel on
@@ -50,7 +51,7 @@ export class EngineHost {
     });
     this.node.port.onmessage = (e) => {
       const m = e.data;
-      if (m.type === "playhead") this.onPlayhead?.({ lines: m.lines ?? null, fired: m.fired ?? [] });
+      if (m.type === "playhead") this.onPlayhead?.({ lines: m.lines ?? null, fired: m.fired ?? [], pos: m.pos ?? 0 });
     };
     this.node.connect(this.ctx.destination);
     await this.ctx.resume();
