@@ -1,9 +1,9 @@
 // The pattern data: 6 voice LINES, each a chain of NODES. A node is one sound plus
 // one Euclidean rhythm (hits/steps/start/split) that REPEATS `reps` times, so its
 // length in steps is `reps × steps` (a 14-step pattern at 2 reps is 28 steps, NOT
-// padded up to two 16-step bars). A node may also `wait` a number of quiet reps FIRST
+// padded up to two 16-step bars). A node may also `wait` a number of quiet BARS FIRST
 // — lead-in silence that delays the voice's entry — so its full length is
-// `(wait + reps) × steps`. A node with no rhythm yet (steps 0) falls back to whole
+// `wait × 16 + reps × steps` steps. A node with no rhythm yet (steps 0) falls back to whole
 // bars. When a node's window elapses the line moves to its next node, wrapping at the
 // end of the chain.
 //
@@ -55,8 +55,8 @@ export interface VoiceNode {
   rotation: number;
   split?: number; // primary-gap override for an uneven hit split (undefined = even)
   reps: number;   // how many times the pattern repeats (length = reps × steps)
-  wait?: number;  // lead-in silence: quiet reps BEFORE the pattern starts (adds
-                  // wait × steps to the length; the voice waits, then plays). 0/unset = none.
+  wait?: number;  // lead-in silence: quiet BARS BEFORE the pattern starts (adds
+                  // wait × 16 steps to the length; the voice waits, then plays). 0/unset = none.
   // Transition: blend fromId→toId over this node's window ("morph" params, or
   // "crossfade" both sounds). Present => this node is a transition, not a sound.
   transition?: { fromId: number; toId: number; mode: TransitionMode };
@@ -79,10 +79,11 @@ function nodeUnit(n: VoiceNode): number {
   return n.steps >= 1 ? n.steps : STEPS_PER_BAR;
 }
 
-/** A node's lead-in silence in 16th-note steps: `wait` quiet reps before the pattern
-    starts (0 when unset). The engine mutes hits inside this leading window. */
+/** A node's lead-in silence in 16th-note steps: `wait` quiet BARS before the pattern
+    starts (0 when unset). Counted in whole bars (not the node's own step unit) so a
+    voice's entry lines up with the bar grid. The engine mutes hits inside this window. */
 export function waitLen(n: VoiceNode): number {
-  return Math.max(0, (n.wait ?? 0) | 0) * nodeUnit(n);
+  return Math.max(0, (n.wait ?? 0) | 0) * STEPS_PER_BAR;
 }
 
 /** A node's length in 16th-note steps: its lead-in silence plus `reps × steps` (or

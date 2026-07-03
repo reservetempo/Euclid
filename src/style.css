@@ -177,43 +177,64 @@ button:active { transform: scale(0.94); }
 .loop-time-label { color: var(--muted); }
 .loop-time-val { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; }
 
-/* --- loop view: each voice's node chain as a line of numbered circles --- */
-.line-list { display: flex; flex-direction: column; gap: 16px; }
-.line-row { position: relative; display: flex; align-items: center; gap: 10px; padding: 4px 2px; flex-wrap: wrap; }
-/* The line the nodes sit on, in the voice's colour. */
-.line-row::before {
-  content: ""; position: absolute; left: 4px; right: 4px; top: 50%;
-  height: 2px; margin-top: -1px; border-radius: 1px;
-  background: var(--vc); opacity: 0.35;
+/* --- loop view: the arrangement as a bar grid (rows = voices, x = bars) --- */
+/* Pager: step the visible 8-bar window backward / forward. */
+.bar-pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0 12px; }
+.bar-pager-btn { width: auto; padding: 8px 14px; font-weight: 600; font-size: 13px; border-radius: 18px; }
+.bar-pager-btn:disabled { opacity: 0.32; cursor: default; }
+.bar-pager-label { font-size: 13px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.bar-grid { display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: flex; align-items: stretch; gap: 8px; }
+/* Left gutter: the voice number in its identity colour. */
+.bar-gutter {
+  flex: none; width: 20px; display: flex; align-items: center; justify-content: center;
+  border-radius: 5px; font-size: 12px; font-weight: 700;
+  background: var(--panel2); color: var(--vc); box-shadow: inset 0 0 0 1.5px var(--vc);
 }
-.node-dot {
-  position: relative; z-index: 1;
-  width: 40px; height: 40px; padding: 0; flex: none;
+/* One voice's 8-bar track; the repeating gradient draws a divider at each bar (1/8). */
+.bar-track {
+  position: relative; flex: 1 1 auto; height: 48px; border-radius: 8px;
+  background-color: var(--panel);
+  background-image: repeating-linear-gradient(to right, var(--line) 0 1px, transparent 1px 12.5%);
+  overflow: hidden;
+}
+/* A node block: width = its length in bars (as % of the 8-bar window), placed by `left`. */
+.bar-node {
+  position: absolute; top: 4px; bottom: 4px; padding: 0 4px; margin: 0; border: none;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  border-radius: 6px; font-weight: 700; font-size: 13px;
+  background: var(--panel2); color: var(--vc); box-shadow: inset 0 0 0 1.5px var(--vc);
+}
+.bar-node.has-sound { background: var(--vc); color: #15161a; box-shadow: none; }
+/* Transition block: a from→to gradient (set inline), dark glyph. */
+.bar-node.transition { color: #15161a; box-shadow: none; font-size: 16px; }
+/* A rest reads as a faint dashed placeholder inviting a sound. */
+.bar-node.rest { background: transparent; color: var(--muted); box-shadow: none; border: 1.5px dashed var(--muted); }
+.bar-node.editing { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); z-index: 3; }
+.bar-node.playing { outline: 2px solid var(--accent); animation: slot-breathe 0.9s ease-in-out infinite; z-index: 4; }
+.bar-grid.editing-bars .bar-node { cursor: text; }
+.bar-node-label { position: relative; z-index: 2; pointer-events: none; }
+/* Lead-in Wait: hatched head over the silent bars at the block's start. */
+.bar-node-wait {
+  position: absolute; left: 0; top: 0; bottom: 0; z-index: 1; pointer-events: none;
+  background-image: repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.28) 0 4px, transparent 4px 8px);
+}
+.bar-node:not(.has-sound) .bar-node-wait {
+  background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.16) 0 4px, transparent 4px 8px);
+}
+/* Tap-to-add underlay filling the empty tail of a row. */
+.bar-add {
+  position: absolute; top: 0; bottom: 0; z-index: 0; padding: 0; border: none;
+  background: transparent; cursor: copy;
   display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 14px;
-  border-radius: 50%;
-  background: var(--bg); border: 1.5px solid var(--vc); color: var(--vc);
+  color: var(--muted); opacity: 0.55; font-size: 20px; font-weight: 700;
 }
-.node-dot.has-sound { background: var(--vc); color: #15161a; }
-/* Transition dot: a from→to gradient (set inline), dark glyph. */
-.node-dot.transition { color: #15161a; border-color: transparent; font-size: 18px; }
-.node-dot.editing { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); }
-.node-dot.playing { outline: 2px solid var(--accent); animation: slot-breathe 0.9s ease-in-out infinite; }
-.line-row .node-add { position: relative; z-index: 1; }
-/* Edit-bars mode: the node dots read as editable number chips (tapping one opens the
-   numpad on its length instead of jumping to that voice). */
-.line-list.editing-bars .node-dot { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); cursor: text; }
-/* Per-line total at the far right of the row: the voice's whole length in bars.
-   Opaque background so the coloured line passes behind, not through, the text. */
-.line-total {
-  position: relative; z-index: 1; flex: none; margin-left: auto;
-  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
-  white-space: nowrap; color: var(--muted);
-  background: var(--bg); padding: 2px 6px; border-radius: 6px;
-}
-/* ✛ gap button shown between two adjacent sounds while adding a transition. */
+.bar-add:hover, .bar-add:active { background: rgba(255, 255, 255, 0.045); color: var(--accent); opacity: 1; }
+.bar-add-plus { pointer-events: none; }
+
+/* ✛ gap button shown where two adjacent sounds meet while adding a transition. */
 .transition-gap {
-  position: relative; z-index: 1;
   width: 26px; height: 26px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%; font-size: 14px; line-height: 1;
@@ -221,7 +242,9 @@ button:active { transform: scale(0.94); }
 }
 .transition-gap:hover, .transition-gap:active { border-color: var(--accent); color: var(--accent); }
 .transition-gap.dim { opacity: 0.45; }
-/* Add-transition toggle in the loop view. */
+/* In the grid the ✛ is absolutely placed, centred on the bar boundary. */
+.transition-gap.bar-gap { position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 5; }
+/* Add-transition / Edit-bars toggles in the loop view. */
 .add-transition-btn {
   width: auto; padding: 9px 16px; font-weight: 600; font-size: 13px;
   border-radius: 20px;
@@ -705,7 +728,7 @@ button:active { transform: scale(0.94); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* The playing node breathes instead of sitting still (see .node-dot.playing). */
+/* The playing node breathes instead of sitting still (see .bar-node.playing). */
 @keyframes slot-breathe {
   0%, 100% { outline-color: var(--accent); transform: scale(1); }
   50% { outline-color: #fff; transform: scale(1.05); }
@@ -721,7 +744,7 @@ button:active { transform: scale(0.94); }
   .euclid-sound .dice, .shuffle-big .dice, .dice.rolled,
   .shuffle-summary span:last-child, .euclid-sound.hit-flash,
   .preset-tile, .voice-shuffle, .menu-panel, .preset-grid,
-  .node-dot.playing {
+  .bar-node.playing {
     animation: none;
   }
 }

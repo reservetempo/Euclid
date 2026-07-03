@@ -22,12 +22,12 @@ import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import {
-  LineArrangement, VoiceNode, TransitionMode, emptyNode, nodeLen, nodeBars,
+  LineArrangement, VoiceNode, TransitionMode, emptyNode, nodeLen, nodeBars, waitLen,
   NUM_LINES, STEPS_PER_BAR, MAX_REPS, VOICE_COLORS,
 } from "../model/lines";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
 import { EuclidView, RingState } from "./euclidView";
-import { SoundView } from "./soundView";
+import { SoundView, CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS, randomSeed } from "./soundView";
 import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
 import { logoLetters } from "./logo";
 
@@ -63,6 +63,7 @@ export class App {
   private nextSoundId = 0; // monotonic id for assigned node sounds
   private addingTransition = false; // loop view: picking a gap to insert a transition
   private editingBars = false;      // loop view: tapping a node edits its length, not navigates
+  private loopPage = 0;             // loop view: which 8-bar window (page) is on screen
 
   // Per-node inline shuffle editors, keyed by `${line}:${nodeIndex}`. Lazily created
   // when a node's shuffle menu first opens; cleared on new/load/node-removal
@@ -684,10 +685,10 @@ export class App {
         // Reps: how many times the pattern repeats before the next node takes over
         // (length = reps × steps). The loop view shows the resulting length in bars.
         const reps = mkNum("Reps", node.reps, "reps");
-        // Wait: quiet reps of lead-in silence before the pattern starts, so a voice can
+        // Wait: quiet BARS of lead-in silence before the pattern starts, so a voice can
         // sit out space before it enters. Counts toward the node's length in bars.
         const wait = mkNum("Wait", node.wait ?? 0, "wait");
-        wait.title = "Quiet reps before this node's pattern starts (lead-in space)";
+        wait.title = "Quiet bars before this node's pattern starts (lead-in space)";
 
         const vals = document.createElement("div");
         vals.className = "euclid-vals";
@@ -911,8 +912,8 @@ export class App {
   }
 
   /** Loop view (Edit-bars mode): set a node's whole length in bars via the numpad. The
-      typed bars become the node's total window (its lead-in Wait included); we solve for
-      the repeat count that lands closest and keep at least one rep. */
+      typed bars become the node's total window (its lead-in Wait, now counted in bars,
+      included); we solve for the repeat count that fills the rest and keep at least one. */
   private openBarsNumpad(li: number, k: number): void {
     const n = this.arr.lines[li].nodes[k];
     if (!n) return;
@@ -922,9 +923,9 @@ export class App {
       color: (n.soundId >= 0 || n.transition) ? n.color : undefined,
       onSubmit: (bars) => {
         const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
-        const wait = Math.max(0, n.wait ?? 0);
-        const totalReps = Math.max(1, Math.round((bars * STEPS_PER_BAR) / unit)); // reps + wait
-        n.reps = Math.max(1, Math.min(MAX_REPS, totalReps - wait));
+        const waitBars = Math.max(0, n.wait ?? 0);          // lead-in, in bars
+        const playSteps = bars * STEPS_PER_BAR - waitBars * STEPS_PER_BAR; // steps left for the pattern
+        n.reps = Math.max(1, Math.min(MAX_REPS, Math.round(playSteps / unit)));
         this.syncLines();
         this.render();
       },
@@ -1206,7 +1207,12 @@ export class App {
     this.root.append(overlay);
   }
 
-  // --- loop view (the node chains) ----------------------------------------
+  // --- loop view (the arrangement timeline) -------------------------------
+  // The 6 voice lines drawn as a bar grid: 6 rows tall, 8 bars wide, paged 8 bars at a
+  // time. Each node fills a slice of its row proportional to its length in bars (a 4-bar
+  // node is half the 8-bar width); its lead-in Wait shows as a hatched head. Tap a node
+  // to edit it, tap empty space (or a rest) to drop a fresh sound there, or add a
+  // transition where two sounds meet.
   private renderLoop(): void {
     const v = this.viewRoot;
     this.nodeDotEls = [];
@@ -1234,18 +1240,28 @@ export class App {
     v.append(loop);
     this.updateLoopTime();
 
+    // The visible 8-bar window. Pages cover the content, plus one empty page past the
+    // end so there's always room to arrange further out; loopPage is clamped to that.
+    const BARS_PER_PAGE = 8;
+    const loopBars = this.arr.loopSteps() / STEPS_PER_BAR;
+    const maxPage = Math.max(0, Math.ceil(Math.max(loopBars, 0.001) / BARS_PER_PAGE) - 1) + 1;
+    this.loopPage = Math.max(0, Math.min(this.loopPage, maxPage));
+    const page = this.loopPage;
+    const winStart = page * BARS_PER_PAGE; // window's first bar (0-indexed)
+    const winEnd = winStart + BARS_PER_PAGE;
+
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = this.addingTransition
-      ? "Tap a ✛ between two sounds to blend one into the other. A line needs two sounds in a row — add a second node and shuffle it a sound first if you don't see a ✛."
+      ? "Tap a ✛ where two sounds meet to blend one into the other. A line needs two sounds in a row — drop a second sound first if you don't see a ✛."
       : this.editingBars
-      ? "Tap any node to set its length in bars on the number pad (its lead-in Wait is included). Tap “Done” to go back to editing voices."
-      : "Each voice flows along its line of nodes (the number = bars). The loop is as long as the longest line; shorter lines rest until it comes round. Tap a node to edit it.";
+      ? "Tap a node to set its exact length in bars on the number pad (its lead-in Wait is included). Tap “Done” to go back."
+      : "Each voice runs left → right; a node's width is its length in bars. Tap a node to edit it, or tap empty space to add a sound. Page 8 bars at a time.";
     v.append(hint);
 
-    // Two mutually-exclusive loop-view modes: Add-transition (a ✛ appears in each gap
-    // between adjacent sounds; tapping it inserts a morph) and Edit-bars (tapping a node
-    // opens the numpad on its length instead of jumping to that voice's sequencer).
+    // Two mutually-exclusive modes: Add-transition (a ✛ appears where two sounds meet;
+    // tapping it inserts a blend) and Edit-bars (tapping a node opens the numpad on its
+    // length instead of editing its voice).
     const actions = document.createElement("div");
     actions.className = "steps-actions";
     const addTr = document.createElement("button");
@@ -1259,91 +1275,208 @@ export class App {
     actions.append(addTr, editBars);
     v.append(actions);
 
+    // Pager: step the visible window backward / forward 8 bars at a time.
+    const pager = document.createElement("div");
+    pager.className = "bar-pager";
+    const prev = document.createElement("button");
+    prev.className = "bar-pager-btn";
+    prev.textContent = "‹ 8 bars";
+    prev.disabled = page <= 0;
+    prev.onclick = () => { this.loopPage = Math.max(0, this.loopPage - 1); this.render(); };
+    const pLabel = document.createElement("span");
+    pLabel.className = "bar-pager-label";
+    pLabel.textContent = `Bars ${winStart + 1}–${winEnd}`;
+    const next = document.createElement("button");
+    next.className = "bar-pager-btn";
+    next.textContent = "8 bars ›";
+    next.disabled = page >= maxPage;
+    next.onclick = () => { this.loopPage = this.loopPage + 1; this.render(); };
+    pager.append(prev, pLabel, next);
+    v.append(pager);
+
     // Format a node's length in bars (28 steps = 1.75), trimming trailing zeros.
     const barsLabel = (n: VoiceNode): string => {
       const b = nodeBars(n);
       return Number.isInteger(b) ? String(b) : String(+b.toFixed(2));
     };
-    // A " · waits N reps" tooltip suffix when a node has lead-in silence.
+    // A " · waits N bars" tooltip suffix when a node has lead-in silence.
     const waitNote = (n: VoiceNode): string => {
       const w = Math.max(0, n.wait ?? 0);
-      return w > 0 ? ` · waits ${w} rep${w === 1 ? "" : "s"} first` : "";
+      return w > 0 ? ` · waits ${w} bar${w === 1 ? "" : "s"} first` : "";
     };
     const sounding = (n: VoiceNode | undefined): boolean => !!n && n.soundId >= 0 && !n.transition;
+    const pct = (bars: number): number => (bars / BARS_PER_PAGE) * 100; // bars → % of the window
 
-    const list = document.createElement("div");
-    list.className = "line-list" + (this.editingBars ? " editing-bars" : "");
+    const grid = document.createElement("div");
+    grid.className = "bar-grid"
+      + (this.editingBars ? " editing-bars" : "")
+      + (this.addingTransition ? " adding-tr" : "");
     for (let li = 0; li < NUM_LINES; li++) {
       const nodes = this.arr.lines[li].nodes;
       const row = document.createElement("div");
-      row.className = "line-row";
+      row.className = "bar-row";
       row.style.setProperty("--vc", VOICE_COLORS[li]);
 
-      const dots: HTMLElement[] = [];
-      nodes.forEach((n, k) => {
-        // A ✛ gap sits after a sounding node while adding a transition (so it's
-        // visible even before the next node has a sound); dimmed until the node
-        // after it is also a sound. The popup guides you either way.
-        if (this.addingTransition && k > 0 && sounding(nodes[k - 1]) && !n.transition) {
-          const gap = document.createElement("button");
-          gap.className = "transition-gap" + (sounding(n) ? "" : " dim");
-          gap.textContent = "✛";
-          gap.title = sounding(n) ? "Add a transition between these sounds" : "The node after needs a sound";
-          gap.onclick = () => this.openTransitionOptions(li, k);
-          row.append(gap);
+      const gutter = document.createElement("span");
+      gutter.className = "bar-gutter";
+      gutter.textContent = String(li + 1);
+      row.append(gutter);
+
+      const track = document.createElement("div");
+      track.className = "bar-track";
+      const contentEnd = this.arr.lineSteps(li) / STEPS_PER_BAR; // this line's end, in bars
+
+      // Empty-space affordance: from the line's content end to the window's right edge,
+      // an underlay you tap to drop a fresh sound at that bar (default mode only).
+      if (!this.addingTransition && !this.editingBars) {
+        const emptyLeft = Math.max(contentEnd, winStart);
+        if (emptyLeft < winEnd - 0.001) {
+          const addZone = document.createElement("button");
+          addZone.className = "bar-add";
+          addZone.style.left = `${pct(emptyLeft - winStart)}%`;
+          addZone.style.width = `${pct(winEnd - emptyLeft)}%`;
+          addZone.title = "Add a sound here";
+          const plus = document.createElement("span");
+          plus.className = "bar-add-plus";
+          plus.textContent = "＋";
+          addZone.append(plus);
+          addZone.onclick = (e) => {
+            const r = track.getBoundingClientRect();
+            const bar = winStart + ((e.clientX - r.left) / Math.max(1, r.width)) * BARS_PER_PAGE;
+            this.addSoundAt(li, bar);
+          };
+          track.append(addZone);
         }
-        const dot = document.createElement("button");
-        dot.className = "node-dot"
-          + (n.transition ? " transition" : n.soundId >= 0 ? " has-sound" : "")
+      }
+
+      // Node blocks, positioned by cumulative bars. Blocks outside the window are clipped
+      // by the track's overflow; every node still pushes a block so nodeDotEls indices
+      // stay aligned for the playing glow.
+      const dots: HTMLElement[] = [];
+      let startBar = 0;
+      nodes.forEach((n, k) => {
+        const len = nodeBars(n);
+        const s = startBar;
+        startBar += len;
+
+        const isSound = n.soundId >= 0 && !n.transition;
+        const block = document.createElement("button");
+        block.className = "bar-node"
+          + (n.transition ? " transition" : isSound ? " has-sound" : " rest")
           + (k === this.editNode[li] ? " editing" : "");
+        block.style.left = `${pct(s - winStart)}%`;
+        block.style.width = `${pct(len)}%`;
+
+        // Lead-in Wait: a hatched head spanning the silent bars at the block's start.
+        const wb = waitLen(n) / STEPS_PER_BAR;
+        if (wb > 0 && len > 0) {
+          const waitEl = document.createElement("span");
+          waitEl.className = "bar-node-wait";
+          waitEl.style.width = `${Math.min(100, (wb / len) * 100)}%`;
+          block.append(waitEl);
+        }
+
+        const label = document.createElement("span");
+        label.className = "bar-node-label";
         if (n.transition) {
           const fromC = nodes[k - 1]?.color ?? n.color;
           const toC = nodes[k + 1]?.color ?? n.color;
-          dot.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
-          dot.textContent = "→";
-          dot.title = `transition · ${barsLabel(n)} bars${waitNote(n)}`;
+          block.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
+          label.textContent = "→";
+          block.title = `transition · ${barsLabel(n)} bars${waitNote(n)}`;
         } else {
-          dot.textContent = barsLabel(n);
-          dot.title = (n.soundId >= 0 ? (n.name || "node") : "rest") + ` · ${barsLabel(n)} bars${waitNote(n)}`;
+          label.textContent = barsLabel(n);
+          block.title = (isSound ? (n.name || "node") : "rest — tap to add a sound")
+            + ` · ${barsLabel(n)} bars${waitNote(n)}`;
         }
-        dot.onclick = () => {
+        block.append(label);
+
+        block.onclick = () => {
           if (this.editingBars) { this.openBarsNumpad(li, k); return; }
+          if (this.addingTransition) return; // the ✛ gaps handle transition insertion
+          if (!isSound && !n.transition) { this.giveNodeSound(li, k); return; } // rest → sound in place
           this.editNode[li] = k;
           this.expanded = li;
           this.view = "seq";
           this.render();
         };
-        dots.push(dot);
-        row.append(dot);
+        dots.push(block);
+        track.append(block);
+
+        // Transition gap: a ✛ centred on the boundary INTO this node (after a sounding
+        // node), shown while adding a transition and only when it falls in the window.
+        if (this.addingTransition && k > 0 && sounding(nodes[k - 1]) && !n.transition
+            && s >= winStart - 0.001 && s <= winEnd + 0.001) {
+          const gap = document.createElement("button");
+          gap.className = "transition-gap bar-gap" + (sounding(n) ? "" : " dim");
+          gap.textContent = "✛";
+          gap.style.left = `${pct(s - winStart)}%`;
+          gap.title = sounding(n) ? "Add a transition between these sounds" : "The node after needs a sound";
+          gap.onclick = () => this.openTransitionOptions(li, k);
+          track.append(gap);
+        }
       });
       this.nodeDotEls.push(dots);
 
-      // Trailing —• : grow this line with a fresh node.
-      const add = document.createElement("button");
-      add.className = "node-nav-btn node-add";
-      add.title = "New node";
-      add.append(this.nodeNavIcon(true));
-      add.onclick = () => {
-        nodes.push(emptyNode());
-        this.editNode[li] = nodes.length - 1;
-        this.syncLines();
-        this.render();
-      };
-      row.append(add);
-
-      // Trailing total: this whole line's length in bars (every node incl. its wait) —
-      // how long the voice runs before it rests for the remainder of the loop.
-      const total = document.createElement("span");
-      total.className = "line-total";
-      const lineBars = this.arr.lineSteps(li) / STEPS_PER_BAR;
-      const barsNum = Number.isInteger(lineBars) ? lineBars : +lineBars.toFixed(2);
-      total.textContent = `${barsNum} bar${barsNum === 1 ? "" : "s"}`;
-      total.title = "Total length of this line";
-      row.append(total);
-
-      list.append(row);
+      row.append(track);
+      grid.append(row);
     }
-    v.append(list);
+    v.append(grid);
+  }
+
+  /** Grid click-to-add: drop a fresh sounding node on line `li` so its sound STARTS at
+      (whole) bar `bar`. Any gap between the line's current end and that bar becomes the
+      node's lead-in Wait (in bars). Reuses a trailing empty rest if there is one. */
+  private addSoundAt(li: number, bar: number): void {
+    const nodes = this.arr.lines[li].nodes;
+    const targetBar = Math.max(0, Math.floor(bar));
+    const last = nodes[nodes.length - 1];
+    const reuse = last.soundId < 0 && !last.transition; // a trailing empty rest slot
+    const slot = reuse ? nodes.length - 1 : nodes.length;
+    let base = 0; // bars occupied by the nodes before this slot
+    for (let k = 0; k < slot; k++) base += nodeBars(nodes[k]);
+    const node = reuse ? last : emptyNode();
+    if (!reuse) nodes.push(node);
+    // A clean 1-bar default groove; bridge to the clicked bar with lead-in Wait.
+    node.steps = 8; node.hits = 4; node.rotation = 0; node.split = undefined; node.reps = 2;
+    const gap = Math.max(0, Math.round(targetBar - base));
+    node.wait = gap > 0 ? gap : undefined;
+    this.editNode[li] = slot;
+    this.expanded = li;
+    this.voiceEditors.delete(`${li}:${slot}`); // any editor cached at this index is stale
+    this.mintNodeSound(li);                    // give it an audible, shuffled sound
+    this.render();
+  }
+
+  /** Turn an existing rest node into a sounding one in place (keeping its position and
+      lead-in Wait) — used when a rest block on the grid is tapped. */
+  private giveNodeSound(li: number, k: number): void {
+    const node = this.arr.lines[li].nodes[k];
+    if (!node || node.soundId >= 0 || node.transition) return;
+    if (node.steps < 1) { node.steps = 8; node.hits = 4; node.rotation = 0; node.reps = Math.max(node.reps, 2); }
+    this.editNode[li] = k;
+    this.expanded = li;
+    this.voiceEditors.delete(`${li}:${k}`);
+    this.mintNodeSound(li);
+    this.render();
+  }
+
+  /** Mint an audible sound for the line's current edit node by shuffling a fresh editor
+      and writing it back, so a grid-added node arrives with character, ready to refine. */
+  private mintNodeSound(li: number): void {
+    const ed = this.voiceEditorFor(li);
+    const ctx = this.shuffleContext();
+    ed.kit.shuffleAll(REF_DRUM, {
+      randomness: ed.randomness,
+      curve: CURVE_OPTIONS[ed.curveIdx].curve,
+      maxLen: MAXLEN_OPTIONS[ed.maxLenIdx].seconds,
+      bpm: ctx.bpm,
+      snap: SNAP_OPTIONS[ed.snapIdx].snap,
+      root: ctx.root,
+      scale: ctx.scale,
+      seed: randomSeed(),
+    });
+    this.writeVoiceFromEditor(li); // mints the sound id, captures the snapshot, resends, persists
   }
 
   // --- mixer view -------------------------------------------------------
