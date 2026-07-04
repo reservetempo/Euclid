@@ -57,6 +57,9 @@ export interface VoiceNode {
   reps: number;   // how many times the pattern repeats (length = reps × steps)
   wait?: number;  // lead-in silence: quiet BARS BEFORE the pattern starts (adds
                   // wait × 16 steps to the length; the voice waits, then plays). 0/unset = none.
+  gain?: number;  // loudness makeup (×): measured after a shuffle so every generated
+                  // sound lands at a consistent level. Applied to Volume in the engine
+                  // message only — the snapshot (and mixer fader) keep their meaning.
   // Transition: blend fromId→toId over this node's window ("morph" params, or
   // "crossfade" both sounds). Present => this node is a transition, not a sound.
   transition?: { fromId: number; toId: number; mode: TransitionMode };

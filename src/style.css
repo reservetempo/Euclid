@@ -99,13 +99,9 @@ button:active { transform: scale(0.94); }
   background: var(--bg);
   z-index: 5;
 }
-.seg { display: flex; background: var(--panel); border-radius: 10px; padding: 3px; gap: 3px; }
-.seg-btn { border: none; background: transparent; padding: 8px 16px; border-radius: 8px; color: var(--muted); }
-.seg-btn.on { background: var(--panel2); color: var(--text); }
-
 /* Round, colour-coded control buttons: every toolbar button is a circle with its
    own hue (a dot in the app's dots-and-lines language). --bc sets the hue. */
-.play-btn, .menu-btn, .loop-view-btn, .pat-btn, .mixer-open-btn {
+.play-btn, .menu-btn, .loop-view-btn, .mixer-open-btn {
   width: 42px; height: 42px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%;
@@ -305,9 +301,10 @@ button:active { transform: scale(0.94); }
 /* A transition pill in the sequencer row uses its inline from→to gradient. */
 .euclid-sound.transition { font-weight: 700; }
 
-/* Transition-options popup (tapping a ✛). */
+/* Transition dialogs (the sheet's Transitions menu + the mode/length options).
+   Above the voice sheet (200) so they stack over it; under the numpad (210). */
 .tr-overlay {
-  position: fixed; inset: 0; z-index: 60; padding: 16px;
+  position: fixed; inset: 0; z-index: 205; padding: 16px;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0, 0, 0, 0.55);
 }
@@ -318,6 +315,14 @@ button:active { transform: scale(0.94); }
   animation: pop-in 0.18s ease-out;
 }
 .tr-title { margin: 0; font-size: 16px; font-weight: 700; }
+/* Placement choices (At the start / At the end): stacked rows, main line + small note. */
+.tr-place {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  text-align: left; padding: 10px 12px;
+  background: var(--panel); border-radius: 10px; font-weight: 600; font-size: 14px;
+}
+.tr-place small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.tr-place:disabled { opacity: 0.45; cursor: default; }
 .tr-modes { display: flex; gap: 8px; }
 .tr-modes.inline { order: 10; flex: 1 1 100%; margin-top: 2px; }
 .tr-mode {

@@ -32,8 +32,10 @@ export interface BreedMate {
 
 export interface VoiceMenuCallbacks {
   // A whole-sound change happened (shuffle/back/reset/preset): write the kit back into
-  // the voice, resend the sound table, persist, redraw the circle. No audio.
-  onChange: () => void;
+  // the voice, resend the sound table, persist, redraw the circle. No audio. May be
+  // async (the app re-levels the sound offline) — the menu awaits it before the
+  // audition so the preview plays at the corrected loudness.
+  onChange: () => void | Promise<void>;
   // Preview the current sound once (also used by the ▶ button).
   audition: () => void;
   // Open the full per-parameter editor for this voice (the "Full Parameters" button).
@@ -58,8 +60,9 @@ export function buildVoiceShuffleMenu(
   let showMates = false;   // ditto for the crossbreed partner list
   let rolled = false;      // one-shot: spin the die on the render right after a shuffle
 
-  // Apply a kit mutation, then push it into the voice, preview it, and refresh the UI.
-  const afterChange = () => { cb.onChange(); cb.audition(); render(); };
+  // Apply a kit mutation, then push it into the voice (awaiting its loudness
+  // re-level), preview it, and refresh the UI.
+  const afterChange = async () => { await cb.onChange(); cb.audition(); render(); };
 
   const render = () => {
     panel.innerHTML = "";

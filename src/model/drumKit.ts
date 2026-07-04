@@ -116,6 +116,12 @@ const TILT_POW = 0.3;          // strength of the (knee/pitch)^pow tone attenuat
 const TILT_FLOOR = 0.35;       // never attenuate the tone below this factor
 const RESO_SCREAM_HZ = 4500;   // centre of the ear's most sensitive band
 const RESO_MIN_Q = 2.8;        // max allowed Q at the centre of the scream band
+const PITCH_ENV_PEAK = 6500;   // Hz cap on where a positive pitch env may START (pitch×(1+amt))
+const FOLD_KNEE = 600;         // Hz, wavefolding eases off above this pitch
+const FOLD_POW = 0.8;          // strength of the (knee/pitch)^pow fold attenuation
+const COMB_WHISTLE_HZ = 2600;  // comb resonators tuned above this…
+const COMB_WHISTLE_DECAY = 0.55; // …get their ring capped here (long treble ring = whistle)
+const MIN_LAYER_DECAY = 0.05;  // s; a dominant layer decaying faster is just a click
 // Per-noise-colour level compensation (indexed like NOISE_TYPES): the differentiated
 // spectra (Blue/Violet) and S&H grit (Metal) pierce at equal level, so scale them back.
 const NOISE_COLOUR_GAIN = [1, 1, 1, 0.65, 0.5, 1, 0.7];
@@ -335,10 +341,13 @@ export class DrumParameters {
       After the draw, {@link applySparsity} switches off a random subset of the
       effect/filter modules so a sound is usually only doing 1-3 things at once
       instead of everything at full tilt — the count itself varies per shuffle.
-      {@link ensureAudibleLevel} then floors near-silent results and
+      {@link ensureAudibleLevel} then floors near-silent results (source levels,
+      fundamental-killing filters, click-length layer decays) and
       {@link tameHarshness} caps stacked-extreme screech (scream-band resonance,
-      runaway FM sidebands, piercing noise colours, crushed high tones, hard-panned
-      bass).
+      runaway FM sidebands, treble-launched pitch envelopes, folded/crushed high
+      tones, whistling combs, piercing noise colours, hard-panned bass). The app
+      adds a closed loop on top: it renders the result offline and stores a
+      loudness makeup gain on the node (see App.normalizeVoice).
 
       `maxLen` (seconds, 0 = off) caps the estimated audible length at `bpm`: FX
       tails are trimmed first (echo, then reverb), then the amp body, to fit. */
@@ -481,6 +490,15 @@ export class DrumParameters {
     else if (ftype === 2) { // BP: keep the band within reach of the tone
       this.set(ParamId.FilterCutoff, Math.min(pitch * 6, Math.max(pitch * 0.3, cutoff)));
     }
+
+    // A DOMINANT layer whose independent decay landed at a few milliseconds leaves
+    // just a click where the whole sound should be — snap it back to "follow the
+    // amp" (0). Deliberate clicks stay reachable via a short Amp Decay, and the
+    // quieter layer may still tick as seasoning.
+    const domDecay = this.get(ParamId.ToneLevel) >= this.get(ParamId.NoiseLevel)
+      ? ParamId.ToneDecay : ParamId.NoiseDecay;
+    const d = this.get(domDecay);
+    if (d > 0 && d < MIN_LAYER_DECAY) this.set(domDecay, 0);
   }
 
   /** The audible-level floor's counterpart: keep a shuffled sound from coming out
@@ -497,6 +515,28 @@ export class DrumParameters {
     if (pitch > TILT_KNEE) {
       const g = Math.max(TILT_FLOOR, Math.pow(TILT_KNEE / pitch, TILT_POW));
       this.set(ParamId.ToneLevel, this.get(ParamId.ToneLevel) * g);
+    }
+
+    // A positive pitch envelope STARTS the note at pitch×(1+amt) — cap that launch
+    // point so a bright tone can't open as a 10kHz siren drop. Kick-style sweeps on
+    // low pitches are untouched (50Hz × 6 starts at a harmless 300Hz).
+    const envAmt = this.get(ParamId.PitchEnvAmount);
+    if (envAmt > 0 && pitch * (1 + envAmt) > PITCH_ENV_PEAK) {
+      this.set(ParamId.PitchEnvAmount, Math.max(0, PITCH_ENV_PEAK / pitch - 1));
+    }
+
+    // Wavefolding multiplies a tone's harmonics upward — folding an already-HIGH
+    // tone sprays them across the piercing top octaves, so ease Fold off as pitch
+    // climbs (bass folding, the classic use, is untouched).
+    if (pitch > FOLD_KNEE) {
+      this.set(ParamId.Fold, this.get(ParamId.Fold) * Math.pow(FOLD_KNEE / pitch, FOLD_POW));
+    }
+
+    // A long-ringing comb resonator tuned into the treble is a pure whistle — cap
+    // its ring time up there (short treble pings and long bass strings both stay).
+    if (pitch * this.get(ParamId.CombTune) > COMB_WHISTLE_HZ
+        && this.get(ParamId.CombDecay) > COMB_WHISTLE_DECAY) {
+      this.set(ParamId.CombDecay, COMB_WHISTLE_DECAY);
     }
 
     // Bright noise colours pierce at equal level — rebalance so colours shuffle at

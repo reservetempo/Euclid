@@ -3,17 +3,20 @@
 // (sound + Euclidean rhythm + bars) that play in order and loop independently —
 // long-form polymeter with no global pattern switch (see src/model/lines.ts).
 //
+//   Loop view (the landing view) — the arrangement as a paged 8-bar × 6-voice bar
+//     grid (node width = length in bars) with a sweeping playhead that follows the
+//     playing window, the rings above as a live visualizer of what's sounding, and
+//     the loop info below; tap a node to open its editing sheet (Transitions menu,
+//     value circles, shuffle).
 //   Sequencer view — the rings + one row per line. A row shows its line's node
-//     being edited; tap it to expand the Hits/Steps/Start/Split/Reps/Wait circles, and
+//     being edited; tap it to expand the Hits/Steps/Start/Split/Reps/Bar circles, and
 //     step along the chain with the —• (next/new node) and •— (previous node)
 //     buttons. Tap the title of the expanded row to open its shuffle menu.
-//   Loop view — the arrangement as a paged 8-bar × 6-voice bar grid (node width =
-//     length in bars) with a sweeping playhead that follows the playing window, and
-//     the rings beneath as a live visualizer; tap a node to open its editing sheet.
 //   Mixer — one strip per line (mute/solo/faders act on the whole chain).
 //   Sound view — the deep per-parameter editor for one node.
 
 import { EngineHost, EngineSound, Playhead } from "../audio/engineHost";
+import { measureLoudness, makeupGain } from "../audio/loudness";
 import { encodeWavFromBuffer } from "../audio/wav";
 import { DRUMS, DrumType } from "../model/drums";
 import { ParamId, NUM_PARAMS } from "../model/params";
@@ -42,7 +45,8 @@ const LOOP_PAGE_BARS = 8;
 
 type View = "seq" | "loop" | "sound" | "mixer";
 
-// The editable numeric fields of a node (its scrubbable number circles).
+// The editable numeric fields of a node (its scrubbable number circles). "wait" is
+// STORED as lead-in bars but shown/edited as the absolute start BAR (see nodeStartBar).
 type NodeField = "hits" | "steps" | "rotation" | "split" | "reps" | "wait";
 
 export class App {
@@ -107,6 +111,27 @@ export class App {
     return nodes[k];
   }
 
+  /** Bars occupied by the chain BEFORE line `li`'s edited node (may be fractional). */
+  private barsBefore(li: number): number {
+    const nodes = this.arr.lines[li].nodes;
+    const k = Math.min(this.editNode[li], nodes.length - 1);
+    let b = 0;
+    for (let i = 0; i < k; i++) b += nodeBars(nodes[i]);
+    return b;
+  }
+
+  /** The 1-indexed bar the edited node's SOUND starts on: the bars before it in the
+      chain plus its own lead-in wait. This is what the "Bar" circle shows/edits — the
+      wait is derived from it, so a voice can enter anywhere, not just at bar 1. */
+  private nodeStartBar(li: number): number {
+    return this.barsBefore(li) + Math.max(0, this.node(li).wait ?? 0) + 1;
+  }
+
+  /** A sounding (non-transition, non-rest) node — the kind a transition can blend. */
+  private isSounding(n: VoiceNode | undefined): boolean {
+    return !!n && n.soundId >= 0 && !n.transition;
+  }
+
   // --- playhead ----------------------------------------------------------
   private handlePlayhead(p: Playhead): void {
     if (!p.lines) {
@@ -116,12 +141,15 @@ export class App {
       this.barGridEl?.classList.remove("ph-live"); // hide the bar-grid playhead
       return;
     }
-    // Rings follow each line's LIVE node + step; a resting line falls back to its
-    // edited node shown statically (no active step) so the ring stays populated.
+    // Rings show ONLY what's audibly playing: a line's live node while its pattern
+    // sounds. A resting line (past its chain), a lead-in wait (step -1), and a
+    // muted / soloed-out line all leave just the empty guide ring.
     const states: RingState[] = this.arr.lines.map((ln, i) => {
       const st = p.lines![i];
-      if (st && st.node >= 0) return { node: ln.nodes[st.node] ?? null, step: st.step };
-      return { node: this.node(i), step: -1 };
+      if (st && st.node >= 0 && st.step >= 0 && this.lineAudible(i)) {
+        return { node: ln.nodes[st.node] ?? null, step: st.step };
+      }
+      return { node: null, step: -1 };
     });
     this.euclidView.setRings(states);
     this.euclidView.pulse(p.fired);
@@ -196,7 +224,9 @@ export class App {
 
   /** The engine sound table: every assigned node across every line, as a stable id +
       snapshot + Pitch range + estimated tail (for channel stealing). Nodes on muted /
-      soloed-out LINES get Volume zeroed (mute/solo act per line). */
+      soloed-out LINES get Volume zeroed (mute/solo act per line); a node's measured
+      loudness makeup rides on Volume here (the snapshot itself keeps the mixer's
+      value — see normalizeVoice). */
   private buildSounds(): EngineSound[] {
     const sounds: EngineSound[] = [];
     this.arr.lines.forEach((ln, li) => {
@@ -207,6 +237,7 @@ export class App {
         if (n.soundId < 0 || n.transition) continue;
         const snap = n.snapshot.slice();
         if (!audible) snap[ParamId.Volume] = 0;
+        else if (n.gain && n.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * n.gain;
         sounds.push({ id: n.soundId, snap, lo: n.pitch[0], hi: n.pitch[1], tail: estimateLength(snap, this.tempo) });
       }
     });
@@ -654,7 +685,7 @@ export class App {
     return svg;
   }
 
-  /** The Hits/Steps/Start/Split/Reps/Wait circles for line `li`'s edited node, drawn as
+  /** The Hits/Steps/Start/Split/Reps/Bar circles for line `li`'s edited node, drawn as
       voice-coloured dots on a connecting line. Each taps to the numpad or click-drags to
       scrub. Shared by the sequencer's expanded row and the loop-view voice sheet. */
   private nodeValueCircles(li: number): HTMLElement {
@@ -689,15 +720,16 @@ export class App {
     // Reps: how many times the pattern repeats before the next node takes over
     // (length = reps × steps). The loop view shows the resulting length in bars.
     const reps = mkNum("Reps", node.reps, "reps");
-    // Wait: quiet BARS of lead-in silence before the pattern starts, so a voice can
-    // sit out space before it enters. Counts toward the node's length in bars.
-    const wait = mkNum("Wait", node.wait ?? 0, "wait");
-    wait.title = "Quiet bars before this node's pattern starts (lead-in space)";
+    // Bar: the bar this node's sound STARTS on. Setting it later than the earliest
+    // possible bar becomes quiet lead-in (the stored wait), so a voice doesn't have
+    // to enter on bar 1.
+    const bar = mkNum("Bar", +this.nodeStartBar(li).toFixed(2), "wait");
+    bar.title = "The bar this sound starts on — set it later to delay the entry";
 
     const vals = document.createElement("div");
     vals.className = "euclid-vals";
     vals.style.setProperty("--vc", (node.soundId >= 0 || node.transition) ? node.color : "#4a4e58");
-    vals.append(hits, steps, start, split, reps, wait);
+    vals.append(hits, steps, start, split, reps, bar);
     return vals;
   }
 
@@ -855,7 +887,13 @@ export class App {
     else if (field === "hits") v.hits = Math.max(0, Math.min(MAX_STEPS, Math.round(n)));
     else if (field === "rotation") v.rotation = Math.round(n);
     else if (field === "reps") v.reps = Math.max(1, Math.min(MAX_REPS, Math.round(n)));
-    else if (field === "wait") v.wait = Math.max(0, Math.min(MAX_REPS, Math.round(n))); // lead-in silence
+    else if (field === "wait") {
+      // The "Bar" circle: n is the 1-indexed bar the sound should start on; whatever
+      // lies between the previous node's end and that bar becomes lead-in wait. Clamped
+      // to the earliest possible bar (right after the previous node) and MAX_REPS bars.
+      const w = Math.round(n - 1 - this.barsBefore(li));
+      v.wait = w > 0 ? Math.min(MAX_REPS, w) : undefined;
+    }
     else v.split = Math.max(1, Math.min(maxSplitGap(v.hits, v.steps), Math.round(n))); // primary gap
     // Cap hits at steps only once steps is set (a blank node defaults to 0 steps and
     // shouldn't swallow a hits value the user types first).
@@ -905,7 +943,7 @@ export class App {
       const v = this.node(li);
       const shown = field === "steps" ? v.steps : field === "hits" ? v.hits
         : field === "rotation" ? v.rotation : field === "reps" ? v.reps
-        : field === "wait" ? (v.wait ?? 0)
+        : field === "wait" ? +this.nodeStartBar(li).toFixed(2) // the Bar circle shows the start bar
         : (v.split ?? evenGap(v.hits, v.steps));
       input.value = String(shown);
     });
@@ -1036,11 +1074,59 @@ export class App {
     if (!this.playing) this.refreshRings();
   }
 
-  /** Preview one node's current editor sound once (on the reserved audition channel). */
+  /** Preview one node's current editor sound once (on the reserved audition channel),
+      at the node's measured loudness (its makeup gain rides on Volume, as in the
+      pattern) so what you audition is what the loop will play. */
   private auditionVoice(li: number): void {
+    const node = this.node(li);
     const p = this.voiceEditorFor(li).kit.get(REF_DRUM);
     const snap = p.capture();
+    if (node.gain && node.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * node.gain;
     this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+  }
+
+  /** Closed-loop loudness pass for line `li`'s edited node: render ONE hit of its
+      sound offline, measure it, and store the makeup gain that lands it at the
+      reference loudness. The gain is applied to Volume in the engine message and
+      the audition — the snapshot itself is untouched, so the mixer fader keeps its
+      meaning. Per-hit randomness (ghosts/ratchets/humanize) is zeroed for the
+      measurement so a missed hit can't masquerade as a quiet sound; a result that
+      arrives after the node was reshuffled or cleared is dropped. Best-effort: on
+      any render failure the previous gain stands. */
+  private async normalizeVoice(li: number): Promise<void> {
+    const v = this.node(li);
+    if (v.soundId < 0 || v.transition || !v.snapshot.length) return;
+    const token = v.snapshot; // writeVoiceFromEditor replaces the array on every write
+    const meas = v.snapshot.slice();
+    meas[ParamId.Volume] = 1;    // measure at unit volume; the gain rides on top
+    meas[ParamId.HitChance] = 1; // the measured hit must actually play…
+    meas[ParamId.Ratchet] = 0;   // …once, cleanly…
+    meas[ParamId.Humanize] = 0;  // …without level jitter
+    try {
+      const tail = Math.min(1.6, Math.max(0.4, estimateLength(meas, this.tempo)));
+      const buffer = await this.engine.renderToBuffer({
+        lines: [{ nodes: [{ soundId: 0, steps: 1, lenSteps: STEPS_PER_BAR, waitSteps: 0, pattern: [1] }] }],
+        sounds: [{ id: 0, snap: meas, lo: v.pitch[0], hi: v.pitch[1], tail: 0 }],
+        tempo: this.tempo,
+        maxSteps: 1,
+        tailSec: tail,
+      });
+      if (v.snapshot !== token) return; // stale: the sound changed mid-render
+      v.gain = makeupGain(measureLoudness(buffer));
+      this.pushSounds();
+      this.persist();
+    } catch {
+      /* keep the previous gain — normalization is best-effort */
+    }
+  }
+
+  /** Generative write (shuffle/breed/preset/mint): push the editor's sound into the
+      node, then re-level it from the offline measurement. Await it so the audition
+      that follows plays at the corrected loudness. Manual slider edits go through
+      writeVoiceFromEditor directly and are never re-levelled. */
+  private async writeAndNormalizeVoice(li: number): Promise<void> {
+    this.writeVoiceFromEditor(li);
+    await this.normalizeVoice(li);
   }
 
   /** Key + tempo context passed to the shuffle UIs (Key snap + synced-echo lengths). */
@@ -1077,7 +1163,7 @@ export class App {
       this.render();
     };
     const panel = buildVoiceShuffleMenu(editor, REF_DRUM, {
-      onChange: () => this.writeVoiceFromEditor(li),
+      onChange: () => this.writeAndNormalizeVoice(li),
       audition: () => this.auditionVoice(li),
       onFullParams: openFull,
       context: () => this.shuffleContext(),
@@ -1155,6 +1241,92 @@ export class App {
     }
     this.syncLines();
     this.render();
+  }
+
+  /** The voice sheet's Transitions menu for node `k` of line `li`: pick WHERE the
+      blend goes — at the start of this sound (the previous sound morphs into it) or
+      at its end (it morphs into the next sound; with nothing after, a fresh sound is
+      minted to blend into). A transition always blends two adjacent sounds, so an
+      impossible side stays visible but disabled with its reason. */
+  private openTransitionMenu(li: number, k: number): void {
+    const nodes = this.arr.lines[li].nodes;
+    const prev = nodes[k - 1];
+    const next = nodes[k + 1];
+
+    const overlay = document.createElement("div");
+    overlay.className = "tr-overlay";
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    const dialog = document.createElement("div");
+    dialog.className = "tr-dialog";
+
+    const title = document.createElement("h3");
+    title.className = "tr-title";
+    title.textContent = "Transition";
+    const sub = document.createElement("p");
+    sub.className = "hint";
+    sub.textContent = "Blend this sound with an adjacent one — where?";
+    dialog.append(title, sub);
+
+    // A stacked choice: main line + a small note (the reason when disabled).
+    const choice = (main: string, note: string, enabled: boolean, pick: () => void) => {
+      const b = document.createElement("button");
+      b.className = "tr-place";
+      const m = document.createElement("span");
+      m.textContent = main;
+      const s = document.createElement("small");
+      s.textContent = note;
+      b.append(m, s);
+      b.disabled = !enabled;
+      b.onclick = () => { overlay.remove(); pick(); };
+      return b;
+    };
+
+    const startOk = this.isSounding(prev);
+    dialog.append(choice(
+      "At the start",
+      !prev ? "nothing before — this is the voice's first node"
+        : prev.transition ? "there's already a transition into this sound"
+        : !startOk ? "the node before needs a sound first"
+        : "the previous sound blends into this one",
+      startOk,
+      () => this.openTransitionOptions(li, k),
+    ));
+
+    if (next) {
+      const endOk = this.isSounding(next);
+      dialog.append(choice(
+        "At the end",
+        next.transition ? "there's already a transition out of this sound"
+          : !endOk ? "the next node needs a sound first"
+          : "this sound blends into the next one",
+        endOk,
+        () => this.openTransitionOptions(li, k + 1),
+      ));
+    } else {
+      // Nothing after yet: mint a fresh adjacent sound, then blend into it.
+      dialog.append(choice(
+        "＋ At the end, into a new sound",
+        "adds a shuffled sound after this one and blends into it",
+        true,
+        () => {
+          nodes.push(emptyNode());
+          this.giveNodeSound(li, k + 1); // mints the sound in place + renders
+          this.openTransitionOptions(li, k + 1);
+        },
+      ));
+    }
+
+    const cancel = document.createElement("button");
+    cancel.className = "tr-cancel";
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => overlay.remove();
+    const btns = document.createElement("div");
+    btns.className = "tr-btns";
+    btns.append(cancel);
+    dialog.append(btns);
+
+    overlay.append(dialog);
+    this.root.append(overlay);
   }
 
   /** Popup shown when tapping a ✛ gap: pick the blend mode + length, then insert. If
@@ -1314,15 +1486,14 @@ export class App {
     pager.append(prev, pLabel, next);
     v.append(pager);
 
-    // Format a node's length in bars (28 steps = 1.75), trimming trailing zeros.
-    const barsLabel = (n: VoiceNode): string => {
-      const b = nodeBars(n);
-      return Number.isInteger(b) ? String(b) : String(+b.toFixed(2));
-    };
-    // A " · waits N bars" tooltip suffix when a node has lead-in silence.
-    const waitNote = (n: VoiceNode): string => {
-      const w = Math.max(0, n.wait ?? 0);
-      return w > 0 ? ` · waits ${w} bar${w === 1 ? "" : "s"} first` : "";
+    // Trim a bars quantity for labels (28 steps = 1.75 bars).
+    const fmt = (b: number): string => (Number.isInteger(b) ? String(b) : String(+b.toFixed(2)));
+    const barsLabel = (n: VoiceNode): string => fmt(nodeBars(n));
+    // A " · starts bar N" tooltip suffix when a node holds back with lead-in silence
+    // (`s` is the bar its window opens on, 0-indexed).
+    const startNote = (n: VoiceNode, s: number): string => {
+      const wb = waitLen(n) / STEPS_PER_BAR;
+      return wb > 0 ? ` · starts bar ${fmt(s + wb + 1)}` : "";
     };
     const pct = (bars: number): number => (bars / BARS_PER_PAGE) * 100; // bars → % of the window
 
@@ -1401,13 +1572,13 @@ export class App {
           const toC = nodes[k + 1]?.color ?? n.color;
           block.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
           label.textContent = "→";
-          block.title = `transition · ${barsLabel(n)} bars${waitNote(n)}`;
+          block.title = `transition · ${barsLabel(n)} bars${startNote(n, s)}`;
         } else if (isSound) {
           label.textContent = n.name || barsLabel(n);
-          block.title = `${n.name || "node"} · ${barsLabel(n)} bars${waitNote(n)}`;
+          block.title = `${n.name || "node"} · ${barsLabel(n)} bars${startNote(n, s)}`;
         } else {
           label.textContent = barsLabel(n);
-          block.title = `rest — tap to add a sound · ${barsLabel(n)} bars${waitNote(n)}`;
+          block.title = `rest — tap to add a sound · ${barsLabel(n)} bars${startNote(n, s)}`;
         }
         block.append(label);
 
@@ -1509,6 +1680,7 @@ export class App {
       seed: randomSeed(),
     });
     this.writeVoiceFromEditor(li); // mints the sound id, captures the snapshot, resends, persists
+    void this.normalizeVoice(li);  // re-level async; the pattern picks it up on the next trigger
   }
 
   /** Open the editing sheet for a voice (node k on line li) as a modal over the grid. */
@@ -1525,8 +1697,9 @@ export class App {
   }
 
   /** The voice sheet: a modal card in front of everything holding the tapped node's
-      editor — its value circles, a Remove, and either the shuffle menu (sounds) or a
-      blend-mode toggle (transitions). Back returns to the grid. Appended to the root. */
+      editor — a Transitions menu (sounds), its value circles, a Remove, and either the
+      shuffle menu (sounds) or a blend-mode toggle (transitions). Back returns to the
+      grid. Appended to the root. */
   private renderVoiceSheet(): void {
     const li = this.sheetLine;
     const nodes = this.arr.lines[li].nodes;
@@ -1553,19 +1726,19 @@ export class App {
     head.append(back, title);
     sheet.append(head);
 
-    // Add transition (near the top): blend THIS sound into the next node of the chain.
-    // Only offered for a real sound that has a following node to transition into.
+    // Transitions (near the top): opens the placement menu — blend this sound at its
+    // start (from the previous sound) or its end (into the next / a fresh one).
     const k = this.editNode[li];
-    if (!node.transition && node.soundId >= 0 && k + 1 < nodes.length) {
+    if (!node.transition && node.soundId >= 0) {
       const addTr = document.createElement("button");
       addTr.className = "sheet-add-transition";
-      addTr.textContent = "✛ Add transition";
-      addTr.title = "Blend this sound into the next node";
-      addTr.onclick = () => { this.sheetLine = -1; this.render(); this.openTransitionOptions(li, k + 1); };
+      addTr.textContent = "✛ Transitions…";
+      addTr.title = "Blend this sound with the one before or after it";
+      addTr.onclick = () => this.openTransitionMenu(li, k);
       sheet.append(addTr);
     }
 
-    // Value circles (Hits/Steps/Start/Split/Reps/Wait) + Remove — right above the shuffle.
+    // Value circles (Hits/Steps/Start/Split/Reps/Bar) + Remove — right above the shuffle.
     const detail = document.createElement("div");
     detail.className = "euclid-detail";
     const rm = document.createElement("button");
@@ -1592,7 +1765,10 @@ export class App {
       // A real sound: the full shuffle menu, live. Keep the header name current as it
       // shuffles (writeVoiceFromEditor renames the node but doesn't re-render the sheet).
       const menu = buildVoiceShuffleMenu(this.voiceEditorFor(li), REF_DRUM, {
-        onChange: () => { this.writeVoiceFromEditor(li); title.textContent = this.node(li).name || `Voice ${li + 1}`; },
+        onChange: async () => {
+          await this.writeAndNormalizeVoice(li);
+          title.textContent = this.node(li).name || `Voice ${li + 1}`;
+        },
         audition: () => this.auditionVoice(li),
         onFullParams: () => { this.soundReturn = "loop"; this.soundLine = li; this.view = "sound"; this.render(); },
         context: () => this.shuffleContext(),

@@ -24,6 +24,7 @@ export interface NodeJSON {
   split?: number;
   reps: number;
   wait?: number;
+  gain?: number; // loudness makeup (see VoiceNode.gain)
   transition?: { fromId: number; toId: number; mode?: "morph" | "crossfade" };
   preset?: string;
   ranges?: { lo: number[]; hi: number[] };
@@ -65,7 +66,7 @@ export interface ProjectJSON {
 const cloneNode = (n: VoiceNode): NodeJSON => ({
   soundId: n.soundId, snapshot: n.snapshot.slice(), color: n.color, name: n.name,
   pitch: [n.pitch[0], n.pitch[1]], hits: n.hits, steps: n.steps, rotation: n.rotation,
-  split: n.split, reps: n.reps, wait: n.wait,
+  split: n.split, reps: n.reps, wait: n.wait, gain: n.gain,
   transition: n.transition
     ? { fromId: n.transition.fromId, toId: n.transition.toId, mode: n.transition.mode }
     : undefined,
@@ -126,6 +127,9 @@ function readNode(sv: (Partial<NodeJSON> & { bars?: number }) | null | undefined
   }
   // Lead-in silence (added after v9); absent in older saves -> undefined (no wait).
   n.wait = typeof sv.wait === "number" ? Math.max(0, Math.min(MAX_REPS, Math.round(sv.wait))) : undefined;
+  // Loudness makeup (added after v9); absent -> undefined (no correction).
+  n.gain = typeof sv.gain === "number" && isFinite(sv.gain)
+    ? Math.max(0.2, Math.min(4, sv.gain)) : undefined;
   n.transition = sv.transition && typeof sv.transition.fromId === "number" && typeof sv.transition.toId === "number"
     ? { fromId: sv.transition.fromId, toId: sv.transition.toId, mode: sv.transition.mode === "crossfade" ? "crossfade" : "morph" }
     : undefined;
