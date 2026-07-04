@@ -24,6 +24,7 @@ import { baseSpec } from "../model/paramSpec";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
+import { addReport, reportCount, exportReports, clearReports, ReportKind } from "../model/soundReports";
 import {
   LineArrangement, VoiceNode, TransitionMode, emptyNode, nodeLen, nodeBars, waitLen,
   NUM_LINES, STEPS_PER_BAR, MAX_REPS, VOICE_COLORS,
@@ -512,14 +513,34 @@ export class App {
       b.onclick = () => { panel.classList.add("hidden"); fn(); };
       return b;
     };
+    // Feedback logs (swipe the shuffle recap row): export each as its own JSON
+    // file, or clear both once handed over. Labels carry the live counts.
+    const expHigh = mk("", () => exportReports("high"));
+    const expLow = mk("", () => exportReports("low"));
+    const clearLogs = mk("Clear sound logs", () => {
+      if (confirm("Clear both sound feedback logs?")) clearReports();
+    });
+    const refreshLogs = () => {
+      const h = reportCount("high");
+      const l = reportCount("low");
+      expHigh.textContent = `Export “too high” log (${h})`;
+      expHigh.disabled = h === 0;
+      expLow.textContent = `Export “too low” log (${l})`;
+      expLow.disabled = l === 0;
+      clearLogs.disabled = h === 0 && l === 0;
+    };
+    refreshLogs();
     panel.append(
       mk("New project", () => { if (confirm("Clear everything and start fresh?")) this.newProject(); }),
       mk("Save to file", () => this.saveToFile()),
       mk("Load from file", () => fileInput.click()),
       mk("Export WAV", () => this.promptExportWav()),
+      expHigh,
+      expLow,
+      clearLogs,
     );
 
-    btn.onclick = () => panel.classList.toggle("hidden");
+    btn.onclick = () => { refreshLogs(); panel.classList.toggle("hidden"); };
     wrap.append(btn, panel, fileInput);
     return wrap;
   }
@@ -1129,6 +1150,37 @@ export class App {
     await this.normalizeVoice(li);
   }
 
+  /** File the line's current sound in a feedback log — "high" = too screechy (the
+      recap row swiped right), "low" = too quiet (swiped left) — with everything
+      needed to reproduce it offline. The two logs export from the ≡ menu as two
+      JSON files (see model/soundReports.ts). */
+  private reportVoiceSound(li: number, kind: ReportKind): void {
+    const v = this.node(li);
+    if (v.soundId < 0 || v.transition || !v.snapshot.length) return;
+    const ed = this.voiceEditors.get(`${li}:${this.editNode[li]}`);
+    const n = addReport(kind, {
+      at: new Date().toISOString(),
+      name: v.name,
+      preset: v.preset,
+      seed: ed?.lastSeed || undefined,
+      tempo: this.tempo,
+      gain: v.gain,
+      pitch: [v.pitch[0], v.pitch[1]],
+      snapshot: v.snapshot.slice(),
+    });
+    this.toast(kind === "high" ? `▲ Logged as too screechy (${n})` : `▼ Logged as too quiet (${n})`);
+  }
+
+  /** A small transient confirmation pill above everything (auto-removes). */
+  private toast(text: string): void {
+    document.querySelector(".toast")?.remove();
+    const t = document.createElement("div");
+    t.className = "toast";
+    t.textContent = text;
+    this.root.append(t);
+    setTimeout(() => t.remove(), 1700);
+  }
+
   /** Key + tempo context passed to the shuffle UIs (Key snap + synced-echo lengths). */
   private shuffleContext(): { root: number; scale: number; bpm: number } {
     return { root: this.arr.root, scale: this.arr.scale, bpm: this.tempo };
@@ -1168,6 +1220,7 @@ export class App {
       onFullParams: openFull,
       context: () => this.shuffleContext(),
       mates: () => this.breedMates(li),
+      report: (kind) => this.reportVoiceSound(li, kind),
     });
     anchor.parentElement?.append(panel);
     const close = (ev: PointerEvent) => {
@@ -1773,6 +1826,7 @@ export class App {
         onFullParams: () => { this.soundReturn = "loop"; this.soundLine = li; this.view = "sound"; this.render(); },
         context: () => this.shuffleContext(),
         mates: () => this.breedMates(li),
+        report: (kind) => this.reportVoiceSound(li, kind),
       });
       sheet.append(menu);
     }

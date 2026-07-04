@@ -44,6 +44,9 @@ export interface VoiceMenuCallbacks {
   context: () => { root: number; scale: number; bpm: number };
   // The other voices of this grid that have sounds (crossbreeding partners).
   mates: () => BreedMate[];
+  // File the CURRENT sound in a feedback log: "high" = too screechy (recap row
+  // swiped right), "low" = too quiet (swiped left). See model/soundReports.ts.
+  report: (kind: "high" | "low") => void;
 }
 
 /** Build the voice shuffle popup for `editor` (operating on reference drum `drum`).
@@ -93,15 +96,18 @@ export function buildVoiceShuffleMenu(
     };
     panel.append(shuffle);
 
-    // Recap of the current sound + ▶ replay.
+    // Recap of the current sound + ▶ replay. The row doubles as the feedback
+    // surface: swipe it right to file the sound as too screechy, left as too quiet.
     const sum = document.createElement("div");
-    sum.className = "shuffle-summary";
+    sum.className = "shuffle-summary swipe-report";
+    sum.title = "Swipe right if too screechy, left if too quiet — files it to the feedback log";
     const play = mkBtn("▶", "summary-play");
     play.title = "Play sound";
     play.onclick = () => cb.audition();
     const txt = document.createElement("span");
     txt.textContent = editor.kit.get(drum).describe().join(" · ");
     sum.append(play, txt);
+    attachSwipeReport(sum, cb.report);
     panel.append(sum);
 
     // Back / Reset.
@@ -248,6 +254,48 @@ function selectRow(label: string, options: string[], value: number, onChange: (i
   sel.onchange = () => onChange(Number(sel.value));
   row.append(lbl, sel);
   return row;
+}
+
+/** Swipe the recap row to file the current sound in a feedback log: RIGHT = "too
+    high" (screechy), LEFT = "too low" (quiet). The row follows the finger and tints
+    once the drag is past the commit distance (release to file; short drags snap
+    back). Vertical movement is left to the scroller (touch-action: pan-y in CSS),
+    and a plain tap still reaches the ▶ button. */
+function attachSwipeReport(el: HTMLElement, onReport: (kind: "high" | "low") => void): void {
+  const COMMIT = 64; // px of horizontal drag that arms the report
+  let id = -1, startX = 0, startY = 0, dx = 0, horizontal = false;
+
+  el.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    id = e.pointerId; startX = e.clientX; startY = e.clientY;
+    dx = 0; horizontal = false;
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== id) return;
+    dx = e.clientX - startX;
+    if (!horizontal) {
+      if (Math.abs(dx) < 8) return; // undecided: could still be a tap
+      if (Math.abs(dx) <= Math.abs(e.clientY - startY)) { id = -1; return; } // a scroll
+      horizontal = true;
+      el.classList.add("swiping");
+      try { el.setPointerCapture(id); } catch { /* fine without capture */ }
+    }
+    el.style.transform = `translateX(${dx}px)`;
+    el.classList.toggle("swipe-high", dx > COMMIT);
+    el.classList.toggle("swipe-low", dx < -COMMIT);
+  });
+  const end = (e: PointerEvent) => {
+    if (e.pointerId !== id) return;
+    id = -1;
+    if (horizontal) {
+      if (dx > COMMIT) onReport("high");
+      else if (dx < -COMMIT) onReport("low");
+    }
+    el.classList.remove("swiping", "swipe-high", "swipe-low");
+    el.style.transform = ""; // snap back (the base transition animates it)
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
 }
 
 function mkBtn(text: string, cls: string): HTMLButtonElement {
