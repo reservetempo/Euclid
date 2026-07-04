@@ -62,6 +62,36 @@ export class EngineHost {
     await this.ctx?.resume();
   }
 
+  /** Make sure the context is actually RUNNING — call from a user gesture (the play
+      button). iOS suspends the context when the app is backgrounded and sometimes
+      only lets a gesture resume it; a longer stay in the background can kill the
+      context outright ("closed", or a resume that never takes), in which case the
+      whole engine is rebuilt. Returns true when it was rebuilt — the worklet lost
+      its sounds/lines/tempo, so the caller must re-push everything. */
+  async ensureRunning(): Promise<boolean> {
+    if (!this.ctx || !this.node) {
+      this.node = null;
+      this.ctx = null;
+      await this.start();
+      return true;
+    }
+    // "interrupted" (a WebKit state) and "suspended" both resume; "closed" can't.
+    if ((this.ctx.state as string) === "running") return false;
+    if ((this.ctx.state as string) !== "closed") {
+      try {
+        await this.ctx.resume();
+        if ((this.ctx.state as string) === "running") return false;
+      } catch { /* fall through to the rebuild */ }
+    }
+    // Dead: tear down and start a fresh context + worklet from this gesture.
+    try { this.node.disconnect(); } catch { /* already gone */ }
+    try { await this.ctx.close(); } catch { /* already closed */ }
+    this.node = null;
+    this.ctx = null;
+    await this.start();
+    return true;
+  }
+
   /** Replace the sound table (every painted sound across all grids). The engine binds
       each id to a pool channel on demand and steals idle channels under pressure. */
   setSounds(sounds: EngineSound[]): void {

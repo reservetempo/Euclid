@@ -27,6 +27,7 @@ import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { addReport, reportCount, exportReports, clearReports, ReportKind } from "../model/soundReports";
 import {
   LineArrangement, VoiceNode, TransitionMode, emptyNode, nodeLen, nodeBars, waitLen,
+  transitionKind, PAIR_MODES, FADE_MODES,
   NUM_LINES, STEPS_PER_BAR, MAX_REPS, VOICE_COLORS,
 } from "../model/lines";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
@@ -70,8 +71,12 @@ export class App {
   private expanded = -1;
   private nextSoundId = 0; // monotonic id for assigned node sounds
   private loopPage = 0;             // loop view: which 8-bar window (page) is on screen
+  private loopZoomOut = false;      // loop view: one page showing the whole loop
   private playPageOnly = false;     // loop view: loop just the 8 bars on screen, not the whole track
   private sheetLine = -1;           // loop view: voice whose editing sheet is open (-1 = none)
+  private gridDragBusy = false;     // a grid press-drag (add/resize) is live — hold page-follow
+  // A grid tap waiting to become an add (a quick second tap makes it a paste instead).
+  private pendingTap: { li: number; bar: number; timer: number } | null = null;
   private soundReturn: View = "seq"; // where the deep sound view's Back button returns to
 
   // Per-node inline shuffle editors, keyed by `${line}:${nodeIndex}`. Lazily created
@@ -133,6 +138,14 @@ export class App {
     return !!n && n.soundId >= 0 && !n.transition;
   }
 
+  /** Bars per loop-view page: 8 normally; zoomed out, the whole loop in ONE page
+      (rounded up to 8s, plus a spare 8 bars to arrange into). */
+  private pageBars(): number {
+    if (!this.loopZoomOut) return LOOP_PAGE_BARS;
+    const loopBars = this.arr.loopSteps() / STEPS_PER_BAR;
+    return Math.max(2 * LOOP_PAGE_BARS, (Math.ceil(loopBars / LOOP_PAGE_BARS) + 1) * LOOP_PAGE_BARS);
+  }
+
   // --- playhead ----------------------------------------------------------
   private handlePlayhead(p: Playhead): void {
     if (!p.lines) {
@@ -191,11 +204,12 @@ export class App {
       the line simply hides while the playhead is off-screen and the next boundary
       crossing re-syncs. `pos` is the global loop position in 16th steps. */
   private updateLoopPlayhead(pos: number): void {
+    const bpp = this.pageBars();
     const bar = pos / STEPS_PER_BAR;
-    const page = Math.floor(bar / LOOP_PAGE_BARS);
+    const page = Math.floor(bar / bpp);
     if (page !== this.phPage) {
       this.phPage = page;
-      const busy = this.sheetLine >= 0
+      const busy = this.sheetLine >= 0 || this.gridDragBusy
         || !!document.querySelector(".numpad-overlay, .tr-overlay");
       if (!busy && page !== this.loopPage) {
         this.loopPage = page;
@@ -204,7 +218,7 @@ export class App {
     }
     const grid = this.barGridEl;
     if (!grid) return;
-    const rel = bar / LOOP_PAGE_BARS - this.loopPage; // 0..1 across the visible window
+    const rel = bar / bpp - this.loopPage; // 0..1 across the visible window
     const visible = rel >= 0 && rel < 1;
     grid.classList.toggle("ph-live", visible);
     if (visible) grid.style.setProperty("--ph", `${(rel * 100).toFixed(3)}%`);
@@ -474,7 +488,8 @@ export class App {
       "these 8 bars" toggle takes precedence — it loops just the visible page. */
   private syncSection(): void {
     if (this.view === "loop" && this.playPageOnly && this.playing) {
-      this.engine.setSection(this.loopPage * LOOP_PAGE_BARS * STEPS_PER_BAR, LOOP_PAGE_BARS * STEPS_PER_BAR);
+      const bpp = this.pageBars();
+      this.engine.setSection(this.loopPage * bpp * STEPS_PER_BAR, bpp * STEPS_PER_BAR);
       return;
     }
     const t = this.currentEditTarget();
@@ -559,10 +574,22 @@ export class App {
       play.style.setProperty("--beat", `${(60 / this.tempo).toFixed(4)}s`);
     };
     syncPlay();
-    play.onclick = () => {
-      this.playing = !this.playing;
-      if (this.playing) { this.engine.play(); this.syncSection(); }
-      else {
+    play.onclick = async () => {
+      if (!this.playing) {
+        // Coming back from the background (iOS home-screen app) can leave the audio
+        // context suspended or dead — re-arm it from THIS tap. A rebuilt engine is
+        // blank, so push the sounds/lines/tempo back in before playing.
+        try {
+          if (await this.engine.ensureRunning()) this.pushAll();
+        } catch {
+          this.toast("Audio couldn't restart — try again");
+          return;
+        }
+        this.playing = true;
+        this.engine.play();
+        this.syncSection();
+      } else {
+        this.playing = false;
         this.engine.stop();
         this.refreshRings();
       }
@@ -643,14 +670,15 @@ export class App {
     return b;
   }
 
-  /** Loop view, top-left: toggle whether playback loops the WHOLE track or just the 8
+  /** Loop view, top-left: toggle whether playback loops the WHOLE track or just the
       bars on screen. Lit ("on") = the whole loop; tap to constrain it to the page. */
   private scopeToggle(): HTMLElement {
+    const n = this.pageBars();
     const b = document.createElement("button");
     b.className = "loop-view-btn scope-toggle" + (this.playPageOnly ? "" : " on");
     b.title = this.playPageOnly
-      ? "Looping these 8 bars — tap to loop the whole track"
-      : "Looping the whole track — tap to loop just these 8 bars";
+      ? `Looping these ${n} bars — tap to loop the whole track`
+      : `Looping the whole track — tap to loop just these ${n} bars`;
     b.setAttribute("aria-label", "Loop scope");
     b.append(this.chainIcon());
     b.onclick = () => { this.playPageOnly = !this.playPageOnly; this.render(); };
@@ -775,14 +803,18 @@ export class App {
       const k = this.editNode[i];
       const sound = document.createElement("button");
       if (node.transition) {
-        const fromC = nodes[k - 1]?.color ?? node.color;
-        const toC = nodes[k + 1]?.color ?? node.color;
+        const kind = transitionKind(node.transition);
+        const fromC = kind === "in" ? "transparent" : nodes[k - 1]?.color ?? node.color;
+        const toC = kind === "out" ? "transparent" : nodes[k + 1]?.color ?? node.color;
+        const solid = kind === "out" ? nodes[k - 1]?.color ?? node.color : nodes[k + 1]?.color ?? node.color;
         sound.className = "euclid-sound transition";
         sound.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
-        sound.style.borderColor = toC;
-        sound.style.color = "#15161a";
-        sound.style.setProperty("--vc", toC);
-        sound.textContent = "→ transition";
+        sound.style.borderColor = solid;
+        // Pair blends are solid colour end-to-end (dark text); a fade's gradient
+        // thins to transparent over the dark panel, so light text reads better.
+        sound.style.color = kind === "pair" ? "#15161a" : "#eef0f4";
+        sound.style.setProperty("--vc", solid);
+        sound.textContent = kind === "in" ? "↗ fade in" : kind === "out" ? "↘ fade out" : "→ transition";
         this.voiceBtns.set(node.soundId, sound);
       } else if (node.soundId >= 0) {
         sound.className = "euclid-sound has-sound";
@@ -843,24 +875,9 @@ export class App {
         detail.append(vals, rm);
         r.append(detail);
 
-        // A transition also gets a Morph/Crossfade toggle so its blend mode can be
-        // changed after it's created.
-        if (node.transition) {
-          const modes = document.createElement("div");
-          modes.className = "tr-modes inline";
-          (["morph", "crossfade"] as TransitionMode[]).forEach((m) => {
-            const b = document.createElement("button");
-            b.className = "tr-mode" + (node.transition!.mode === m ? " on" : "");
-            b.textContent = m === "morph" ? "Morph" : "Crossfade";
-            b.onclick = () => {
-              node.transition!.mode = m;
-              this.syncLines();
-              this.render();
-            };
-            modes.append(b);
-          });
-          r.append(modes);
-        }
+        // A transition also gets its style toggle (pair modes or fade styles) so the
+        // blend can be changed after it's created.
+        if (node.transition) r.append(this.transitionModeToggle(node, true));
       }
 
       // Next-node button on the RIGHT of the voice — —• steps forward, or grows the
@@ -1081,8 +1098,9 @@ export class App {
     if (v.soundId < 0) {
       v.soundId = this.nextSoundId++;
       v.color = VOICE_COLORS[li % VOICE_COLORS.length];
-      // Give a fresh node an audible default pattern so the shuffle can be heard.
-      if (v.steps < 1) { v.steps = 8; v.hits = 4; v.rotation = 0; }
+      // Give a fresh node an audible default pattern so the shuffle can be heard:
+      // 4 bars of 1 hit over 16 steps (the grid-add default).
+      if (v.steps < 1) { v.steps = 16; v.hits = 1; v.rotation = 0; v.reps = Math.max(v.reps, 4); }
     }
     v.snapshot = p.capture();
     v.name = p.describe().join(" · ");
@@ -1244,10 +1262,11 @@ export class App {
       const removedId = nodes[k].soundId;
       nodes.splice(k, 1);
       // Drop transitions orphaned by the removal (they referenced the gone sound, or
-      // sat next to it and now bridge the wrong pair).
+      // sat next to it and now bridge the wrong pair). A removed REST has id -1 —
+      // that must not match a fade's silence endpoint (-1).
       for (let j = nodes.length - 1; j >= 0; j--) {
         const t = nodes[j].transition;
-        if (t && (t.fromId === removedId || t.toId === removedId)) nodes.splice(j, 1);
+        if (t && removedId >= 0 && (t.fromId === removedId || t.toId === removedId)) nodes.splice(j, 1);
       }
       if (nodes.length === 0) nodes.push(emptyNode());
       this.editNode[li] = Math.min(k, nodes.length - 1);
@@ -1270,22 +1289,47 @@ export class App {
   }
 
   /** Insert a transition node into line `li` at chain gap `gap` (between nodes
-      gap-1 and gap), blending the sound before it into the sound after it. `mode`
-      picks morph vs crossfade; `reps` sets its length. Both neighbours must be
-      sounding (non-transition) nodes. */
-  private insertTransition(li: number, gap: number, mode: TransitionMode, reps: number): void {
+      gap-1 and gap). `kind` picks what it blends: "pair" = the sound before into the
+      sound after (both must be sounding nodes); "in" = SILENCE into the sound after
+      (a fade-in — the voice's entry); "out" = the sound before into SILENCE (a
+      fade-out — the voice's exit). `mode` picks the blend style; `reps` its length. */
+  private insertTransition(
+    li: number, gap: number, mode: TransitionMode, reps: number,
+    kind: "pair" | "in" | "out" = "pair",
+  ): void {
     const nodes = this.arr.lines[li].nodes;
     const from = nodes[gap - 1];
     const to = nodes[gap];
-    if (!from || !to || from.soundId < 0 || to.soundId < 0 || from.transition || to.transition) return;
     const tr = emptyNode();
-    tr.soundId = this.nextSoundId++;      // its own channel id (no table entry needed)
-    tr.transition = { fromId: from.soundId, toId: to.soundId, mode };
-    tr.color = to.color;                  // ring shows the destination colour
+    tr.soundId = this.nextSoundId++; // its own channel id (no table entry needed)
     tr.name = "→";
-    // Inherit the "from" node's rhythm so the blend is heard on a familiar groove.
-    tr.hits = from.hits; tr.steps = from.steps; tr.rotation = from.rotation; tr.split = from.split;
     tr.reps = Math.max(1, Math.min(MAX_REPS, Math.round(reps)));
+    if (kind === "in") {
+      if (!this.isSounding(to)) return;
+      tr.transition = { fromId: -1, toId: to!.soundId, mode };
+      tr.color = to!.color; // ring shows the destination colour
+      // Inherit the TARGET's rhythm — the fade rises on the groove it becomes.
+      tr.hits = to!.hits; tr.steps = to!.steps; tr.rotation = to!.rotation; tr.split = to!.split;
+      // Rise THROUGH the sound's lead-in silence where possible: the fade eats the
+      // tail of the target's Wait so the entry bar holds; any leftover heads the fade.
+      const unit = tr.steps >= 1 ? tr.steps : STEPS_PER_BAR;
+      const wait = Math.max(0, to!.wait ?? 0);
+      const eaten = Math.min(wait, Math.round((tr.reps * unit) / STEPS_PER_BAR));
+      tr.wait = wait - eaten > 0 ? wait - eaten : undefined;
+      to!.wait = undefined;
+    } else if (kind === "out") {
+      if (!this.isSounding(from)) return;
+      tr.transition = { fromId: from!.soundId, toId: -1, mode };
+      tr.color = from!.color;
+      // Inherit the SOURCE's rhythm — the sound dies away on its own groove.
+      tr.hits = from!.hits; tr.steps = from!.steps; tr.rotation = from!.rotation; tr.split = from!.split;
+    } else {
+      if (!this.isSounding(from) || !this.isSounding(to)) return;
+      tr.transition = { fromId: from!.soundId, toId: to!.soundId, mode };
+      tr.color = to!.color;
+      // Inherit the "from" node's rhythm so the blend is heard on a familiar groove.
+      tr.hits = from!.hits; tr.steps = from!.steps; tr.rotation = from!.rotation; tr.split = from!.split;
+    }
     nodes.splice(gap, 0, tr);
     this.editNode[li] = gap;
     // Editors keyed by node index are now stale for this line.
@@ -1297,10 +1341,11 @@ export class App {
   }
 
   /** The voice sheet's Transitions menu for node `k` of line `li`: pick WHERE the
-      blend goes — at the start of this sound (the previous sound morphs into it) or
-      at its end (it morphs into the next sound; with nothing after, a fresh sound is
-      minted to blend into). A transition always blends two adjacent sounds, so an
-      impossible side stays visible but disabled with its reason. */
+      blend goes. At the start: the previous sound blends into this one — or, when
+      nothing sounds before it (first node, or after a rest), the voice FADES IN from
+      silence. At the end: this sound blends into the next — or fades OUT to silence
+      (into the rest after it, or as the chain's tail; a fresh sound can also be
+      minted to blend into). An impossible side stays visible but disabled. */
   private openTransitionMenu(li: number, k: number): void {
     const nodes = this.arr.lines[li].nodes;
     const prev = nodes[k - 1];
@@ -1317,7 +1362,7 @@ export class App {
     title.textContent = "Transition";
     const sub = document.createElement("p");
     sub.className = "hint";
-    sub.textContent = "Blend this sound with an adjacent one — where?";
+    sub.textContent = "Blend this sound — where?";
     dialog.append(title, sub);
 
     // A stacked choice: main line + a small note (the reason when disabled).
@@ -1334,29 +1379,47 @@ export class App {
       return b;
     };
 
-    const startOk = this.isSounding(prev);
-    dialog.append(choice(
-      "At the start",
-      !prev ? "nothing before — this is the voice's first node"
-        : prev.transition ? "there's already a transition into this sound"
-        : !startOk ? "the node before needs a sound first"
-        : "the previous sound blends into this one",
-      startOk,
-      () => this.openTransitionOptions(li, k),
-    ));
-
-    if (next) {
-      const endOk = this.isSounding(next);
+    if (this.isSounding(prev)) {
       dialog.append(choice(
-        "At the end",
-        next.transition ? "there's already a transition out of this sound"
-          : !endOk ? "the next node needs a sound first"
-          : "this sound blends into the next one",
-        endOk,
-        () => this.openTransitionOptions(li, k + 1),
+        "At the start", "the previous sound blends into this one", true,
+        () => this.openTransitionOptions(li, k, "pair"),
+      ));
+    } else if (prev?.transition) {
+      dialog.append(choice(
+        "At the start", "there's already a transition into this sound", false, () => {},
       ));
     } else {
-      // Nothing after yet: mint a fresh adjacent sound, then blend into it.
+      // Nothing sounds before it — the voice ENTERS here: fade in from silence.
+      dialog.append(choice(
+        "At the start — fade in",
+        prev ? "rises out of silence into this sound" : "the voice's entry rises out of silence",
+        true,
+        () => this.openTransitionOptions(li, k, "in"),
+      ));
+    }
+
+    if (next) {
+      if (this.isSounding(next)) {
+        dialog.append(choice(
+          "At the end", "this sound blends into the next one", true,
+          () => this.openTransitionOptions(li, k + 1, "pair"),
+        ));
+      } else if (next.transition) {
+        dialog.append(choice(
+          "At the end", "there's already a transition out of this sound", false, () => {},
+        ));
+      } else {
+        dialog.append(choice(
+          "At the end — fade out", "dies away into the silence after it", true,
+          () => this.openTransitionOptions(li, k + 1, "out"),
+        ));
+      }
+    } else {
+      dialog.append(choice(
+        "At the end — fade out", "the loop's tail — this sound dies away to silence", true,
+        () => this.openTransitionOptions(li, k + 1, "out"),
+      ));
+      // Or mint a fresh adjacent sound, then blend into it.
       dialog.append(choice(
         "＋ At the end, into a new sound",
         "adds a shuffled sound after this one and blends into it",
@@ -1364,7 +1427,7 @@ export class App {
         () => {
           nodes.push(emptyNode());
           this.giveNodeSound(li, k + 1); // mints the sound in place + renders
-          this.openTransitionOptions(li, k + 1);
+          this.openTransitionOptions(li, k + 1, "pair");
         },
       ));
     }
@@ -1382,10 +1445,63 @@ export class App {
     this.root.append(overlay);
   }
 
-  /** Popup shown when tapping a ✛ gap: pick the blend mode + length, then insert. If
-      the gap's neighbours aren't both sounding, it explains and offers to jump to the
-      node that needs a sound. */
-  private openTransitionOptions(li: number, gap: number): void {
+  /** User-facing name for a transition mode (a couple depend on the direction). */
+  private transitionModeLabel(m: TransitionMode, kind: "pair" | "in" | "out"): string {
+    switch (m) {
+      case "morph": return "Morph";
+      case "crossfade": return "Crossfade";
+      case "alternate": return "Trade";
+      case "filter": return "Filter";
+      case "fade": return "Fade";
+      case "wash": return "Wash";
+      case "thin": return kind === "out" ? "Thin out" : "Fill in";
+    }
+  }
+
+  /** One-line explanation of a transition mode, per direction. */
+  private transitionModeTitle(m: TransitionMode, kind: "pair" | "in" | "out"): string {
+    if (kind === "pair") {
+      switch (m) {
+        case "morph": return "One sound's parameters mutate into the other";
+        case "crossfade": return "Both sounds play, one fading out as the other fades in";
+        case "alternate": return "The two sounds trade hits, the new one gradually taking over";
+        default: return "Both play while one filter closes and the other opens — a spectral crossfade";
+      }
+    }
+    const rising = kind === "in";
+    switch (m) {
+      case "filter": return rising ? "Opens up out of a closed filter" : "Closes down into a shut filter";
+      case "wash": return rising ? "Condenses out of a distant reverb cloud" : "Dissolves away into a reverb cloud";
+      case "thin": return rising ? "Hits appear one by one until the pattern is whole" : "Hits drop away until nothing is left";
+      default: return rising ? "A pure volume rise from silence" : "A pure volume fall to silence";
+    }
+  }
+
+  /** Style buttons for an EXISTING transition node (the pair modes or the fade
+      styles, by its kind) — shared by the sequencer's expanded row and the voice
+      sheet, so a blend can be re-styled after it's created. */
+  private transitionModeToggle(node: VoiceNode, inline = false): HTMLElement {
+    const tr = node.transition!;
+    const kind = transitionKind(tr);
+    const choices = kind === "pair" ? PAIR_MODES : FADE_MODES;
+    const wrap = document.createElement("div");
+    wrap.className = "tr-modes" + (inline ? " inline" : "");
+    for (const m of choices) {
+      const b = document.createElement("button");
+      b.className = "tr-mode" + (tr.mode === m ? " on" : "");
+      b.textContent = this.transitionModeLabel(m, kind);
+      b.title = this.transitionModeTitle(m, kind);
+      b.onclick = () => { tr.mode = m; this.syncLines(); this.render(); };
+      wrap.append(b);
+    }
+    return wrap;
+  }
+
+  /** Popup shown after picking a placement: pick the blend style + length, then
+      insert. `kind` = what the gap blends (two sounds, or silence in/out). For a
+      pair whose neighbours aren't both sounding, it explains and offers to jump to
+      the node that needs a sound. */
+  private openTransitionOptions(li: number, gap: number, kind: "pair" | "in" | "out" = "pair"): void {
     const nodes = this.arr.lines[li].nodes;
     const from = nodes[gap - 1];
     const to = nodes[gap];
@@ -1397,14 +1513,18 @@ export class App {
 
     const title = document.createElement("h3");
     title.className = "tr-title";
-    title.textContent = "Transition";
+    title.textContent = kind === "in" ? "Fade in" : kind === "out" ? "Fade out" : "Transition";
     dialog.append(title);
 
-    const bothSound = !!from && !!to && from.soundId >= 0 && to.soundId >= 0 && !from.transition && !to.transition;
-    if (!bothSound) {
+    const ready = kind === "in" ? this.isSounding(to)
+      : kind === "out" ? this.isSounding(from)
+      : this.isSounding(from) && this.isSounding(to);
+    if (!ready) {
       const msg = document.createElement("p");
       msg.className = "hint";
-      msg.textContent = "A transition morphs one sound into another, so both neighbouring nodes need a sound. Give the empty one a sound first.";
+      msg.textContent = kind === "pair"
+        ? "A transition morphs one sound into another, so both neighbouring nodes need a sound. Give the empty one a sound first."
+        : "A fade needs the sound it rises into (or falls from). Give that node a sound first.";
       dialog.append(msg);
       const gapNode = to && to.soundId < 0 ? gap : gap - 1; // the node lacking a sound
       const edit = document.createElement("button");
@@ -1427,29 +1547,30 @@ export class App {
       return;
     }
 
-    // Mode toggle: Morph (params) / Crossfade (both sounds).
-    let mode: TransitionMode = "morph";
+    // Style picker: how the blend travels (pair modes, or the fade styles).
+    const choices = kind === "pair" ? PAIR_MODES : FADE_MODES;
+    let mode: TransitionMode = choices[0];
     const modeRow = document.createElement("div");
     modeRow.className = "tr-modes";
-    const morphBtn = document.createElement("button");
-    const crossBtn = document.createElement("button");
+    const modeBtns = choices.map((m) => {
+      const b = document.createElement("button");
+      b.textContent = this.transitionModeLabel(m, kind);
+      b.title = this.transitionModeTitle(m, kind);
+      b.onclick = () => { mode = m; syncMode(); };
+      return b;
+    });
     const syncMode = () => {
-      morphBtn.className = "tr-mode" + (mode === "morph" ? " on" : "");
-      crossBtn.className = "tr-mode" + (mode === "crossfade" ? " on" : "");
+      modeBtns.forEach((b, i) => { b.className = "tr-mode" + (choices[i] === mode ? " on" : ""); });
     };
-    morphBtn.textContent = "Morph";
-    morphBtn.title = "One sound's parameters mutate into the other";
-    morphBtn.onclick = () => { mode = "morph"; syncMode(); };
-    crossBtn.textContent = "Crossfade";
-    crossBtn.title = "Both sounds play, one fading out as the other fades in";
-    crossBtn.onclick = () => { mode = "crossfade"; syncMode(); };
     syncMode();
-    modeRow.append(morphBtn, crossBtn);
+    modeRow.append(...modeBtns);
     dialog.append(modeRow);
 
-    // Length stepper (reps of the inherited "from" rhythm), with a bars helper.
+    // Length stepper (reps of the inherited rhythm), with a bars helper. Fades ride
+    // the rhythm of the sound they rise into / fall from.
     let reps = 2;
-    const unit = from!.steps >= 1 ? from!.steps : STEPS_PER_BAR;
+    const anchor = kind === "in" ? to! : from!;
+    const unit = anchor.steps >= 1 ? anchor.steps : STEPS_PER_BAR;
     const lenRow = document.createElement("div");
     lenRow.className = "tr-len";
     const lbl = document.createElement("span");
@@ -1478,8 +1599,8 @@ export class App {
     cancel.onclick = () => overlay.remove();
     const add = document.createElement("button");
     add.className = "tr-add";
-    add.textContent = "Add transition";
-    add.onclick = () => { overlay.remove(); this.insertTransition(li, gap, mode, reps); };
+    add.textContent = kind === "in" ? "Add fade-in" : kind === "out" ? "Add fade-out" : "Add transition";
+    add.onclick = () => { overlay.remove(); this.insertTransition(li, gap, mode, reps, kind); };
     const btns = document.createElement("div");
     btns.className = "tr-btns";
     btns.append(cancel, add);
@@ -1490,12 +1611,15 @@ export class App {
   }
 
   // --- loop view (the arrangement timeline — the app's homepage) -----------
-  // The 6 voice lines drawn as a bar grid: 6 rows tall, 8 bars wide, paged 8 bars at a
-  // time. Each node fills a slice of its row proportional to its length in bars (a 4-bar
-  // node is half the 8-bar width); its lead-in Wait shows as a hatched head. The rings
-  // visualizer sits on top; a compact pager flanks the grid; the loop length + hint sit
-  // below it. Tap a node to edit it (its sheet holds Add-transition + the value circles +
-  // shuffle), or tap empty space (or a rest) to drop a fresh sound there.
+  // The 6 voice lines drawn as a bar grid: 6 rows tall, 8 bars wide (or the whole loop
+  // when zoomed out), paged 8 bars at a time. Each node fills a slice of its row from
+  // where its SOUND starts (lead-in Wait is just empty track) to its end. The rings
+  // visualizer sits on top; a compact pager + zoom flank the grid; the loop length +
+  // hint sit below it. Tap a node to edit it (its sheet holds Add-transition + the
+  // value circles + shuffle). Empty space: press-drag sketches a new sound's span,
+  // a tap drops the 4-bar default, a double-tap pastes a copy of the line's sound.
+  // Every node has a right-edge grip to resize it; a voice ending on an earlier page
+  // gets a page-edge grip to drag it into the viewed bars.
   private renderLoop(): void {
     const v = this.viewRoot;
     this.nodeDotEls = [];
@@ -1508,17 +1632,21 @@ export class App {
     rings.append(this.euclidView.canvas);
     v.append(rings);
 
-    // The visible 8-bar window. Pages cover the content, plus one empty page past the
-    // end so there's always room to arrange further out; loopPage is clamped to that.
-    const BARS_PER_PAGE = LOOP_PAGE_BARS;
+    // The visible window. Normally 8 bars, paged — pages cover the content plus one
+    // empty page past the end so there's always room to arrange further out. Zoomed
+    // out there's a single page holding the whole loop.
+    const BARS_PER_PAGE = this.pageBars();
     const loopBars = this.arr.loopSteps() / STEPS_PER_BAR;
-    const maxPage = Math.max(0, Math.ceil(Math.max(loopBars, 0.001) / BARS_PER_PAGE) - 1) + 1;
+    const maxPage = this.loopZoomOut
+      ? 0
+      : Math.max(0, Math.ceil(Math.max(loopBars, 0.001) / BARS_PER_PAGE) - 1) + 1;
     this.loopPage = Math.max(0, Math.min(this.loopPage, maxPage));
     const page = this.loopPage;
     const winStart = page * BARS_PER_PAGE; // window's first bar (0-indexed)
     const winEnd = winStart + BARS_PER_PAGE;
 
-    // Compact pager: step the visible window 8 bars at a time (small ‹ / › buttons).
+    // Compact pager: step the visible window 8 bars at a time (small ‹ / › buttons),
+    // plus the zoom toggle (whole loop ↔ 8-bar pages) on the right.
     const pager = document.createElement("div");
     pager.className = "bar-pager";
     const prev = document.createElement("button");
@@ -1529,29 +1657,35 @@ export class App {
     prev.onclick = () => { this.loopPage = Math.max(0, this.loopPage - 1); this.render(); };
     const pLabel = document.createElement("span");
     pLabel.className = "bar-pager-label";
-    pLabel.textContent = `Bars ${winStart + 1}–${winEnd}`;
+    pLabel.textContent = this.loopZoomOut ? `Bars ${winStart + 1}–${winEnd} · all` : `Bars ${winStart + 1}–${winEnd}`;
     const next = document.createElement("button");
     next.className = "bar-pager-btn";
     next.textContent = "›";
     next.title = "Next 8 bars";
     next.disabled = page >= maxPage;
     next.onclick = () => { this.loopPage = this.loopPage + 1; this.render(); };
-    pager.append(prev, pLabel, next);
+    if (this.loopZoomOut) { prev.style.display = "none"; next.style.display = "none"; }
+    const zoom = document.createElement("button");
+    zoom.className = "bar-pager-btn bar-zoom-btn";
+    zoom.textContent = this.loopZoomOut ? "⊕" : "⊖";
+    zoom.title = this.loopZoomOut ? "Zoom in — 8 bars per page" : "Zoom out — see the whole loop";
+    zoom.setAttribute("aria-label", "Zoom");
+    zoom.onclick = () => {
+      this.loopZoomOut = !this.loopZoomOut;
+      if (!this.loopZoomOut) this.loopPage = 0;
+      this.render();
+    };
+    pager.append(prev, pLabel, next, zoom);
     v.append(pager);
 
     // Trim a bars quantity for labels (28 steps = 1.75 bars).
     const fmt = (b: number): string => (Number.isInteger(b) ? String(b) : String(+b.toFixed(2)));
-    const barsLabel = (n: VoiceNode): string => fmt(nodeBars(n));
-    // A " · starts bar N" tooltip suffix when a node holds back with lead-in silence
-    // (`s` is the bar its window opens on, 0-indexed).
-    const startNote = (n: VoiceNode, s: number): string => {
-      const wb = waitLen(n) / STEPS_PER_BAR;
-      return wb > 0 ? ` · starts bar ${fmt(s + wb + 1)}` : "";
-    };
+    const barsLabel = (n: VoiceNode): string => fmt(nodeBars(n) - waitLen(n) / STEPS_PER_BAR);
     const pct = (bars: number): number => (bars / BARS_PER_PAGE) * 100; // bars → % of the window
 
     const grid = document.createElement("div");
     grid.className = "bar-grid";
+    grid.style.setProperty("--bars", String(BARS_PER_PAGE)); // bar dividers (see .bar-track)
     for (let li = 0; li < NUM_LINES; li++) {
       const nodes = this.arr.lines[li].nodes;
       const row = document.createElement("div");
@@ -1567,71 +1701,69 @@ export class App {
       track.className = "bar-track";
       const contentEnd = this.arr.lineSteps(li) / STEPS_PER_BAR; // this line's end, in bars
 
-      // Empty-space affordance: from the line's content end to the window's right edge,
-      // an underlay you tap to drop a fresh sound at that bar.
-      const emptyLeft = Math.max(contentEnd, winStart);
-      if (emptyLeft < winEnd - 0.001) {
-        const addZone = document.createElement("button");
-        addZone.className = "bar-add";
-        addZone.style.left = `${pct(emptyLeft - winStart)}%`;
-        addZone.style.width = `${pct(winEnd - emptyLeft)}%`;
-        addZone.title = "Add a sound here";
-        const plus = document.createElement("span");
-        plus.className = "bar-add-plus";
-        plus.textContent = "＋";
-        addZone.append(plus);
-        addZone.onclick = (e) => {
-          const r = track.getBoundingClientRect();
-          const bar = winStart + ((e.clientX - r.left) / Math.max(1, r.width)) * BARS_PER_PAGE;
-          this.addSoundAt(li, bar);
-        };
-        track.append(addZone);
-      }
+      // Empty-space affordance over [loBar, hiBar): press-drag sketches a new sound's
+      // span, a tap drops the 4-bar default, a double-tap pastes a copy of the line's
+      // sound. One covers the tail past the line's content; one covers every lead-in
+      // gap (a node's Wait — silent bars are just empty track now).
+      const addZone = (loBar: number, hiBar: number) => {
+        const l = Math.max(loBar, winStart), r = Math.min(hiBar, winEnd);
+        if (r - l < 0.05) return;
+        const zone = document.createElement("button");
+        zone.className = "bar-add";
+        zone.style.left = `${pct(l - winStart)}%`;
+        zone.style.width = `${pct(r - l)}%`;
+        zone.title = "Press and drag to add a sound — tap for 4 bars, double-tap to copy this voice";
+        if (r - l > 0.6) {
+          const plus = document.createElement("span");
+          plus.className = "bar-add-plus";
+          plus.textContent = "＋";
+          zone.append(plus);
+        }
+        this.wireAddZone(zone, track, li, loBar, hiBar, winStart, BARS_PER_PAGE);
+        track.append(zone);
+      };
+      addZone(contentEnd, winEnd);
 
-      // Node blocks, positioned by cumulative bars. Blocks outside the window are clipped
-      // by the track's overflow; every node still pushes a block so nodeDotEls indices
-      // stay aligned for the playing glow.
+      // Node blocks, positioned by cumulative bars — each starts where its SOUND does
+      // (after any lead-in Wait) and ends with its window. Blocks outside the window
+      // are clipped by the track's overflow; every node still pushes a block so
+      // nodeDotEls indices stay aligned for the playing glow.
       const dots: HTMLElement[] = [];
       let startBar = 0;
       nodes.forEach((n, k) => {
         const len = nodeBars(n);
         const s = startBar;
         startBar += len;
+        const wb = waitLen(n) / STEPS_PER_BAR; // lead-in bars: empty track + an add zone
+        if (wb >= 1) addZone(s, s + wb);
 
         const isSound = n.soundId >= 0 && !n.transition;
         const block = document.createElement("button");
         block.className = "bar-node"
           + (n.transition ? " transition" : isSound ? " has-sound" : " rest")
           + (k === this.editNode[li] ? " editing" : "");
-        block.style.left = `${pct(s - winStart)}%`;
-        block.style.width = `${pct(len)}%`;
-
-        // Lead-in Wait: a hatched head spanning the silent bars at the block's start.
-        const wb = waitLen(n) / STEPS_PER_BAR;
-        if (wb > 0 && len > 0) {
-          const waitEl = document.createElement("span");
-          waitEl.className = "bar-node-wait";
-          waitEl.style.width = `${Math.min(100, (wb / len) * 100)}%`;
-          block.append(waitEl);
-        }
+        block.style.left = `${pct(s + wb - winStart)}%`;
+        block.style.width = `${pct(len - wb)}%`;
 
         // Label: the sound's generated name (its identity, matching the mixer/sequencer);
-        // a rest shows its length, a transition an arrow. The name ellipsis-truncates on
-        // narrow blocks — the full name + bars live in the tooltip.
+        // a rest shows its length, a transition its direction. The name ellipsis-truncates
+        // on narrow blocks — the full name + bars live in the tooltip.
         const label = document.createElement("span");
         label.className = "bar-node-label";
         if (n.transition) {
-          const fromC = nodes[k - 1]?.color ?? n.color;
-          const toC = nodes[k + 1]?.color ?? n.color;
+          const kind = transitionKind(n.transition);
+          const fromC = kind === "in" ? "transparent" : nodes[k - 1]?.color ?? n.color;
+          const toC = kind === "out" ? "transparent" : nodes[k + 1]?.color ?? n.color;
           block.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
-          label.textContent = "→";
-          block.title = `transition · ${barsLabel(n)} bars${startNote(n, s)}`;
+          label.textContent = kind === "in" ? "↗" : kind === "out" ? "↘" : "→";
+          const what = kind === "in" ? "fade in" : kind === "out" ? "fade out" : "transition";
+          block.title = `${what} · ${barsLabel(n)} bars`;
         } else if (isSound) {
           label.textContent = n.name || barsLabel(n);
-          block.title = `${n.name || "node"} · ${barsLabel(n)} bars${startNote(n, s)}`;
+          block.title = `${n.name || "node"} · ${barsLabel(n)} bars`;
         } else {
           label.textContent = barsLabel(n);
-          block.title = `rest — tap to add a sound · ${barsLabel(n)} bars${startNote(n, s)}`;
+          block.title = `rest — tap to add a sound · ${barsLabel(n)} bars`;
         }
         block.append(label);
 
@@ -1639,10 +1771,31 @@ export class App {
           if (!isSound && !n.transition) { this.giveNodeSound(li, k); return; } // rest → sound in place
           this.openVoiceSheet(li, k); // a tapped voice's editing sheet floats above the grid
         };
+        // Right-edge grip: press-drag the node's end to resize it (reps in its own unit).
+        const grip = document.createElement("span");
+        grip.className = "bar-node-grip";
+        this.attachResize(grip, block, track, n, s + wb, winStart, BARS_PER_PAGE);
+        block.append(grip);
         dots.push(block);
         track.append(block);
       });
       this.nodeDotEls.push(dots);
+
+      // A voice that ends on an earlier page: a grab-tab at the page edge press-drags
+      // its last node's end rightward, extending it from the edge into the viewed bars.
+      if (contentEnd > 0 && contentEnd <= winStart + 0.001) {
+        const lastK = nodes.length - 1;
+        const lastN = nodes[lastK];
+        if (lastN.soundId >= 0 || lastN.transition) {
+          const tab = document.createElement("button");
+          tab.className = "bar-edge-grip";
+          tab.textContent = "›";
+          tab.title = "This voice ends on an earlier page — drag to extend it into these bars";
+          const bodyStart = contentEnd - nodeBars(lastN) + waitLen(lastN) / STEPS_PER_BAR;
+          this.attachResize(tab, dots[lastK], track, lastN, bodyStart, winStart, BARS_PER_PAGE);
+          track.append(tab);
+        }
+      }
 
       row.append(track);
       grid.append(row);
@@ -1664,7 +1817,7 @@ export class App {
     loop.append(loopLabel, this.loopTimeEl);
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "Each voice runs left → right; a node's width is its length in bars. Tap a node to edit it, or tap empty space to add a sound.";
+    hint.textContent = "Each voice runs left → right. Press-drag empty space to sketch a sound (tap = 4 bars, double-tap = copy the voice); drag a block's right edge to resize it; tap a block to edit it.";
     const seqLink = document.createElement("button");
     seqLink.className = "loop-seq-link";
     seqLink.textContent = "Open sequencer view ›";
@@ -1680,12 +1833,51 @@ export class App {
     requestAnimationFrame(() => this.euclidView.layout());
   }
 
-  /** Grid click-to-add: drop a fresh sounding node on line `li` so its sound STARTS at
-      (whole) bar `bar`. Any gap between the line's current end and that bar becomes the
-      node's lead-in Wait (in bars). Reuses a trailing empty rest if there is one. */
-  private addSoundAt(li: number, bar: number): void {
+  /** Place a new EMPTY node on line `li` so its sound will START at (whole) bar `bar`.
+      Past the line's end it appends (bridging the gap with lead-in Wait, reusing a
+      trailing empty rest); inside an existing node's lead-in gap it SPLITS the silence
+      (the new node takes the head, the shifted node keeps enough Wait that its entry
+      holds). `fill` writes the node's rhythm/sound given the whole bars the spot can
+      take (at least 1, at most `wantBars`). Returns false when the spot can't take a
+      node (inside sounding content, or a sub-bar gap). Caller resyncs + renders. */
+  private placeNodeAt(
+    li: number, bar: number, wantBars: number,
+    fill: (node: VoiceNode, grantBars: number) => void,
+  ): boolean {
     const nodes = this.arr.lines[li].nodes;
-    const targetBar = Math.max(0, Math.floor(bar));
+    const targetBar = Math.max(0, Math.round(bar));
+    const want = Math.max(1, Math.round(wantBars));
+
+    // Inside an existing lead-in gap? Split it: [remaining wait][new node][kept entry].
+    let w = 0; // window-start bars of the node being examined
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const waitB = waitLen(n) / STEPS_PER_BAR;
+      const audibleStart = w + waitB;
+      if (targetBar < audibleStart - 0.001) {
+        if (targetBar < w - 0.001) return false; // inside the PREVIOUS node's sound
+        const newWait = Math.max(0, Math.round(targetBar - w));
+        const avail = Math.round(waitB - newWait); // whole gap bars from the start on
+        if (avail < 1) return false;
+        const node = emptyNode();
+        node.wait = newWait > 0 ? newWait : undefined;
+        fill(node, Math.min(want, avail));
+        // Whatever gap the new node didn't use stays as the shifted node's Wait, so
+        // its sound still enters on the same bar.
+        const rest = Math.max(0, Math.round(audibleStart - (w + nodeBars(node))));
+        n.wait = rest > 0 ? Math.min(MAX_REPS, rest) : undefined;
+        nodes.splice(i, 0, node);
+        this.editNode[li] = i;
+        // Node indices shifted — this line's cached editors are stale.
+        for (const key of [...this.voiceEditors.keys()]) {
+          if (key.startsWith(`${li}:`)) this.voiceEditors.delete(key);
+        }
+        return true;
+      }
+      w += nodeBars(n);
+    }
+
+    // Past the line's end: append (or reuse a trailing empty rest), bridging with Wait.
     const last = nodes[nodes.length - 1];
     const reuse = last.soundId < 0 && !last.transition; // a trailing empty rest slot
     const slot = reuse ? nodes.length - 1 : nodes.length;
@@ -1693,15 +1885,195 @@ export class App {
     for (let k = 0; k < slot; k++) base += nodeBars(nodes[k]);
     const node = reuse ? last : emptyNode();
     if (!reuse) nodes.push(node);
-    // A clean 1-bar default groove; bridge to the clicked bar with lead-in Wait.
-    node.steps = 8; node.hits = 4; node.rotation = 0; node.split = undefined; node.reps = 2;
     const gap = Math.max(0, Math.round(targetBar - base));
-    node.wait = gap > 0 ? gap : undefined;
+    node.wait = gap > 0 ? Math.min(MAX_REPS, gap) : undefined;
+    node.split = undefined;
+    fill(node, want);
     this.editNode[li] = slot;
-    this.expanded = li;
     this.voiceEditors.delete(`${li}:${slot}`); // any editor cached at this index is stale
-    this.mintNodeSound(li);                    // give it an audible, shuffled sound
+    return true;
+  }
+
+  /** Grid add: drop a fresh sounding node whose sound starts at bar `bar`, `bars`
+      bars long — the default groove is 1 hit per bar of 16 steps, so a tap gives
+      4 bars and a drag gives exactly the sketched span. */
+  private addSoundAt(li: number, bar: number, bars = 4): void {
+    const ok = this.placeNodeAt(li, bar, bars, (node, grant) => {
+      node.steps = 16; node.hits = 1; node.rotation = 0; node.split = undefined;
+      node.reps = Math.max(1, Math.min(MAX_REPS, grant));
+    });
+    if (!ok) { this.toast("No room for a sound there"); return; }
+    this.expanded = li;
+    this.mintNodeSound(li); // give it an audible, shuffled sound
     this.render();
+  }
+
+  /** Double-tap paste: duplicate this line's sound (the nearest one starting at or
+      before the tap, else its last) as a NEW node whose sound starts at bar `bar`,
+      keeping the source's rhythm, length and sound (fresh sound id). */
+  private pasteVoiceAt(li: number, bar: number): void {
+    const nodes = this.arr.lines[li].nodes;
+    let src: VoiceNode | null = null;
+    let lastSounding: VoiceNode | null = null;
+    let w = 0;
+    for (const n of nodes) {
+      if (this.isSounding(n) && n.snapshot.length) {
+        lastSounding = n;
+        if (w + waitLen(n) / STEPS_PER_BAR <= bar + 0.5) src = n;
+      }
+      w += nodeBars(n);
+    }
+    const s = src ?? lastSounding;
+    if (!s) { this.addSoundAt(li, bar); return; } // nothing to copy yet — fresh sound
+    const unit = s.steps >= 1 ? s.steps : STEPS_PER_BAR;
+    const activeBars = Math.max(1, Math.round((Math.max(1, s.reps) * unit) / STEPS_PER_BAR));
+    const ok = this.placeNodeAt(li, bar, activeBars, (node, grant) => {
+      node.soundId = this.nextSoundId++;
+      node.snapshot = s.snapshot.slice();
+      node.color = s.color;
+      node.name = s.name;
+      node.pitch = [s.pitch[0], s.pitch[1]];
+      node.hits = s.hits; node.steps = s.steps; node.rotation = s.rotation; node.split = s.split;
+      node.gain = s.gain;
+      node.preset = s.preset;
+      node.ranges = s.ranges ? { lo: s.ranges.lo.slice(), hi: s.ranges.hi.slice() } : undefined;
+      // Keep the source's exact length unless the gap can't take it.
+      node.reps = grant >= activeBars
+        ? s.reps
+        : Math.max(1, Math.min(MAX_REPS, Math.floor((grant * STEPS_PER_BAR) / unit)));
+    });
+    if (!ok) { this.toast("No room to paste there"); return; }
+    this.pushSounds();
+    this.syncLines();
+    if (!this.playing) this.refreshRings();
+    this.render();
+    this.toast(`⧉ Copied ${s.name || `voice ${li + 1}`}`); // after render — it clears the root
+  }
+
+  /** Wire an empty-track zone: press-drag sketches a new sound's span (a ghost block
+      previews it, snapped to whole bars) and releasing places it; a plain tap places
+      the 4-bar default after a short pause; a second tap within that pause pastes a
+      copy of the line's sound instead. `loBar..hiBar` bound the zone in absolute bars. */
+  private wireAddZone(
+    zone: HTMLElement, track: HTMLElement, li: number,
+    loBar: number, hiBar: number, winStart: number, bpp: number,
+  ): void {
+    const lo = Math.ceil(loBar - 0.001); // first whole bar inside the zone
+    const barAt = (clientX: number): number => {
+      const r = track.getBoundingClientRect();
+      return winStart + ((clientX - r.left) / Math.max(1, r.width)) * bpp;
+    };
+    let startX = 0, startBar = 0, dragging = false;
+    let ghost: HTMLElement | null = null;
+    let ghostSpan: [number, number] = [0, 0];
+
+    zone.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      startX = e.clientX;
+      startBar = Math.max(lo, Math.min(Math.floor(hiBar - 0.999), Math.floor(barAt(e.clientX) + 0.001)));
+      dragging = true;
+      this.gridDragBusy = true; // hold the page-follow while sketching
+      try { zone.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+    });
+    zone.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      if (!ghost && Math.abs(e.clientX - startX) < 7) return; // not a drag yet
+      e.preventDefault();
+      if (!ghost) {
+        ghost = document.createElement("span");
+        ghost.className = "bar-drag-ghost";
+        track.append(ghost);
+      }
+      // Snap the sketch to whole bars, growing from the pressed bar either way.
+      const cur = Math.max(lo, Math.min(hiBar, barAt(e.clientX)));
+      const a = Math.min(startBar, Math.floor(cur));
+      const b = Math.max(startBar + 1, Math.min(hiBar, Math.ceil(cur)));
+      ghostSpan = [a, b];
+      ghost.style.left = `${((a - winStart) / bpp) * 100}%`;
+      ghost.style.width = `${((b - a) / bpp) * 100}%`;
+    });
+    const end = (e: PointerEvent, cancelled: boolean) => {
+      if (!dragging) return;
+      dragging = false;
+      this.gridDragBusy = false;
+      try { zone.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      if (ghost) {
+        const [a, b] = ghostSpan;
+        ghost.remove();
+        ghost = null;
+        if (!cancelled && b > a) this.addSoundAt(li, a, b - a);
+        return;
+      }
+      if (cancelled) return;
+      // A plain tap: hold briefly — a second tap in the window means paste-a-copy.
+      const bar = startBar;
+      const pending = this.pendingTap;
+      if (pending && pending.li === li && Math.abs(pending.bar - bar) <= 1.2) {
+        clearTimeout(pending.timer);
+        this.pendingTap = null;
+        this.pasteVoiceAt(li, bar);
+        return;
+      }
+      if (pending) { clearTimeout(pending.timer); this.addSoundAt(pending.li, pending.bar); }
+      const timer = window.setTimeout(() => {
+        this.pendingTap = null;
+        this.addSoundAt(li, bar);
+      }, 320);
+      this.pendingTap = { li, bar, timer };
+    };
+    zone.addEventListener("pointerup", (e) => end(e, false));
+    zone.addEventListener("pointercancel", (e) => end(e, true));
+  }
+
+  /** A right-edge grip that press-drags a node's END to resize it — reps in the
+      node's own step unit, snapped, previewed live on its block and committed on
+      release. Also drives the page-edge tab (same math; the block just starts
+      off-screen). `bodyStartBar` is the node's audible start in absolute bars. */
+  private attachResize(
+    grip: HTMLElement, block: HTMLElement, track: HTMLElement,
+    node: VoiceNode, bodyStartBar: number, winStart: number, bpp: number,
+  ): void {
+    const unit = node.steps >= 1 ? node.steps : STEPS_PER_BAR;
+    const barAt = (clientX: number): number => {
+      const r = track.getBoundingClientRect();
+      return winStart + ((clientX - r.left) / Math.max(1, r.width)) * bpp;
+    };
+    let dragging = false, moved = false, lastReps = node.reps;
+    grip.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.stopPropagation();
+      dragging = true;
+      moved = false;
+      lastReps = node.reps;
+      this.gridDragBusy = true;
+      try { grip.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+    });
+    grip.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      moved = true;
+      const endBar = barAt(e.clientX);
+      const reps = Math.round(((endBar - bodyStartBar) * STEPS_PER_BAR) / unit);
+      lastReps = Math.max(1, Math.min(MAX_REPS, reps));
+      block.style.width = `${(((lastReps * unit) / STEPS_PER_BAR) / bpp) * 100}%`;
+    });
+    const end = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      this.gridDragBusy = false;
+      try { grip.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      if (!moved) return;
+      if (lastReps !== node.reps) {
+        node.reps = lastReps;
+        this.syncLines();
+        this.syncSection(); // the resized node may be the section window
+        if (!this.playing) this.refreshRings();
+      }
+      this.render(); // reflect the committed (or reverted) width
+    };
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+    grip.addEventListener("click", (e) => e.stopPropagation()); // don't open the sheet
   }
 
   /** Turn an existing rest node into a sounding one in place (keeping its position and
@@ -1709,7 +2081,7 @@ export class App {
   private giveNodeSound(li: number, k: number): void {
     const node = this.arr.lines[li].nodes[k];
     if (!node || node.soundId >= 0 || node.transition) return;
-    if (node.steps < 1) { node.steps = 8; node.hits = 4; node.rotation = 0; node.reps = Math.max(node.reps, 2); }
+    if (node.steps < 1) { node.steps = 16; node.hits = 1; node.rotation = 0; }
     this.editNode[li] = k;
     this.expanded = li;
     this.voiceEditors.delete(`${li}:${k}`);
@@ -1775,7 +2147,10 @@ export class App {
     back.onclick = () => this.closeVoiceSheet();
     const title = document.createElement("h2");
     title.className = "voice-sheet-title";
-    title.textContent = node.transition ? "Transition" : (node.name || `Voice ${li + 1}`);
+    title.textContent = node.transition
+      ? (transitionKind(node.transition) === "in" ? "Fade in"
+        : transitionKind(node.transition) === "out" ? "Fade out" : "Transition")
+      : (node.name || `Voice ${li + 1}`);
     head.append(back, title);
     sheet.append(head);
 
@@ -1803,17 +2178,8 @@ export class App {
     sheet.append(detail);
 
     if (node.transition) {
-      // A transition has no sound of its own — pick how it blends its neighbours.
-      const modes = document.createElement("div");
-      modes.className = "tr-modes";
-      (["morph", "crossfade"] as TransitionMode[]).forEach((m) => {
-        const b = document.createElement("button");
-        b.className = "tr-mode" + (node.transition!.mode === m ? " on" : "");
-        b.textContent = m === "morph" ? "Morph" : "Crossfade";
-        b.onclick = () => { node.transition!.mode = m; this.syncLines(); this.render(); };
-        modes.append(b);
-      });
-      sheet.append(modes);
+      // A transition has no sound of its own — pick how it blends its ends.
+      sheet.append(this.transitionModeToggle(node));
     } else {
       // A real sound: the full shuffle menu, live. Keep the header name current as it
       // shuffles (writeVoiceFromEditor renames the node but doesn't re-render the sheet).

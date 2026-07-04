@@ -36,10 +36,29 @@ export const VOICE_COLORS = [
   "#ff6b6b", "#ffa94d", "#ffd43b", "#69db7c", "#4dabf7", "#b197fc",
 ];
 
-// How a transition blends its two sounds. "morph" = one voice with parameters lerped
-// between them (the sound itself mutates); "crossfade" = both voices, one fading out
-// as the other fades in.
-export type TransitionMode = "morph" | "crossfade";
+// How a transition blends its two ends. Sound↔sound: "morph" = one voice with
+// parameters lerped between them (the sound itself mutates); "crossfade" = both
+// voices, one fading out as the other in; "alternate" = every hit comes from ONE of
+// the two, the coin weighting towards the destination; "filter" = both play while
+// one's filter closes as the other's opens (a spectral crossfade).
+// Silence↔sound (a fade-in/out, one endpoint id = EMPTY): "fade" = a pure level
+// ramp; "filter" = the sound opens from (or closes into) a shut filter; "wash" =
+// it condenses out of (or dissolves into) a reverb cloud; "thin" = its hits fill
+// in from (or scatter into) near-silence.
+export type TransitionMode =
+  | "morph" | "crossfade" | "alternate" | "filter"
+  | "fade" | "wash" | "thin";
+
+/** All modes a transition can take, by kind (sound↔sound vs silence↔sound). */
+export const PAIR_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter"];
+export const FADE_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin"];
+
+/** Which way a transition blends: between two sounds, in from silence, or out to it. */
+export function transitionKind(t: { fromId: number; toId: number }): "pair" | "in" | "out" {
+  if (t.fromId < 0) return "in";
+  if (t.toId < 0) return "out";
+  return "pair";
+}
 
 // One node of a line: an assigned sound plus its rhythm and repeat count. soundId =
 // EMPTY when no sound is assigned (a REST that still occupies its window, so the
@@ -60,8 +79,9 @@ export interface VoiceNode {
   gain?: number;  // loudness makeup (×): measured after a shuffle so every generated
                   // sound lands at a consistent level. Applied to Volume in the engine
                   // message only — the snapshot (and mixer fader) keep their meaning.
-  // Transition: blend fromId→toId over this node's window ("morph" params, or
-  // "crossfade" both sounds). Present => this node is a transition, not a sound.
+  // Transition: blend fromId→toId over this node's window (see TransitionMode).
+  // Either end may be EMPTY (-1) = silence, making it a fade-in / fade-out.
+  // Present => this node is a transition, not a sound.
   transition?: { fromId: number; toId: number; mode: TransitionMode };
   // Inline-shuffle editor state, so a reloaded node keeps shuffling where it left:
   preset?: string;                          // active preset (Reset target + label)

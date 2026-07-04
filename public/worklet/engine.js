@@ -1107,6 +1107,32 @@ class EngineProcessor extends AudioWorkletProcessor {
     voiceSnap[P.FilterCutoff] *= 1 + (Math.random() * 2 - 1) * HUMANIZE_CUTOFF * human;
   }
 
+  // The "silence end" of a fade transition: a copy of a sound's snapshot pushed to
+  // inaudibility the way the chosen style wants — pure level ("fade"), a shut filter
+  // ("filter"; up for HP so every type sweeps from its quiet end), drowned far away
+  // in reverb ("wash"), or hits that mostly don't play ("thin" — HitChance 0, so
+  // near the silent end most hits vanish and the survivors are ghosts). Morphing
+  // between this and the real snapshot IS the fade.
+  silentVariant(snap, mode) {
+    const v = snap.slice();
+    const vol = rd(v, P.Volume, 0.85);
+    if (mode === "filter") {
+      const hp = Math.round(rd(v, P.FilterType, 0)) === 1;
+      v[P.FilterCutoff] = hp ? 9000 : 120; // just past the UI's 200..8000 sweep
+      v[P.Volume] = vol * 0.25;
+    } else if (mode === "wash") {
+      v[P.ReverbMix] = 1;
+      v[P.ReverbSize] = Math.max(0.8, rd(v, P.ReverbSize, 0.5));
+      v[P.Volume] = vol * 0.2;
+    } else if (mode === "thin") {
+      v[P.HitChance] = 0;
+      v[P.Volume] = vol * 0.5;
+    } else {
+      v[P.Volume] = 0; // "fade": a pure level ramp
+    }
+    return v;
+  }
+
   // Linear blend of two parameter snapshots at t∈[0,1] — the per-hit morph a
   // transition node plays. Continuous params glide; discrete "type" params (waveform,
   // filter, etc.) land on the nearer end because the voice reads them through
@@ -1191,26 +1217,70 @@ class EngineProcessor extends AudioWorkletProcessor {
       const beat = this.absStep * 0.25;
 
       if (nd.transition) {
-        const from = this.sounds.get(nd.transition.fromId);
-        const to = this.sounds.get(nd.transition.toId);
-        if (!from || !to) continue; // a neighbour lost its sound — nothing to blend
+        // Either endpoint may be -1 = SILENCE (a fade-in / fade-out); a real endpoint
+        // that lost its sound leaves nothing to blend.
+        const fromId = nd.transition.fromId, toId = nd.transition.toId;
+        const from = fromId >= 0 ? this.sounds.get(fromId) : null;
+        const to = toId >= 0 ? this.sounds.get(toId) : null;
+        if ((fromId >= 0 && !from) || (toId >= 0 && !to) || (!from && !to)) continue;
         // t: 0 at the sounding window's start (after any lead-in wait), 1 at its last
         // step — the progressive blend point.
         const activeLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
         const t = activeLen > 1 ? clamp(activeLocal / (activeLen - 1), 0, 1) : 0;
-        if (nd.transition.mode === "crossfade") {
+        const mode = nd.transition.mode;
+
+        if (!from || !to) {
+          // Fade in/out: morph the real sound against its derived silent variant
+          // (which end is silent picks the direction). Styles: fade/filter/wash/thin.
+          const real = to || from;
+          const ghost = this.silentVariant(real.snap, mode);
+          const snap = to ? this.lerpSnap(ghost, real.snap, t) : this.lerpSnap(real.snap, ghost, t);
+          const hit = this.perHit(snap, isAccent);
+          if (!hit) continue;
+          const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
+          this.triggerSound(nd.soundId, snap, voiceSnap, gate, real.tail, hit.vel, hit.count, hit.interval, beat);
+          fired.push(nd.soundId);
+        } else if (mode === "crossfade") {
           // Play BOTH sounds on their own channels, from fading out as to fades in.
           const hit = this.perHit(from.snap, isAccent);
           if (!hit) continue;
           if (1 - t > 0.02) {
             const vsA = from.snap.slice(); this.jitterSnap(vsA, hit.human);
-            this.triggerSound(nd.transition.fromId, from.snap, vsA, gate, from.tail, hit.vel * (1 - t), hit.count, hit.interval, beat);
-            fired.push(nd.transition.fromId);
+            this.triggerSound(fromId, from.snap, vsA, gate, from.tail, hit.vel * (1 - t), hit.count, hit.interval, beat);
+            fired.push(fromId);
           }
           if (t > 0.02) {
             const vsB = to.snap.slice(); this.jitterSnap(vsB, hit.human);
-            this.triggerSound(nd.transition.toId, to.snap, vsB, gate, to.tail, hit.vel * t, hit.count, hit.interval, beat);
-            fired.push(nd.transition.toId);
+            this.triggerSound(toId, to.snap, vsB, gate, to.tail, hit.vel * t, hit.count, hit.interval, beat);
+            fired.push(toId);
+          }
+        } else if (mode === "alternate") {
+          // Every hit comes from ONE side, the coin weighting to→1 as t rises — a
+          // stuttery hand-over where the sounds trade hits instead of layering.
+          const pickTo = Math.random() < t;
+          const src = pickTo ? to : from;
+          const id = pickTo ? toId : fromId;
+          const hit = this.perHit(src.snap, isAccent);
+          if (!hit) continue;
+          const vs = src.snap.slice(); this.jitterSnap(vs, hit.human);
+          this.triggerSound(id, src.snap, vs, gate, src.tail, hit.vel, hit.count, hit.interval, beat);
+          fired.push(id);
+        } else if (mode === "filter") {
+          // Spectral crossfade: both play near full level while from's filter closes
+          // and to's opens (each morphing toward/away from its own silent variant).
+          const hit = this.perHit(from.snap, isAccent);
+          if (!hit) continue;
+          if (1 - t > 0.02) {
+            const a = this.lerpSnap(from.snap, this.silentVariant(from.snap, "filter"), t);
+            const vsA = a.slice(); this.jitterSnap(vsA, hit.human);
+            this.triggerSound(fromId, a, vsA, gate, from.tail, hit.vel, hit.count, hit.interval, beat);
+            fired.push(fromId);
+          }
+          if (t > 0.02) {
+            const b = this.lerpSnap(this.silentVariant(to.snap, "filter"), to.snap, t);
+            const vsB = b.slice(); this.jitterSnap(vsB, hit.human);
+            this.triggerSound(toId, b, vsB, gate, to.tail, hit.vel, hit.count, hit.interval, beat);
+            fired.push(toId);
           }
         } else {
           // Morph: one voice with its parameters lerped from→to (the sound mutates).

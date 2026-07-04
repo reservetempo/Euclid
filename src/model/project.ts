@@ -9,7 +9,8 @@
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import {
-  LineArrangement, VoiceNode, emptyNode, NUM_LINES, STEPS_PER_BAR, MAX_REPS, EMPTY,
+  LineArrangement, VoiceNode, TransitionMode, emptyNode,
+  NUM_LINES, STEPS_PER_BAR, MAX_REPS, EMPTY,
 } from "./lines";
 
 export interface NodeJSON {
@@ -25,7 +26,7 @@ export interface NodeJSON {
   reps: number;
   wait?: number;
   gain?: number; // loudness makeup (see VoiceNode.gain)
-  transition?: { fromId: number; toId: number; mode?: "morph" | "crossfade" };
+  transition?: { fromId: number; toId: number; mode?: TransitionMode };
   preset?: string;
   ranges?: { lo: number[]; hi: number[] };
 }
@@ -130,9 +131,18 @@ function readNode(sv: (Partial<NodeJSON> & { bars?: number }) | null | undefined
   // Loudness makeup (added after v9); absent -> undefined (no correction).
   n.gain = typeof sv.gain === "number" && isFinite(sv.gain)
     ? Math.max(0.2, Math.min(4, sv.gain)) : undefined;
-  n.transition = sv.transition && typeof sv.transition.fromId === "number" && typeof sv.transition.toId === "number"
-    ? { fromId: sv.transition.fromId, toId: sv.transition.toId, mode: sv.transition.mode === "crossfade" ? "crossfade" : "morph" }
-    : undefined;
+  if (sv.transition && typeof sv.transition.fromId === "number" && typeof sv.transition.toId === "number") {
+    const { fromId, toId } = sv.transition;
+    // Unknown modes (older builds, hand-edits) fall back per kind: "fade" for a
+    // silence end, "morph" between two sounds.
+    const known: TransitionMode[] = ["morph", "crossfade", "alternate", "filter", "fade", "wash", "thin"];
+    const mode = known.includes(sv.transition.mode as TransitionMode)
+      ? (sv.transition.mode as TransitionMode)
+      : (fromId < 0 || toId < 0 ? "fade" : "morph");
+    n.transition = { fromId, toId, mode };
+  } else {
+    n.transition = undefined;
+  }
   n.preset = typeof sv.preset === "string" ? sv.preset : undefined;
   n.ranges = sv.ranges && Array.isArray(sv.ranges.lo) && Array.isArray(sv.ranges.hi)
     ? { lo: sv.ranges.lo.slice(), hi: sv.ranges.hi.slice() }
