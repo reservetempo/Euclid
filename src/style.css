@@ -176,9 +176,12 @@ button:active { transform: scale(0.94); }
   min-height: 0; overflow-y: auto; overscroll-behavior: contain;
 }
 
-/* Loop button — line-with-three-dots, top-left of the bar (42px, matches play/menu). */
+/* Loop button — line-with-three-dots, top-left of the bar (42px, matches play/menu).
+   In the loop view it doubles as the play-scope toggle: lit (.on) = the whole loop,
+   green = constrained to the 8 bars on screen. */
 .loop-view-btn { --bc: var(--accent); line-height: 1; }
 .loop-view-btn.on { background: var(--panel2); }
+.loop-view-btn.scope-toggle:not(.on) { --bc: #69db7c; background: var(--panel2); }
 .loop-view-btn svg { display: block; }
 
 /* loop time (shown in the Loop view) */
@@ -187,11 +190,15 @@ button:active { transform: scale(0.94); }
 .loop-time-val { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; }
 
 /* --- loop view: the arrangement as a bar grid (rows = voices, x = bars) --- */
-/* Pager: step the visible 8-bar window backward / forward. */
-.bar-pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0 12px; }
-.bar-pager-btn { width: auto; padding: 8px 14px; font-weight: 600; font-size: 13px; border-radius: 18px; }
+/* Pager: step the visible 8-bar window backward / forward (compact ‹ / › buttons). */
+.bar-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0; }
+.bar-pager-btn {
+  width: 34px; height: 30px; flex: none; padding: 0; font-size: 18px; font-weight: 700;
+  line-height: 1; border-radius: 15px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
 .bar-pager-btn:disabled { opacity: 0.32; cursor: default; }
-.bar-pager-label { font-size: 13px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bar-pager-label { font-size: 13px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 84px; text-align: center; }
 
 .bar-grid { display: flex; flex-direction: column; gap: 8px; }
 .bar-row { display: flex; align-items: stretch; gap: 8px; }
@@ -233,7 +240,6 @@ button:active { transform: scale(0.94); }
 .bar-node.rest { background: transparent; color: var(--muted); box-shadow: none; border: 1.5px dashed var(--muted); }
 .bar-node.editing { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); z-index: 3; }
 .bar-node.playing { outline: 2px solid var(--accent); animation: slot-breathe 0.9s ease-in-out infinite; z-index: 4; }
-.bar-grid.editing-bars .bar-node { cursor: text; }
 /* The label (the sound's generated name) truncates with an ellipsis on narrow blocks. */
 .bar-node-label {
   position: relative; z-index: 2; pointer-events: none;
@@ -247,8 +253,8 @@ button:active { transform: scale(0.94); }
 .bar-node:not(.has-sound) .bar-node-wait {
   background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.16) 0 4px, transparent 4px 8px);
 }
-/* The rings visualizer beneath the grid (the sequencer's canvas, centred + capped). */
-.loop-rings { display: flex; justify-content: center; max-width: 340px; margin: 2px auto 0; width: 100%; }
+/* The rings visualizer above the grid (the sequencer's canvas, centred + compact). */
+.loop-rings { display: flex; justify-content: center; max-width: 184px; margin: 0 auto; width: 100%; }
 
 /* Tap-to-add underlay filling the empty tail of a row. */
 .bar-add {
@@ -260,25 +266,15 @@ button:active { transform: scale(0.94); }
 .bar-add:hover, .bar-add:active { background: rgba(255, 255, 255, 0.045); color: var(--accent); opacity: 1; }
 .bar-add-plus { pointer-events: none; }
 
-/* ✛ gap button shown where two adjacent sounds meet while adding a transition. */
-.transition-gap {
-  width: 26px; height: 26px; padding: 0; flex: none;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 50%; font-size: 14px; line-height: 1;
-  background: var(--panel2); border: 1.5px dashed var(--muted); color: var(--text);
+/* Add-transition button inside a voice's editing sheet (near the top): a dashed accent
+   pill echoing the ✛ transition affordance. */
+.sheet-add-transition {
+  align-self: center; width: auto; padding: 8px 16px;
+  font-weight: 600; font-size: 13px; border-radius: 20px; border-style: dashed;
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: var(--panel);
 }
-.transition-gap:hover, .transition-gap:active { border-color: var(--accent); color: var(--accent); }
-.transition-gap.dim { opacity: 0.45; }
-/* In the grid the ✛ is absolutely placed, centred on the bar boundary. */
-.transition-gap.bar-gap { position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 5; }
-/* Add-transition / Edit-bars toggles in the loop view. */
-.add-transition-btn {
-  width: auto; padding: 9px 16px; font-weight: 600; font-size: 13px;
-  border-radius: 20px;
-}
-.add-transition-btn.on { border-color: var(--accent); color: var(--accent); background: var(--panel2); }
-/* Play-scope toggle reads as a playback control (green when limited to the page). */
-.scope-btn.on { border-color: #69db7c; color: #69db7c; background: var(--panel2); }
+.sheet-add-transition:active { background: var(--panel2); }
 
 /* Voice sheet: a modal card over the whole app when a grid voice is tapped. The card
    margin:auto-centres when it fits and pins to the (safe-area-padded) top when taller
@@ -548,10 +544,10 @@ button:active { transform: scale(0.94); }
 
 /* redesigned Sounds landing: shuffle section, JSON box, "Get in the weeds" toggle */
 .shuffle-section { display: flex; flex-direction: column; gap: 12px; }
-/* the big primary Shuffle button on top — twice the size of the old one */
+/* the primary Shuffle button on top — prominent but compact */
 .shuffle-big {
-  width: 100%; color: #0b0c0f; font-weight: 800; font-size: 22px; letter-spacing: 0.3px;
-  padding: 20px 18px; border: none; border-radius: 14px; cursor: pointer;
+  width: 100%; color: #0b0c0f; font-weight: 800; font-size: 18px; letter-spacing: 0.3px;
+  padding: 13px 18px; border: none; border-radius: 12px; cursor: pointer;
   background: linear-gradient(135deg, #6c5cff, #00ffc8);
   background-size: 180% 180%;
   box-shadow: 0 4px 18px rgba(108, 92, 255, 0.45);
@@ -580,7 +576,13 @@ button:active { transform: scale(0.94); }
 
 /* --- mixer --- */
 .mixer-open-btn { --bc: #4dabf7; font-size: 18px; }
-.steps-actions { display: flex; gap: 8px; justify-content: center; }
+
+/* Loop view: the grid's info block below it (loop length + hint + sequencer link). */
+.loop-info { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 2px; }
+.loop-info .loop-time { justify-content: center; }
+.loop-info .hint { font-size: 12px; }
+.loop-seq-link { background: transparent; border: none; color: var(--muted); font-size: 13px; padding: 4px 6px; }
+.loop-seq-link:active { color: var(--text); }
 
 /* Sequencer: circle viz (with the Mixer button at its top-right) + the 6 line rows. */
 .euclid-wrap { position: relative; display: block; text-align: center; }
