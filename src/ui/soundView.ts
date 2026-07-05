@@ -108,21 +108,17 @@ export class SoundView {
     for (const g of ALL_GROUPS) this.el.append(this.category(g));
   }
 
-  // Presets: a single button labelled with the active preset's name + colour; tapping it
-  // opens the grid of factory presets (no Save/Saved — this editor works live).
-  private presetRow(): HTMLElement {
-    const row = document.createElement("div");
-    row.className = "sound-lib";
-
+  // Presets: a single button labelled with the active preset's name + colour (Full
+  // Range by default); tapping it opens the grid of factory presets (no Save/Saved —
+  // this editor works live). Sits in the Back/Reset row, small like those buttons.
+  private presetButton(): HTMLButtonElement {
     const presetBtn = mkBtn(this.params().presetName(), "cat-btn preset-name-btn");
     const col = this.params().presetColor();
     presetBtn.style.background = col;
     presetBtn.style.color = textOn(col);
     presetBtn.style.borderColor = "transparent";
     presetBtn.onclick = () => this.openPresetGrid(presetBtn);
-
-    row.append(presetBtn);
-    return row;
+    return presetBtn;
   }
 
   // Grid overlay of every factory preset.
@@ -222,7 +218,9 @@ export class SoundView {
     sum.append(play, txt);
     sec.append(sum);
 
-    // Back / Reset.
+    // Back / Reset / Preset — one small-button row. The preset button carries the
+    // active preset's name + colour (Full Range by default); tapping it opens the grid
+    // of character windows. Sitting it beside Back/Reset keeps all three the same size.
     const br = document.createElement("div");
     br.className = "sound-lib";
     const back = mkBtn("Back", "cat-btn");
@@ -230,7 +228,7 @@ export class SoundView {
     back.disabled = !this.kit.canBack(drum);
     back.onclick = () => { if (this.kit.backAll(drum)) this.afterReplace(); };
     reset.onclick = () => { this.kit.resetAll(drum); this.afterReplace(); };
-    br.append(back, reset);
+    br.append(back, reset, this.presetButton());
     sec.append(br);
 
     // Randomness amount.
@@ -256,9 +254,6 @@ export class SoundView {
     sec.append(this.selectRow("Max len", MAXLEN_OPTIONS.map((o) => o.label), this.maxLenIdx, (i) => { this.maxLenIdx = i; }));
     sec.append(this.selectRow("Snap", SNAP_OPTIONS.map((o) => o.label), this.snapIdx, (i) => { this.snapIdx = i; }));
     sec.append(this.seedRow());
-
-    // Preset (named + coloured) / Save / Saved — at the bottom of the shuffle div.
-    sec.append(this.presetRow());
 
     return sec;
   }

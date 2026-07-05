@@ -76,8 +76,7 @@ export class App {
   private sheetLine = -1;           // loop view: voice whose editing sheet is open (-1 = none)
   private gridDragBusy = false;     // a grid press-drag (add/resize/move) is live — hold page-follow
   private gridSwipeLock = false;    // a horizontal page-swipe is committing — abort add-zone gestures
-  // A grid tap waiting to become an add (a quick second tap makes it a paste instead).
-  private pendingTap: { li: number; bar: number; timer: number } | null = null;
+  private voiceClip: VoiceNode | null = null; // clipboard: a voice copied via its hold menu, to paste
   private soundReturn: View = "seq"; // where the deep sound view's Back button returns to
   private mixerReturn: View = "seq"; // where the mixer's Back button returns to
 
@@ -1403,10 +1402,20 @@ export class App {
       return b;
     };
 
+    // At the start of this sound, fading in from silence is ALWAYS an option; when a
+    // sound plays right before it, blending from that previous sound is offered too.
+    // Both are given so a sound with a silent gap before it isn't forced to blend
+    // across the gap — it can just fade in from nothing instead.
     if (this.isSounding(prev)) {
       dialog.append(choice(
-        "At the start", "the previous sound blends into this one", true,
+        "At the start — from the previous sound",
+        "the previous sound blends into this one", true,
         () => this.openTransitionOptions(li, k, "pair"),
+      ));
+      dialog.append(choice(
+        "At the start — fade in",
+        "rises out of silence into this sound instead", true,
+        () => this.openTransitionOptions(li, k, "in"),
       ));
     } else if (prev?.transition) {
       dialog.append(choice(
@@ -1424,9 +1433,15 @@ export class App {
 
     if (next) {
       if (this.isSounding(next)) {
+        // Same freedom at the end: blend into the next sound, or fade out to silence
+        // (so a next sound far away across a gap doesn't force a blend across it).
         dialog.append(choice(
-          "At the end", "this sound blends into the next one", true,
+          "At the end — into the next sound", "this sound blends into the next one", true,
           () => this.openTransitionOptions(li, k + 1, "pair"),
+        ));
+        dialog.append(choice(
+          "At the end — fade out", "dies away into silence instead", true,
+          () => this.openTransitionOptions(li, k + 1, "out"),
         ));
       } else if (next.transition) {
         dialog.append(choice(
@@ -1641,7 +1656,7 @@ export class App {
   // visualizer sits on top; a compact pager + zoom flank the grid; the loop length +
   // hint sit below it. Tap a node to edit it (its sheet holds Add-transition + the
   // value circles + shuffle). Empty space: press-drag sketches a new sound's span,
-  // a tap drops the 4-bar default, a double-tap pastes a copy of the line's sound.
+  // a tap drops the 4-bar default, a hold pastes a copied voice. Hold a voice to copy it.
   // Every node has a right-edge grip to resize it; a voice ending on an earlier page
   // gets a page-edge grip to drag it into the viewed bars.
   private renderLoop(): void {
@@ -1722,8 +1737,8 @@ export class App {
       const contentEnd = this.arr.lineSteps(li) / STEPS_PER_BAR; // this line's end, in bars
 
       // Empty-space affordance over [loBar, hiBar): press-drag sketches a new sound's
-      // span, a tap drops the 4-bar default, a double-tap pastes a copy of the line's
-      // sound. One covers the tail past the line's content; one covers every lead-in
+      // span, a tap drops the 4-bar default, a press-and-hold pastes a copied voice or
+      // adds a sound. One covers the tail past the line's content; one covers every lead-in
       // gap (a node's Wait — silent bars are just empty track now).
       const addZone = (loBar: number, hiBar: number) => {
         const l = Math.max(loBar, winStart), r = Math.min(hiBar, winEnd);
@@ -1732,7 +1747,7 @@ export class App {
         zone.className = "bar-add";
         zone.style.left = `${pct(l - winStart)}%`;
         zone.style.width = `${pct(r - l)}%`;
-        zone.title = "Press and drag to add a sound — tap for 4 bars, double-tap to copy this voice";
+        zone.title = "Tap for a 4-bar sound · press and drag to size it · hold to paste / add";
         if (r - l > 0.6) {
           const plus = document.createElement("span");
           plus.className = "bar-add-plus";
@@ -1780,7 +1795,7 @@ export class App {
           block.title = `${what} · ${barsLabel(n)} bars`;
         } else if (isSound) {
           label.textContent = n.name || barsLabel(n);
-          block.title = `${n.name || "node"} · ${barsLabel(n)} bars`;
+          block.title = `${n.name || "node"} · ${barsLabel(n)} bars · tap to edit, hold to copy`;
         } else {
           label.textContent = barsLabel(n);
           block.title = `rest — tap to add a sound · ${barsLabel(n)} bars`;
@@ -1917,29 +1932,30 @@ export class App {
     this.render();
   }
 
-  /** Double-tap paste: duplicate this line's sound (the nearest one starting at or
-      before the tap, else its last) as a NEW node whose sound starts at bar `bar`,
-      keeping the source's rhythm, length and sound (fresh sound id). */
-  private pasteVoiceAt(li: number, bar: number): void {
-    const nodes = this.arr.lines[li].nodes;
-    let src: VoiceNode | null = null;
-    let lastSounding: VoiceNode | null = null;
-    let w = 0;
-    for (const n of nodes) {
-      if (this.isSounding(n) && n.snapshot.length) {
-        lastSounding = n;
-        if (w + waitLen(n) / STEPS_PER_BAR <= bar + 0.5) src = n;
-      }
-      w += nodeBars(n);
-    }
-    const s = src ?? lastSounding;
-    if (!s) { this.addSoundAt(li, bar); return; } // nothing to copy yet — fresh sound
+  /** A detached copy of a node's sound for the clipboard: fresh arrays so the original
+      isn't shared, and never a transition (only real sounds are copyable). */
+  private copyNode(n: VoiceNode): VoiceNode {
+    return {
+      ...n,
+      snapshot: n.snapshot.slice(),
+      pitch: [n.pitch[0], n.pitch[1]],
+      ranges: n.ranges ? { lo: n.ranges.lo.slice(), hi: n.ranges.hi.slice() } : undefined,
+      transition: undefined,
+    };
+  }
+
+  /** Place a copy of source node `s` (its sound + rhythm + length) as a NEW node whose
+      sound starts at bar `bar` on line `li`: a fresh sound id, the DESTINATION line's
+      colour (so a cross-line paste stays visually coherent), the source's length unless
+      the spot is too tight. Returns false when the spot can't take it (caller toasts).
+      Shared by paste-here and duplicate. */
+  private pasteSourceAt(li: number, bar: number, s: VoiceNode): boolean {
     const unit = s.steps >= 1 ? s.steps : STEPS_PER_BAR;
     const activeBars = Math.max(1, Math.round((Math.max(1, s.reps) * unit) / STEPS_PER_BAR));
     const ok = this.placeNodeAt(li, bar, activeBars, (node, grant) => {
       node.soundId = this.nextSoundId++;
       node.snapshot = s.snapshot.slice();
-      node.color = s.color;
+      node.color = VOICE_COLORS[li % VOICE_COLORS.length];
       node.name = s.name;
       node.pitch = [s.pitch[0], s.pitch[1]];
       node.hits = s.hits; node.steps = s.steps; node.rotation = s.rotation; node.split = s.split;
@@ -1951,18 +1967,18 @@ export class App {
         ? s.reps
         : Math.max(1, Math.min(MAX_REPS, Math.floor((grant * STEPS_PER_BAR) / unit)));
     });
-    if (!ok) { this.toast("No room to paste there"); return; }
+    if (!ok) return false;
     this.pushSounds();
     this.syncLines();
     if (!this.playing) this.refreshRings();
     this.render();
-    this.toast(`⧉ Copied ${s.name || `voice ${li + 1}`}`); // after render — it clears the root
+    return true;
   }
 
   /** Wire an empty-track zone: press-drag sketches a new sound's span (a ghost block
       previews it, snapped to whole bars) and releasing places it; a plain tap places
-      the 4-bar default after a short pause; a second tap within that pause pastes a
-      copy of the line's sound instead. `loBar..hiBar` bound the zone in absolute bars. */
+      the 4-bar default; a press-and-hold (without moving) opens the paste / add menu
+      for the pressed bar. `loBar..hiBar` bound the zone in absolute bars. */
   private wireAddZone(
     zone: HTMLElement, track: HTMLElement, li: number,
     loBar: number, hiBar: number, winStart: number, bpp: number,
@@ -1972,21 +1988,35 @@ export class App {
       const r = track.getBoundingClientRect();
       return winStart + ((clientX - r.left) / Math.max(1, r.width)) * bpp;
     };
-    let startX = 0, startBar = 0, dragging = false;
+    let startX = 0, startY = 0, startBar = 0, dragging = false, held = false, holdTimer = 0;
     let ghost: HTMLElement | null = null;
     let ghostSpan: [number, number] = [0, 0];
+    const clearHold = () => { if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; } };
 
     zone.addEventListener("pointerdown", (e) => {
       if (e.pointerType === "mouse" && e.button !== 0) return;
-      startX = e.clientX;
+      startX = e.clientX; startY = e.clientY;
       startBar = Math.max(lo, Math.min(Math.floor(hiBar - 0.999), Math.floor(barAt(e.clientX) + 0.001)));
       dragging = true;
+      held = false;
       this.gridDragBusy = true; // hold the page-follow while sketching
       try { zone.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+      // Press and HOLD without moving opens the paste / add menu at this bar.
+      clearHold();
+      holdTimer = window.setTimeout(() => {
+        holdTimer = 0;
+        held = true;      // swallow the pending tap/drag — the menu owns this press now
+        dragging = false;
+        this.gridDragBusy = false;
+        ghost?.remove(); ghost = null;
+        try { zone.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+        this.openGridAddMenu(li, startBar, e.clientX, e.clientY);
+      }, 420);
     });
     zone.addEventListener("pointermove", (e) => {
       if (!dragging) return;
-      if (this.gridSwipeLock) { ghost?.remove(); ghost = null; return; } // a page-swipe took over
+      if (Math.abs(e.clientX - startX) >= 7 || Math.abs(e.clientY - startY) >= 7) clearHold(); // any drag cancels the hold
+      if (this.gridSwipeLock) { clearHold(); ghost?.remove(); ghost = null; return; } // a page-swipe took over
       if (!ghost && Math.abs(e.clientX - startX) < 7) return; // not a drag yet
       e.preventDefault();
       if (!ghost) {
@@ -2003,9 +2033,11 @@ export class App {
       ghost.style.width = `${((b - a) / bpp) * 100}%`;
     });
     const end = (e: PointerEvent, cancelled: boolean) => {
+      if (held) return; // the hold menu already took over this press
       if (!dragging) return;
       dragging = false;
       this.gridDragBusy = false;
+      clearHold();
       try { zone.releasePointerCapture(e.pointerId); } catch { /* already released */ }
       if (this.gridSwipeLock) { ghost?.remove(); ghost = null; return; } // a page-swipe won
       if (ghost) {
@@ -2016,24 +2048,114 @@ export class App {
         return;
       }
       if (cancelled) return;
-      // A plain tap: hold briefly — a second tap in the window means paste-a-copy.
-      const bar = startBar;
-      const pending = this.pendingTap;
-      if (pending && pending.li === li && Math.abs(pending.bar - bar) <= 1.2) {
-        clearTimeout(pending.timer);
-        this.pendingTap = null;
-        this.pasteVoiceAt(li, bar);
-        return;
-      }
-      if (pending) { clearTimeout(pending.timer); this.addSoundAt(pending.li, pending.bar); }
-      const timer = window.setTimeout(() => {
-        this.pendingTap = null;
-        this.addSoundAt(li, bar);
-      }, 320);
-      this.pendingTap = { li, bar, timer };
+      // A plain tap drops the default 4-bar groove (copy now lives in the hold menu).
+      this.addSoundAt(li, startBar);
     };
     zone.addEventListener("pointerup", (e) => end(e, false));
     zone.addEventListener("pointercancel", (e) => end(e, true));
+  }
+
+  /** A small press-and-hold popup (the app's context-menu style): a card of labelled
+      actions anchored at the press point `px,py`, clamped into the viewport (flips above
+      the finger when it would run off the bottom). Closes on an outside tap. */
+  private openHoldMenu(
+    px: number, py: number, vc: string,
+    items: { glyph: string; main: string; note: string; fn: () => void; disabled?: boolean }[],
+  ): void {
+    document.querySelector(".grid-menu-overlay")?.remove(); // only one at a time
+    const overlay = document.createElement("div");
+    overlay.className = "grid-menu-overlay";
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    const menu = document.createElement("div");
+    menu.className = "grid-menu";
+    menu.style.setProperty("--vc", vc);
+
+    for (const it of items) {
+      const b = document.createElement("button");
+      b.className = "grid-menu-item";
+      b.disabled = !!it.disabled;
+      const g = document.createElement("span");
+      g.className = "grid-menu-glyph";
+      g.textContent = it.glyph;
+      const tx = document.createElement("span");
+      tx.className = "grid-menu-text";
+      const m = document.createElement("span");
+      m.className = "grid-menu-main";
+      m.textContent = it.main;
+      const s = document.createElement("small");
+      s.textContent = it.note;
+      tx.append(m, s);
+      b.append(g, tx);
+      b.onclick = () => { overlay.remove(); it.fn(); };
+      menu.append(b);
+    }
+
+    overlay.append(menu);
+    this.root.append(overlay);
+
+    menu.style.left = `${Math.round(px)}px`;
+    menu.style.top = `${Math.round(py + 8)}px`;
+    requestAnimationFrame(() => {
+      const m = menu.getBoundingClientRect();
+      const pad = 8;
+      const left = Math.max(pad + m.width / 2, Math.min(px, window.innerWidth - pad - m.width / 2));
+      menu.style.left = `${Math.round(left)}px`;
+      if (py + 8 + m.height > window.innerHeight - pad) {
+        menu.style.top = `${Math.round(Math.max(pad, py - m.height - 8))}px`;
+      }
+    });
+  }
+
+  /** The hold menu over an EMPTY grid zone: paste the copied voice at the pressed bar,
+      or drop a fresh shuffled groove. Pasting is disabled (with a hint) until a voice
+      has been copied via its own hold menu. */
+  private openGridAddMenu(li: number, bar: number, px: number, py: number): void {
+    const clip = this.voiceClip;
+    this.openHoldMenu(px, py, VOICE_COLORS[li], [
+      {
+        glyph: "📋", main: "Paste here",
+        note: clip ? (clip.name || "the copied sound") : "hold a voice to copy it first",
+        disabled: !clip,
+        fn: () => {
+          if (!clip) return;
+          if (this.pasteSourceAt(li, bar, clip)) this.toast(`📋 Pasted ${clip.name || "sound"}`);
+          else this.toast("No room to paste there");
+        },
+      },
+      {
+        glyph: "＋", main: "New sound", note: "a fresh shuffled 4-bar groove",
+        fn: () => this.addSoundAt(li, bar),
+      },
+    ]);
+  }
+
+  /** The hold menu over a SOUNDING voice block: copy it to the clipboard (to paste
+      elsewhere by holding an empty spot), or duplicate it straight after itself. */
+  private openVoiceCopyMenu(li: number, k: number, px: number, py: number): void {
+    const nodes = this.arr.lines[li].nodes;
+    const node = nodes[k];
+    if (!node || !this.isSounding(node) || !node.snapshot.length) return;
+    const label = node.name || `voice ${li + 1}`;
+    // The node's audible end bar (its start + active length) — where a duplicate lands.
+    let startBar = 0;
+    for (let i = 0; i < k; i++) startBar += nodeBars(nodes[i]);
+    const endBar = Math.round(startBar + nodeBars(node));
+    this.openHoldMenu(px, py, node.color, [
+      {
+        glyph: "⧉", main: "Copy",
+        note: "copy this sound — hold an empty spot to paste",
+        fn: () => { this.voiceClip = this.copyNode(node); this.toast(`⧉ Copied ${label}`); },
+      },
+      {
+        glyph: "⧉", main: "Duplicate",
+        note: "drop a copy right after this one",
+        fn: () => {
+          if (this.pasteSourceAt(li, endBar, node)) this.toast(`⧉ Duplicated ${label}`);
+          else this.toast("No room to duplicate here");
+        },
+      },
+    ]);
   }
 
   /** A right-edge grip that press-drags a node's END to resize it — reps in the
@@ -2091,13 +2213,14 @@ export class App {
       bars and previewed live. The move TRANSFERS lead-in bars between this node and the
       gap after it, so the node slides within its own free space (its lead-in plus the
       following gap) and every OTHER block stays put — never overlapping a neighbour. A
-      plain tap (no drag) opens the node's editing sheet. `bodyStartBar` is the node's
-      audible start in absolute bars. */
+      plain tap (no drag) opens the node's editing sheet; a press-and-hold opens its
+      copy / duplicate menu. `bodyStartBar` is the node's audible start in absolute bars. */
   private attachMove(
     block: HTMLElement, track: HTMLElement, li: number, k: number,
     bodyStartBar: number, winStart: number, bpp: number,
   ): void {
-    let dragging = false, moved = false, downX = 0, delta = 0, lo = 0, hi = 0;
+    let dragging = false, moved = false, held = false, downX = 0, downY = 0, delta = 0, lo = 0, hi = 0, holdTimer = 0;
+    const clearHold = () => { if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; } };
     block.addEventListener("pointerdown", (e) => {
       if (e.pointerType === "mouse" && e.button !== 0) return;
       const nodes = this.arr.lines[li].nodes;
@@ -2108,12 +2231,20 @@ export class App {
       lo = -wait;                                                     // earliest: fill its own lead-in
       hi = next ? Math.max(0, next.wait ?? 0)                         // latest: eat the following gap
                 : Math.max(0, MAX_REPS - wait);                       // last node: slide out freely
-      dragging = true; moved = false; downX = e.clientX; delta = 0;
+      dragging = true; moved = false; held = false; downX = e.clientX; downY = e.clientY; delta = 0;
       this.gridDragBusy = true;
       try { block.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+      // Press and HOLD still (no drag) opens this voice's copy / duplicate menu.
+      clearHold();
+      holdTimer = window.setTimeout(() => {
+        holdTimer = 0; held = true; dragging = false; this.gridDragBusy = false;
+        try { block.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+        this.openVoiceCopyMenu(li, k, e.clientX, e.clientY);
+      }, 420);
     });
     block.addEventListener("pointermove", (e) => {
       if (!dragging) return;
+      if (Math.abs(e.clientX - downX) >= 6 || Math.abs(e.clientY - downY) >= 6) clearHold(); // a drag, not a hold
       if (!moved && Math.abs(e.clientX - downX) < 6) return; // still a tap, not a drag
       moved = true;
       e.preventDefault();
@@ -2122,9 +2253,11 @@ export class App {
       block.style.left = `${((bodyStartBar + delta - winStart) / bpp) * 100}%`;
     });
     const end = (e: PointerEvent) => {
+      if (held) return; // the copy menu took over this press
       if (!dragging) return;
       dragging = false;
       this.gridDragBusy = false;
+      clearHold();
       try { block.releasePointerCapture(e.pointerId); } catch { /* already released */ }
       if (!moved) { this.openVoiceSheet(li, k); return; } // a plain tap edits the voice
       if (delta !== 0) {
@@ -2147,18 +2280,27 @@ export class App {
     block.addEventListener("pointercancel", end);
   }
 
-  /** Wire an element so a horizontal swipe across it pages the loop-view window (left =
+  /** Wire an element so a horizontal FLICK across it pages the loop-view window (left =
       next 8 bars, right = previous). Ignores presses that begin on a node block (those
       move/resize/edit it) and does nothing zoomed out (a single page). A committed swipe
-      raises gridSwipeLock so any add-zone sketch that shared the same press bails out. */
+      raises gridSwipeLock so any add-zone sketch that shared the same press bails out.
+
+      Paging only commits on a quick flick — the horizontal motion must clear a short
+      distance AND be moving fast (a smoothed velocity over the cutoff). A slow, deliberate
+      drag (how you move / resize / place a voice) never reaches that speed, so it no longer
+      pages the window by accident. */
   private attachPageSwipe(el: HTMLElement): void {
+    const MIN_DX = 44;  // px of horizontal travel before a flick can commit
+    const MIN_VX = 0.6; // px/ms flick speed a slow drag never reaches
     let tracking = false, locked = false, x0 = 0, y0 = 0;
+    let lastX = 0, lastT = 0, vx = 0; // for the smoothed horizontal velocity
     el.addEventListener("pointerdown", (e) => {
       if (this.loopZoomOut) return; // one page — nothing to swipe to
       const t = e.target as HTMLElement;
       // A node owns its gesture (move/resize/edit); the mixer button owns its tap.
       if (t.closest(".bar-node") || t.closest(".mixer-open-btn")) return;
       tracking = true; locked = false; x0 = e.clientX; y0 = e.clientY;
+      lastX = e.clientX; lastT = e.timeStamp; vx = 0;
       this.gridSwipeLock = false;
       // Capture for a reliable swipe UNLESS an add-zone already owns this pointer (it
       // captured on its own pointerdown; we still see its events bubble up here).
@@ -2167,7 +2309,10 @@ export class App {
     el.addEventListener("pointermove", (e) => {
       if (!tracking || locked) return;
       const dx = e.clientX - x0, dy = e.clientY - y0;
-      if (Math.abs(dx) > 46 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+      const dt = e.timeStamp - lastT;
+      if (dt > 0) vx = 0.7 * vx + 0.3 * ((e.clientX - lastX) / dt); // smoothed px/ms
+      lastX = e.clientX; lastT = e.timeStamp;
+      if (Math.abs(dx) > MIN_DX && Math.abs(dx) > Math.abs(dy) * 1.3 && Math.abs(vx) > MIN_VX) {
         locked = true;
         this.gridSwipeLock = true; // an add-zone that saw this press must abort its sketch
         document.querySelector(".bar-drag-ghost")?.remove();

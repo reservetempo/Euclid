@@ -286,7 +286,7 @@ button:active { transform: scale(0.94); }
 .loop-rings .mixer-open-btn { position: absolute; top: 0; right: 0; z-index: 2; }
 
 /* Add underlay over empty track (the tail past the content + every lead-in gap):
-   press-drag sketches a sound, tap drops the default, double-tap pastes a copy. */
+   press-drag sketches a sound, tap drops the default, hold opens the copy / paste menu. */
 .bar-add {
   position: absolute; top: 0; bottom: 0; z-index: 0; padding: 0; border: none;
   background: transparent; cursor: copy; touch-action: pan-y;
@@ -415,6 +415,39 @@ button:active { transform: scale(0.94); }
 .numpad-key.back { color: var(--muted); font-size: 22px; }
 .numpad-key.enter { color: #0b0c0f; border: none; font-weight: 800; background: var(--vc); }
 
+/* Press-and-hold menu over an empty grid zone (copy this voice here / new sound). The
+   transparent overlay only catches the outside tap; the card is anchored at the press. */
+.grid-menu-overlay { position: fixed; inset: 0; z-index: 210; background: transparent; }
+.grid-menu {
+  --vc: var(--accent);
+  position: fixed; transform: translateX(-50%);
+  min-width: 196px; max-width: 264px;
+  display: flex; flex-direction: column; gap: 3px; padding: 6px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+  animation: grid-menu-in 0.14s ease-out;
+}
+/* Like pop-in, but keeps the translateX(-50%) that centres the card on the press. */
+@keyframes grid-menu-in {
+  from { opacity: 0; transform: translateX(-50%) scale(0.95); }
+  to   { opacity: 1; transform: translateX(-50%) scale(1); }
+}
+.grid-menu-item {
+  display: flex; align-items: center; gap: 11px; text-align: left;
+  padding: 9px 10px; border: none; border-radius: 9px;
+  background: transparent; color: var(--text);
+}
+.grid-menu-item:active { background: var(--panel); }
+.grid-menu-item:disabled { opacity: 0.42; }
+.grid-menu-glyph {
+  flex: none; width: 27px; height: 27px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center; font-size: 15px;
+  color: var(--vc); background: color-mix(in srgb, var(--vc) 24%, transparent);
+}
+.grid-menu-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.grid-menu-main { font-size: 14px; font-weight: 600; }
+.grid-menu-text small { font-size: 11px; color: var(--muted); }
+
 /* --- sound view --- */
 .soundview { display: flex; flex-direction: column; gap: 14px; }
 .sound-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -427,6 +460,9 @@ button:active { transform: scale(0.94); }
 .sound-title-input:focus { border-color: var(--line); background: var(--panel); outline: none; }
 .sound-lib { position: relative; display: flex; align-items: center; gap: 8px; }
 .sound-lib select { max-width: 130px; }
+/* The preset button shares the Back/Reset row; cap it so a long preset name
+   ellipsis-truncates instead of blowing the row out. */
+.sound-lib .preset-name-btn { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preset-current {
   font-size: 12px; color: var(--muted);
   max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
