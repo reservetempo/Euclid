@@ -74,10 +74,12 @@ export class App {
   private loopZoomOut = false;      // loop view: one page showing the whole loop
   private playPageOnly = false;     // loop view: loop just the 8 bars on screen, not the whole track
   private sheetLine = -1;           // loop view: voice whose editing sheet is open (-1 = none)
-  private gridDragBusy = false;     // a grid press-drag (add/resize) is live — hold page-follow
+  private gridDragBusy = false;     // a grid press-drag (add/resize/move) is live — hold page-follow
+  private gridSwipeLock = false;    // a horizontal page-swipe is committing — abort add-zone gestures
   // A grid tap waiting to become an add (a quick second tap makes it a paste instead).
   private pendingTap: { li: number; bar: number; timer: number } | null = null;
   private soundReturn: View = "seq"; // where the deep sound view's Back button returns to
+  private mixerReturn: View = "seq"; // where the mixer's Back button returns to
 
   // Per-node inline shuffle editors, keyed by `${line}:${nodeIndex}`. Lazily created
   // when a node's shuffle menu first opens; cleared on new/load/node-removal
@@ -287,8 +289,8 @@ export class App {
     if (!this.loopTimeEl) return;
     const steps = this.arr.loopSteps();
     const sec = (steps * 60) / Math.max(1, this.tempo) / 4; // 16th notes
-    this.loopTimeEl.textContent =
-      steps > 0 ? `${sec.toFixed(2)}s · ${Math.round(steps / STEPS_PER_BAR)} bars` : "empty";
+    // Compact for the top-left button: seconds only (one decimal under 10s).
+    this.loopTimeEl.textContent = steps > 0 ? `${sec < 10 ? sec.toFixed(1) : Math.round(sec)}s` : "—";
   }
 
   // --- persistence ------------------------------------------------------
@@ -670,19 +672,34 @@ export class App {
     return b;
   }
 
-  /** Loop view, top-left: toggle whether playback loops the WHOLE track or just the
-      bars on screen. Lit ("on") = the whole loop; tap to constrain it to the page. */
+  /** Loop view, top-left: shows the loop length in seconds and toggles whether playback
+      loops the WHOLE track or just the bars on screen. Lit ("on") = the whole loop; tap
+      to constrain it to the page (goes green). */
   private scopeToggle(): HTMLElement {
     const n = this.pageBars();
     const b = document.createElement("button");
-    b.className = "loop-view-btn scope-toggle" + (this.playPageOnly ? "" : " on");
+    b.className = "loop-view-btn scope-toggle loop-time-btn" + (this.playPageOnly ? "" : " on");
     b.title = this.playPageOnly
       ? `Looping these ${n} bars — tap to loop the whole track`
       : `Looping the whole track — tap to loop just these ${n} bars`;
-    b.setAttribute("aria-label", "Loop scope");
-    b.append(this.chainIcon());
+    b.setAttribute("aria-label", "Loop length / scope");
+    this.loopTimeEl = document.createElement("span");
+    this.loopTimeEl.className = "loop-time-btn-val";
+    b.append(this.loopTimeEl);
     b.onclick = () => { this.playPageOnly = !this.playPageOnly; this.render(); };
     return b;
+  }
+
+  /** The 🎚 Mixer opener, placed at the top-right of a rings visualiser. `from` is the
+      view its Back button should return to (so it comes back to wherever it was opened). */
+  private mixerOpenBtn(from: View): HTMLElement {
+    const mix = document.createElement("button");
+    mix.className = "mixer-open-btn";
+    mix.textContent = "🎚";
+    mix.title = "Mixer";
+    mix.setAttribute("aria-label", "Mixer");
+    mix.onclick = () => { this.mixerReturn = from; this.view = "mixer"; this.render(); };
+    return mix;
   }
 
   // --- sequencer view ----------------------------------------------------
@@ -692,13 +709,7 @@ export class App {
     const wrap = document.createElement("div");
     wrap.className = "euclid-wrap";
     // Mixer button at the top-right of the steps visualiser.
-    const mix = document.createElement("button");
-    mix.className = "mixer-open-btn";
-    mix.textContent = "🎚";
-    mix.title = "Mixer";
-    mix.setAttribute("aria-label", "Mixer");
-    mix.onclick = () => { this.view = "mixer"; this.render(); };
-    wrap.append(mix, this.euclidView.canvas);
+    wrap.append(this.mixerOpenBtn("seq"), this.euclidView.canvas);
     v.append(wrap);
     v.append(this.linesMenu());
     if (!this.playing) this.refreshRings();
@@ -1260,13 +1271,26 @@ export class App {
     const k = this.editNode[li];
     if (nodes.length > 1) {
       const removedId = nodes[k].soundId;
-      nodes.splice(k, 1);
-      // Drop transitions orphaned by the removal (they referenced the gone sound, or
-      // sat next to it and now bridge the wrong pair). A removed REST has id -1 —
-      // that must not match a fade's silence endpoint (-1).
-      for (let j = nodes.length - 1; j >= 0; j--) {
+      // Every node this removal takes out: the node itself, plus any transition left
+      // orphaned by it (it referenced the gone sound, or sat next to it and now bridges
+      // the wrong pair). A removed REST has id -1 — that must not match a fade's silence
+      // endpoint (-1).
+      const cut = new Set<number>([k]);
+      for (let j = 0; j < nodes.length; j++) {
         const t = nodes[j].transition;
-        if (t && removedId >= 0 && (t.fromId === removedId || t.toId === removedId)) nodes.splice(j, 1);
+        if (t && removedId >= 0 && (t.fromId === removedId || t.toId === removedId)) cut.add(j);
+      }
+      // The whole-bar span those nodes occupy, and the earliest index they touch — the
+      // node that FOLLOWS the removed run inherits this as extra lead-in so every LATER
+      // voice keeps its place in time instead of sliding earlier to fill the gap.
+      let cutSteps = 0;
+      let firstCut = nodes.length;
+      for (const j of cut) { cutSteps += nodeLen(nodes[j]); firstCut = Math.min(firstCut, j); }
+      for (const j of [...cut].sort((a, b) => b - a)) nodes.splice(j, 1);
+      const follow = nodes[firstCut]; // the first surviving node past the removed run
+      if (follow) {
+        const addBars = Math.round(cutSteps / STEPS_PER_BAR);
+        if (addBars > 0) follow.wait = Math.min(MAX_REPS, Math.max(0, follow.wait ?? 0) + addBars);
       }
       if (nodes.length === 0) nodes.push(emptyNode());
       this.editNode[li] = Math.min(k, nodes.length - 1);
@@ -1629,7 +1653,8 @@ export class App {
     // edited nodes).
     const rings = document.createElement("div");
     rings.className = "loop-rings";
-    rings.append(this.euclidView.canvas);
+    // Mixer opener at the visualiser's top-right corner (over empty ring space).
+    rings.append(this.euclidView.canvas, this.mixerOpenBtn("loop"));
     v.append(rings);
 
     // The visible window. Normally 8 bars, paged — pages cover the content plus one
@@ -1691,11 +1716,6 @@ export class App {
       const row = document.createElement("div");
       row.className = "bar-row";
       row.style.setProperty("--vc", VOICE_COLORS[li]);
-
-      const gutter = document.createElement("span");
-      gutter.className = "bar-gutter";
-      gutter.textContent = String(li + 1);
-      row.append(gutter);
 
       const track = document.createElement("div");
       track.className = "bar-track";
@@ -1767,10 +1787,16 @@ export class App {
         }
         block.append(label);
 
-        block.onclick = () => {
-          if (!isSound && !n.transition) { this.giveNodeSound(li, k); return; } // rest → sound in place
-          this.openVoiceSheet(li, k); // a tapped voice's editing sheet floats above the grid
-        };
+        if (isSound) {
+          // A sounding block: press-drag it left/right to move it in time (a plain tap
+          // opens its editing sheet). Its slot bounds keep it from overlapping neighbours.
+          this.attachMove(block, track, li, k, s + wb, winStart, BARS_PER_PAGE);
+        } else {
+          block.onclick = () => {
+            if (n.transition) this.openVoiceSheet(li, k); // a transition's sheet floats above
+            else this.giveNodeSound(li, k);               // a rest → sound in place
+          };
+        }
         // Right-edge grip: press-drag the node's end to resize it (reps in its own unit).
         const grip = document.createElement("span");
         grip.className = "bar-node-grip";
@@ -1803,28 +1829,11 @@ export class App {
     v.append(grid);
     this.barGridEl = grid; // the playhead line sweeps this via the --ph var
 
-    // The grid's info sits BELOW it: the loop length, a one-line hint, and the way over
-    // to the sequencer view.
-    const info = document.createElement("div");
-    info.className = "loop-info";
-    const loop = document.createElement("div");
-    loop.className = "loop-time";
-    const loopLabel = document.createElement("span");
-    loopLabel.className = "loop-time-label";
-    loopLabel.textContent = "Loop length";
-    this.loopTimeEl = document.createElement("span");
-    this.loopTimeEl.className = "loop-time-val";
-    loop.append(loopLabel, this.loopTimeEl);
-    const hint = document.createElement("p");
-    hint.className = "hint";
-    hint.textContent = "Each voice runs left → right. Press-drag empty space to sketch a sound (tap = 4 bars, double-tap = copy the voice); drag a block's right edge to resize it; tap a block to edit it.";
-    const seqLink = document.createElement("button");
-    seqLink.className = "loop-seq-link";
-    seqLink.textContent = "Open sequencer view ›";
-    seqLink.onclick = () => { this.view = "seq"; this.render(); };
-    info.append(loop, hint, seqLink);
-    v.append(info);
-    this.updateLoopTime();
+    // Horizontal swipe across the rings or the grid pages the visible 8-bar window
+    // (left = next bars, right = previous), so the pager buttons aren't the only way.
+    this.attachPageSwipe(rings);
+    this.attachPageSwipe(grid);
+    this.updateLoopTime(); // loop length now lives on the top-left button
 
     if (!this.playing) this.refreshRings();
     // Size the rings synchronously (viewRoot is in the DOM), and again next frame for
@@ -1977,6 +1986,7 @@ export class App {
     });
     zone.addEventListener("pointermove", (e) => {
       if (!dragging) return;
+      if (this.gridSwipeLock) { ghost?.remove(); ghost = null; return; } // a page-swipe took over
       if (!ghost && Math.abs(e.clientX - startX) < 7) return; // not a drag yet
       e.preventDefault();
       if (!ghost) {
@@ -1997,6 +2007,7 @@ export class App {
       dragging = false;
       this.gridDragBusy = false;
       try { zone.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      if (this.gridSwipeLock) { ghost?.remove(); ghost = null; return; } // a page-swipe won
       if (ghost) {
         const [a, b] = ghostSpan;
         ghost.remove();
@@ -2074,6 +2085,114 @@ export class App {
     grip.addEventListener("pointerup", end);
     grip.addEventListener("pointercancel", end);
     grip.addEventListener("click", (e) => e.stopPropagation()); // don't open the sheet
+  }
+
+  /** Press-drag a sounding node block left/right to move it in time, snapped to whole
+      bars and previewed live. The move TRANSFERS lead-in bars between this node and the
+      gap after it, so the node slides within its own free space (its lead-in plus the
+      following gap) and every OTHER block stays put — never overlapping a neighbour. A
+      plain tap (no drag) opens the node's editing sheet. `bodyStartBar` is the node's
+      audible start in absolute bars. */
+  private attachMove(
+    block: HTMLElement, track: HTMLElement, li: number, k: number,
+    bodyStartBar: number, winStart: number, bpp: number,
+  ): void {
+    let dragging = false, moved = false, downX = 0, delta = 0, lo = 0, hi = 0;
+    block.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const nodes = this.arr.lines[li].nodes;
+      const node = nodes[k];
+      if (!node || node.soundId < 0 || node.transition) return; // only real sounds move
+      const next = nodes[k + 1];
+      const wait = Math.max(0, node.wait ?? 0);
+      lo = -wait;                                                     // earliest: fill its own lead-in
+      hi = next ? Math.max(0, next.wait ?? 0)                         // latest: eat the following gap
+                : Math.max(0, MAX_REPS - wait);                       // last node: slide out freely
+      dragging = true; moved = false; downX = e.clientX; delta = 0;
+      this.gridDragBusy = true;
+      try { block.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+    });
+    block.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      if (!moved && Math.abs(e.clientX - downX) < 6) return; // still a tap, not a drag
+      moved = true;
+      e.preventDefault();
+      const bars = ((e.clientX - downX) / Math.max(1, track.getBoundingClientRect().width)) * bpp;
+      delta = Math.max(lo, Math.min(hi, Math.round(bars)));
+      block.style.left = `${((bodyStartBar + delta - winStart) / bpp) * 100}%`;
+    });
+    const end = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      this.gridDragBusy = false;
+      try { block.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      if (!moved) { this.openVoiceSheet(li, k); return; } // a plain tap edits the voice
+      if (delta !== 0) {
+        const nodes = this.arr.lines[li].nodes;
+        const node = nodes[k];
+        const next = nodes[k + 1];
+        const w = Math.max(0, node.wait ?? 0) + delta;
+        node.wait = w > 0 ? Math.min(MAX_REPS, w) : undefined;
+        if (next) {
+          const wn = Math.max(0, next.wait ?? 0) - delta; // the gap absorbs the opposite
+          next.wait = wn > 0 ? Math.min(MAX_REPS, wn) : undefined;
+        }
+        this.syncLines();
+        this.syncSection(); // the moved node may be the section window
+        if (!this.playing) this.refreshRings();
+      }
+      this.render(); // reflect the committed (or reverted) position
+    };
+    block.addEventListener("pointerup", end);
+    block.addEventListener("pointercancel", end);
+  }
+
+  /** Wire an element so a horizontal swipe across it pages the loop-view window (left =
+      next 8 bars, right = previous). Ignores presses that begin on a node block (those
+      move/resize/edit it) and does nothing zoomed out (a single page). A committed swipe
+      raises gridSwipeLock so any add-zone sketch that shared the same press bails out. */
+  private attachPageSwipe(el: HTMLElement): void {
+    let tracking = false, locked = false, x0 = 0, y0 = 0;
+    el.addEventListener("pointerdown", (e) => {
+      if (this.loopZoomOut) return; // one page — nothing to swipe to
+      const t = e.target as HTMLElement;
+      // A node owns its gesture (move/resize/edit); the mixer button owns its tap.
+      if (t.closest(".bar-node") || t.closest(".mixer-open-btn")) return;
+      tracking = true; locked = false; x0 = e.clientX; y0 = e.clientY;
+      this.gridSwipeLock = false;
+      // Capture for a reliable swipe UNLESS an add-zone already owns this pointer (it
+      // captured on its own pointerdown; we still see its events bubble up here).
+      if (!t.closest(".bar-add")) { try { el.setPointerCapture(e.pointerId); } catch { /* gone */ } }
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (!tracking || locked) return;
+      const dx = e.clientX - x0, dy = e.clientY - y0;
+      if (Math.abs(dx) > 46 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        locked = true;
+        this.gridSwipeLock = true; // an add-zone that saw this press must abort its sketch
+        document.querySelector(".bar-drag-ghost")?.remove();
+      }
+    });
+    const end = (e: PointerEvent) => {
+      if (!tracking) return;
+      tracking = false;
+      try { el.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+      if (locked) this.pageBy(e.clientX - x0 < 0 ? 1 : -1);
+      // Clear on the next tick so a bubbling add-zone pointerup still sees the lock.
+      setTimeout(() => { this.gridSwipeLock = false; }, 0);
+    };
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
+  }
+
+  /** Step the loop-view window by whole pages, clamped to the arranged range (mirrors
+      the ‹ / › pager buttons' bounds). */
+  private pageBy(dir: number): void {
+    const bpp = this.pageBars();
+    const loopBars = this.arr.loopSteps() / STEPS_PER_BAR;
+    const maxPage = Math.max(0, Math.ceil(Math.max(loopBars, 0.001) / bpp) - 1) + 1;
+    const next = Math.max(0, Math.min(maxPage, this.loopPage + dir));
+    if (next !== this.loopPage) { this.loopPage = next; this.render(); }
   }
 
   /** Turn an existing rest node into a sounding one in place (keeping its position and
@@ -2213,8 +2332,8 @@ export class App {
     head.className = "mixer-head";
     const back = document.createElement("button");
     back.className = "mixer-back";
-    back.textContent = "‹ Sequencer";
-    back.onclick = () => { this.view = "seq"; this.render(); };
+    back.textContent = this.mixerReturn === "loop" ? "‹ Grid" : "‹ Sequencer";
+    back.onclick = () => { this.view = this.mixerReturn; this.render(); };
     const title = document.createElement("h2");
     title.className = "mixer-title";
     title.textContent = "Mixer";
