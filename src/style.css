@@ -190,19 +190,23 @@ button:active { transform: scale(0.94); }
 .loop-time-btn-val { line-height: 1; }
 
 /* --- loop view: the arrangement as a bar grid (rows = voices, x = bars) --- */
-/* Pager: step the visible 8-bar window backward / forward (compact ‹ / › buttons). */
+/* Pager: step the visible 8-bar window backward / forward (wide ‹ / › buttons — the only
+   way to page now that the swipe gesture is gone). */
 .bar-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0; }
 .bar-pager-btn {
-  width: 34px; height: 30px; flex: none; padding: 0; font-size: 18px; font-weight: 700;
-  line-height: 1; border-radius: 15px;
+  width: 72px; height: 34px; flex: none; padding: 0; font-size: 20px; font-weight: 700;
+  line-height: 1; border-radius: 17px;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .bar-pager-btn:disabled { opacity: 0.32; cursor: default; }
 .bar-pager-label { font-size: 13px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 84px; text-align: center; }
-/* Zoom toggle (whole loop ↔ 8-bar pages), at the pager's right. */
-.bar-zoom-btn { margin-left: 6px; font-size: 16px; color: var(--muted); }
+/* Zoom toggle (whole loop ↔ 8-bar pages). Zoomed IN it rides at the visualiser's top-left
+   corner (see .loop-rings .bar-zoom-btn); zoomed OUT the rings are gone so it sits in the
+   pager, compact — never as wide as the ‹ / › arrows. */
+.bar-zoom-btn { width: 40px; margin: 0; font-size: 16px; color: var(--muted); }
 
-/* pan-y so a horizontal swipe across the grid pages the window (JS), vertical scrolls. */
+/* pan-y so horizontal press-drags (sketch / move / resize a voice) reach the JS while a
+   vertical drag still scrolls the page. Two of these stack in the zoomed-out view. */
 .bar-grid { display: flex; flex-direction: column; gap: 8px; touch-action: pan-y; }
 .bar-row { display: flex; align-items: stretch; gap: 8px; }
 /* One voice's track; the repeating gradients draw a divider at each bar (100%/--bars,
@@ -279,11 +283,19 @@ button:active { transform: scale(0.94); }
   border: 1.5px dashed var(--vc); border-radius: 6px;
   background: color-mix(in srgb, var(--vc) 22%, transparent);
 }
-/* The rings visualizer above the grid (the sequencer's canvas, centred). A horizontal
-   swipe here pages the window, so pan-y keeps vertical scroll but hands JS the swipe. */
-.loop-rings { position: relative; display: flex; justify-content: center; max-width: 232px; margin: 0 auto; width: 100%; touch-action: pan-y; }
+/* The rings visualizer above the grid (the sequencer's canvas, centred), shown only in
+   the 8-bar view — zoomed out it's dropped so the grid gets the whole height. */
+.loop-rings { position: relative; display: flex; justify-content: center; max-width: 232px; margin: 0 auto; width: 100%; }
 /* Mixer opener tucked into the visualiser's top-right corner (clear of the rings). */
 .loop-rings .mixer-open-btn { position: absolute; top: 0; right: 0; z-index: 2; }
+/* Zoom toggle mirrors it at the TOP-LEFT corner (a round accent button). Zoomed out the
+   rings are gone, so the toggle falls back into the pager instead. */
+.loop-rings .bar-zoom-btn {
+  position: absolute; top: 0; left: 0; z-index: 2; margin: 0;
+  width: 42px; height: 42px; border-radius: 50%;
+  border: 1.5px solid var(--accent); color: var(--accent);
+  background: var(--panel); font-size: 18px;
+}
 
 /* Add underlay over empty track (the tail past the content + every lead-in gap):
    press-drag sketches a sound, tap drops the default, hold opens the copy / paste menu. */

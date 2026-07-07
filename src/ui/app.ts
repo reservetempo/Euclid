@@ -75,7 +75,6 @@ export class App {
   private playPageOnly = false;     // loop view: loop just the 8 bars on screen, not the whole track
   private sheetLine = -1;           // loop view: voice whose editing sheet is open (-1 = none)
   private gridDragBusy = false;     // a grid press-drag (add/resize/move) is live — hold page-follow
-  private gridSwipeLock = false;    // a horizontal page-swipe is committing — abort add-zone gestures
   private voiceClip: VoiceNode | null = null; // clipboard: a voice copied via its hold menu, to paste
   private soundReturn: View = "seq"; // where the deep sound view's Back button returns to
   private mixerReturn: View = "seq"; // where the mixer's Back button returns to
@@ -89,11 +88,12 @@ export class App {
   private viewRoot!: HTMLElement;
   private euclidView = new EuclidView();
   private loopTimeEl: HTMLElement | null = null;
-  // Loop view: per-line node dot elements, for the playing-node highlight.
-  private nodeDotEls: HTMLElement[][] | null = null;
-  // Loop view: the bar grid element (carries the --ph playhead var) and the last
-  // 8-bar window the playhead was in (to follow it across page boundaries).
-  private barGridEl: HTMLElement | null = null;
+  // Loop view: per line, per node, the block elements (one per rendered band — the
+  // zoomed-out view stacks two bands) for the playing-node highlight.
+  private nodeDotEls: HTMLElement[][][] | null = null;
+  // Loop view: the bar-grid band elements (each carries its own --ph playhead var; one
+  // band normally, two when zoomed out) and the last window the playhead was in.
+  private barGridEls: HTMLElement[] = [];
   private phPage = -1;
   // Channel -> flash LED, populated while the Mixer view is shown.
   private mixerLeds: Map<number, HTMLElement> | null = null;
@@ -151,9 +151,9 @@ export class App {
   private handlePlayhead(p: Playhead): void {
     if (!p.lines) {
       this.refreshRings(); // stopped: rings back to the edited nodes
-      if (this.nodeDotEls) this.nodeDotEls.forEach((els) => els.forEach((el) => el.classList.remove("playing")));
+      if (this.nodeDotEls) this.nodeDotEls.forEach((line) => line.forEach((blocks) => blocks.forEach((el) => el.classList.remove("playing"))));
       this.phPage = -1;
-      this.barGridEl?.classList.remove("ph-live"); // hide the bar-grid playhead
+      this.barGridEls.forEach((g) => g.classList.remove("ph-live")); // hide the bar-grid playhead
       return;
     }
     // Rings show ONLY what's audibly playing: a line's live node while its pattern
@@ -171,9 +171,9 @@ export class App {
     // Loop view: highlight each line's playing node, sweep the bar-grid playhead, and
     // follow the playing 8-bar window.
     if (this.nodeDotEls) {
-      this.nodeDotEls.forEach((els, li) => {
+      this.nodeDotEls.forEach((line, li) => {
         const st = p.lines![li];
-        els.forEach((el, k) => el.classList.toggle("playing", !!st && st.node === k));
+        line.forEach((blocks, k) => blocks.forEach((el) => el.classList.toggle("playing", !!st && st.node === k)));
       });
     }
     if (this.view === "loop") this.updateLoopPlayhead(p.pos);
@@ -214,15 +214,21 @@ export class App {
         || !!document.querySelector(".numpad-overlay, .tr-overlay");
       if (!busy && page !== this.loopPage) {
         this.loopPage = page;
-        this.render(); // rebuilds the grid (barGridEl) on the new page
+        this.render(); // rebuilds the grid bands on the new page
       }
     }
-    const grid = this.barGridEl;
-    if (!grid) return;
-    const rel = bar / bpp - this.loopPage; // 0..1 across the visible window
-    const visible = rel >= 0 && rel < 1;
-    grid.classList.toggle("ph-live", visible);
-    if (visible) grid.style.setProperty("--ph", `${(rel * 100).toFixed(3)}%`);
+    // Light the band the playhead is in and hide the line on the other: one band spans
+    // the whole window normally; zoomed out, two stacked bands split the loop in half.
+    const bands = this.barGridEls;
+    if (bands.length === 0) return;
+    const bandBars = this.loopZoomOut ? bpp / 2 : bpp;
+    const base = this.loopZoomOut ? 0 : this.loopPage * bpp;
+    bands.forEach((g, b) => {
+      const rel = (bar - (base + b * bandBars)) / bandBars; // 0..1 across this band
+      const visible = rel >= 0 && rel < 1;
+      g.classList.toggle("ph-live", visible);
+      if (visible) g.style.setProperty("--ph", `${(rel * 100).toFixed(3)}%`);
+    });
   }
 
   /** Point the rings at each line's EDITED node (the stopped/editing display). */
@@ -449,7 +455,7 @@ export class App {
     this.root.innerHTML = "";
     this.loopTimeEl = null;
     this.nodeDotEls = null;
-    this.barGridEl = null;
+    this.barGridEls = [];
     this.mixerLeds = null;
     this.voiceBtns = null;
 
@@ -1661,16 +1667,8 @@ export class App {
   // gets a page-edge grip to drag it into the viewed bars.
   private renderLoop(): void {
     const v = this.viewRoot;
-    this.nodeDotEls = [];
-
-    // The rings visualizer, compact, sits ON TOP as a live view of the voices (while
-    // playing each ring dances with its line's current node; stopped, it shows the
-    // edited nodes).
-    const rings = document.createElement("div");
-    rings.className = "loop-rings";
-    // Mixer opener at the visualiser's top-right corner (over empty ring space).
-    rings.append(this.euclidView.canvas, this.mixerOpenBtn("loop"));
-    v.append(rings);
+    // Per line, per node: an array of block elements (one per rendered band) for the glow.
+    this.nodeDotEls = this.arr.lines.map((ln) => ln.nodes.map(() => [] as HTMLElement[]));
 
     // The visible window. Normally 8 bars, paged — pages cover the content plus one
     // empty page past the end so there's always room to arrange further out. Zoomed
@@ -1685,8 +1683,33 @@ export class App {
     const winStart = page * BARS_PER_PAGE; // window's first bar (0-indexed)
     const winEnd = winStart + BARS_PER_PAGE;
 
-    // Compact pager: step the visible window 8 bars at a time (small ‹ / › buttons),
-    // plus the zoom toggle (whole loop ↔ 8-bar pages) on the right.
+    // Zoom toggle (whole loop ↔ 8-bar pages). Zoomed in it tucks into the TOP-LEFT of the
+    // rings visualiser (mirroring the mixer opener); zoomed out — the rings are gone — it
+    // rides in the pager instead so you can always get back.
+    const zoom = document.createElement("button");
+    zoom.className = "bar-pager-btn bar-zoom-btn";
+    zoom.textContent = this.loopZoomOut ? "⊕" : "⊖";
+    zoom.title = this.loopZoomOut ? "Zoom in — 8 bars per page" : "Zoom out — see the whole loop";
+    zoom.setAttribute("aria-label", "Zoom");
+    zoom.onclick = () => {
+      this.loopZoomOut = !this.loopZoomOut;
+      if (!this.loopZoomOut) this.loopPage = 0;
+      this.render();
+    };
+
+    // The rings visualizer (the Euclidean sequencer animation) sits ON TOP as a live view
+    // of the voices — but only in the 8-bar view. Zoomed out we ditch it so the grid gets
+    // the whole height (two stacked bands below).
+    if (!this.loopZoomOut) {
+      const rings = document.createElement("div");
+      rings.className = "loop-rings";
+      // Zoom at the top-left corner, mixer opener at the top-right (over empty ring space).
+      rings.append(this.euclidView.canvas, zoom, this.mixerOpenBtn("loop"));
+      v.append(rings);
+    }
+
+    // Compact pager: step the visible window 8 bars at a time (‹ / › buttons). Zoomed out
+    // there's one page, so the arrows give way to the zoom-in + mixer buttons.
     const pager = document.createElement("div");
     pager.className = "bar-pager";
     const prev = document.createElement("button");
@@ -1704,157 +1727,161 @@ export class App {
     next.title = "Next 8 bars";
     next.disabled = page >= maxPage;
     next.onclick = () => { this.loopPage = this.loopPage + 1; this.render(); };
-    if (this.loopZoomOut) { prev.style.display = "none"; next.style.display = "none"; }
-    const zoom = document.createElement("button");
-    zoom.className = "bar-pager-btn bar-zoom-btn";
-    zoom.textContent = this.loopZoomOut ? "⊕" : "⊖";
-    zoom.title = this.loopZoomOut ? "Zoom in — 8 bars per page" : "Zoom out — see the whole loop";
-    zoom.setAttribute("aria-label", "Zoom");
-    zoom.onclick = () => {
-      this.loopZoomOut = !this.loopZoomOut;
-      if (!this.loopZoomOut) this.loopPage = 0;
-      this.render();
-    };
-    pager.append(prev, pLabel, next, zoom);
+    if (this.loopZoomOut) pager.append(zoom, pLabel, this.mixerOpenBtn("loop"));
+    else pager.append(prev, pLabel, next);
     v.append(pager);
 
     // Trim a bars quantity for labels (28 steps = 1.75 bars).
     const fmt = (b: number): string => (Number.isInteger(b) ? String(b) : String(+b.toFixed(2)));
     const barsLabel = (n: VoiceNode): string => fmt(nodeBars(n) - waitLen(n) / STEPS_PER_BAR);
-    const pct = (bars: number): number => (bars / BARS_PER_PAGE) * 100; // bars → % of the window
 
-    const grid = document.createElement("div");
-    grid.className = "bar-grid";
-    grid.style.setProperty("--bars", String(BARS_PER_PAGE)); // bar dividers (see .bar-track)
-    for (let li = 0; li < NUM_LINES; li++) {
-      const nodes = this.arr.lines[li].nodes;
-      const row = document.createElement("div");
-      row.className = "bar-row";
-      row.style.setProperty("--vc", VOICE_COLORS[li]);
+    // Build one band: a 6-row bar grid spanning [bandStart, bandStart + bandBars). One
+    // band covers the whole window normally; zoomed out, two of them stack to split the
+    // loop across two rows (double the bar width). Every node registers its block in
+    // nodeDotEls[li][k] (one per band) for the playing glow.
+    const buildBand = (bandStart: number, bandBars: number): HTMLElement => {
+      const bandEnd = bandStart + bandBars;
+      const pct = (bars: number): number => (bars / bandBars) * 100; // bars → % of the band
+      const grid = document.createElement("div");
+      grid.className = "bar-grid";
+      grid.style.setProperty("--bars", String(bandBars)); // bar dividers (see .bar-track)
+      for (let li = 0; li < NUM_LINES; li++) {
+        const nodes = this.arr.lines[li].nodes;
+        const row = document.createElement("div");
+        row.className = "bar-row";
+        row.style.setProperty("--vc", VOICE_COLORS[li]);
 
-      const track = document.createElement("div");
-      track.className = "bar-track";
-      const contentEnd = this.arr.lineSteps(li) / STEPS_PER_BAR; // this line's end, in bars
+        const track = document.createElement("div");
+        track.className = "bar-track";
+        const contentEnd = this.arr.lineSteps(li) / STEPS_PER_BAR; // this line's end, in bars
 
-      // Empty-space affordance over [loBar, hiBar): press-drag sketches a new sound's
-      // span, a tap drops the 4-bar default, a press-and-hold pastes a copied voice or
-      // adds a sound. One covers the tail past the line's content; one covers every lead-in
-      // gap (a node's Wait — silent bars are just empty track now).
-      const addZone = (loBar: number, hiBar: number) => {
-        const l = Math.max(loBar, winStart), r = Math.min(hiBar, winEnd);
-        if (r - l < 0.05) return;
-        const zone = document.createElement("button");
-        zone.className = "bar-add";
-        zone.style.left = `${pct(l - winStart)}%`;
-        zone.style.width = `${pct(r - l)}%`;
-        zone.title = "Tap for a 4-bar sound · press and drag to size it · hold to paste / add";
-        if (r - l > 0.6) {
-          const plus = document.createElement("span");
-          plus.className = "bar-add-plus";
-          plus.textContent = "＋";
-          zone.append(plus);
+        // Empty-space affordance over [loBar, hiBar): press-drag sketches a new sound's
+        // span, a tap drops the 4-bar default, a press-and-hold pastes a copied voice or
+        // adds a sound. One covers the tail past the line's content; one covers every lead-in
+        // gap (a node's Wait — silent bars are just empty track now).
+        const addZone = (loBar: number, hiBar: number) => {
+          const l = Math.max(loBar, bandStart), r = Math.min(hiBar, bandEnd);
+          if (r - l < 0.05) return;
+          const zone = document.createElement("button");
+          zone.className = "bar-add";
+          zone.style.left = `${pct(l - bandStart)}%`;
+          zone.style.width = `${pct(r - l)}%`;
+          zone.title = "Tap for a 4-bar sound · press and drag to size it · hold to paste / add";
+          if (r - l > 0.6) {
+            const plus = document.createElement("span");
+            plus.className = "bar-add-plus";
+            plus.textContent = "＋";
+            zone.append(plus);
+          }
+          this.wireAddZone(zone, track, li, loBar, hiBar, bandStart, bandBars);
+          track.append(zone);
+        };
+        addZone(contentEnd, bandEnd);
+
+        // Node blocks, positioned by cumulative bars — each starts where its SOUND does
+        // (after any lead-in Wait) and ends with its window. Blocks outside the band
+        // are clipped by the track's overflow; every node still pushes a block so
+        // nodeDotEls indices stay aligned for the playing glow.
+        const dots: HTMLElement[] = [];
+        let startBar = 0;
+        nodes.forEach((n, k) => {
+          const len = nodeBars(n);
+          const s = startBar;
+          startBar += len;
+          const wb = waitLen(n) / STEPS_PER_BAR; // lead-in bars: empty track + an add zone
+          if (wb >= 1) addZone(s, s + wb);
+
+          const isSound = n.soundId >= 0 && !n.transition;
+          const block = document.createElement("button");
+          block.className = "bar-node"
+            + (n.transition ? " transition" : isSound ? " has-sound" : " rest")
+            + (k === this.editNode[li] ? " editing" : "");
+          block.style.left = `${pct(s + wb - bandStart)}%`;
+          block.style.width = `${pct(len - wb)}%`;
+
+          // Label: the sound's generated name (its identity, matching the mixer/sequencer);
+          // a rest shows its length, a transition its direction. The name ellipsis-truncates
+          // on narrow blocks — the full name + bars live in the tooltip.
+          const label = document.createElement("span");
+          label.className = "bar-node-label";
+          if (n.transition) {
+            const kind = transitionKind(n.transition);
+            const fromC = kind === "in" ? "transparent" : nodes[k - 1]?.color ?? n.color;
+            const toC = kind === "out" ? "transparent" : nodes[k + 1]?.color ?? n.color;
+            block.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
+            label.textContent = kind === "in" ? "↗" : kind === "out" ? "↘" : "→";
+            const what = kind === "in" ? "fade in" : kind === "out" ? "fade out" : "transition";
+            block.title = `${what} · ${barsLabel(n)} bars`;
+          } else if (isSound) {
+            label.textContent = n.name || barsLabel(n);
+            block.title = `${n.name || "node"} · ${barsLabel(n)} bars · tap to edit, hold to copy`;
+          } else {
+            label.textContent = barsLabel(n);
+            block.title = `rest — tap to add a sound · ${barsLabel(n)} bars`;
+          }
+          block.append(label);
+
+          if (isSound) {
+            // A sounding block: press-drag it left/right to move it in time (a plain tap
+            // opens its editing sheet). Its slot bounds keep it from overlapping neighbours.
+            this.attachMove(block, track, li, k, s + wb, bandStart, bandBars);
+          } else {
+            block.onclick = () => {
+              if (n.transition) this.openVoiceSheet(li, k); // a transition's sheet floats above
+              else this.giveNodeSound(li, k);               // a rest → sound in place
+            };
+          }
+          // Right-edge grip: press-drag the node's end to resize it (reps in its own unit).
+          const grip = document.createElement("span");
+          grip.className = "bar-node-grip";
+          this.attachResize(grip, block, track, n, s + wb, bandStart, bandBars);
+          block.append(grip);
+          dots.push(block);
+          this.nodeDotEls![li][k].push(block);
+          track.append(block);
+        });
+
+        // A voice that ends before this band: a grab-tab at the band's left edge press-drags
+        // its last node's end rightward, extending it from the edge into the viewed bars.
+        if (contentEnd > 0 && contentEnd <= bandStart + 0.001) {
+          const lastK = nodes.length - 1;
+          const lastN = nodes[lastK];
+          if (lastN.soundId >= 0 || lastN.transition) {
+            const tab = document.createElement("button");
+            tab.className = "bar-edge-grip";
+            tab.textContent = "›";
+            tab.title = "This voice ends on an earlier page — drag to extend it into these bars";
+            const bodyStart = contentEnd - nodeBars(lastN) + waitLen(lastN) / STEPS_PER_BAR;
+            this.attachResize(tab, dots[lastK], track, lastN, bodyStart, bandStart, bandBars);
+            track.append(tab);
+          }
         }
-        this.wireAddZone(zone, track, li, loBar, hiBar, winStart, BARS_PER_PAGE);
-        track.append(zone);
-      };
-      addZone(contentEnd, winEnd);
 
-      // Node blocks, positioned by cumulative bars — each starts where its SOUND does
-      // (after any lead-in Wait) and ends with its window. Blocks outside the window
-      // are clipped by the track's overflow; every node still pushes a block so
-      // nodeDotEls indices stay aligned for the playing glow.
-      const dots: HTMLElement[] = [];
-      let startBar = 0;
-      nodes.forEach((n, k) => {
-        const len = nodeBars(n);
-        const s = startBar;
-        startBar += len;
-        const wb = waitLen(n) / STEPS_PER_BAR; // lead-in bars: empty track + an add zone
-        if (wb >= 1) addZone(s, s + wb);
-
-        const isSound = n.soundId >= 0 && !n.transition;
-        const block = document.createElement("button");
-        block.className = "bar-node"
-          + (n.transition ? " transition" : isSound ? " has-sound" : " rest")
-          + (k === this.editNode[li] ? " editing" : "");
-        block.style.left = `${pct(s + wb - winStart)}%`;
-        block.style.width = `${pct(len - wb)}%`;
-
-        // Label: the sound's generated name (its identity, matching the mixer/sequencer);
-        // a rest shows its length, a transition its direction. The name ellipsis-truncates
-        // on narrow blocks — the full name + bars live in the tooltip.
-        const label = document.createElement("span");
-        label.className = "bar-node-label";
-        if (n.transition) {
-          const kind = transitionKind(n.transition);
-          const fromC = kind === "in" ? "transparent" : nodes[k - 1]?.color ?? n.color;
-          const toC = kind === "out" ? "transparent" : nodes[k + 1]?.color ?? n.color;
-          block.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
-          label.textContent = kind === "in" ? "↗" : kind === "out" ? "↘" : "→";
-          const what = kind === "in" ? "fade in" : kind === "out" ? "fade out" : "transition";
-          block.title = `${what} · ${barsLabel(n)} bars`;
-        } else if (isSound) {
-          label.textContent = n.name || barsLabel(n);
-          block.title = `${n.name || "node"} · ${barsLabel(n)} bars · tap to edit, hold to copy`;
-        } else {
-          label.textContent = barsLabel(n);
-          block.title = `rest — tap to add a sound · ${barsLabel(n)} bars`;
-        }
-        block.append(label);
-
-        if (isSound) {
-          // A sounding block: press-drag it left/right to move it in time (a plain tap
-          // opens its editing sheet). Its slot bounds keep it from overlapping neighbours.
-          this.attachMove(block, track, li, k, s + wb, winStart, BARS_PER_PAGE);
-        } else {
-          block.onclick = () => {
-            if (n.transition) this.openVoiceSheet(li, k); // a transition's sheet floats above
-            else this.giveNodeSound(li, k);               // a rest → sound in place
-          };
-        }
-        // Right-edge grip: press-drag the node's end to resize it (reps in its own unit).
-        const grip = document.createElement("span");
-        grip.className = "bar-node-grip";
-        this.attachResize(grip, block, track, n, s + wb, winStart, BARS_PER_PAGE);
-        block.append(grip);
-        dots.push(block);
-        track.append(block);
-      });
-      this.nodeDotEls.push(dots);
-
-      // A voice that ends on an earlier page: a grab-tab at the page edge press-drags
-      // its last node's end rightward, extending it from the edge into the viewed bars.
-      if (contentEnd > 0 && contentEnd <= winStart + 0.001) {
-        const lastK = nodes.length - 1;
-        const lastN = nodes[lastK];
-        if (lastN.soundId >= 0 || lastN.transition) {
-          const tab = document.createElement("button");
-          tab.className = "bar-edge-grip";
-          tab.textContent = "›";
-          tab.title = "This voice ends on an earlier page — drag to extend it into these bars";
-          const bodyStart = contentEnd - nodeBars(lastN) + waitLen(lastN) / STEPS_PER_BAR;
-          this.attachResize(tab, dots[lastK], track, lastN, bodyStart, winStart, BARS_PER_PAGE);
-          track.append(tab);
-        }
+        row.append(track);
+        grid.append(row);
       }
+      return grid;
+    };
 
-      row.append(track);
-      grid.append(row);
+    // One band across the page normally; zoomed out, two stacked bands split the loop in
+    // half (top = first half of the bars, bottom = second) so each bar is twice as wide.
+    if (this.loopZoomOut) {
+      const half = BARS_PER_PAGE / 2;
+      this.barGridEls = [buildBand(0, half), buildBand(half, half)];
+    } else {
+      this.barGridEls = [buildBand(winStart, BARS_PER_PAGE)];
     }
-    v.append(grid);
-    this.barGridEl = grid; // the playhead line sweeps this via the --ph var
+    this.barGridEls.forEach((g) => v.append(g)); // the playhead sweeps each via its --ph var
 
-    // Horizontal swipe across the rings or the grid pages the visible 8-bar window
-    // (left = next bars, right = previous), so the pager buttons aren't the only way.
-    this.attachPageSwipe(rings);
-    this.attachPageSwipe(grid);
     this.updateLoopTime(); // loop length now lives on the top-left button
 
     if (!this.playing) this.refreshRings();
-    // Size the rings synchronously (viewRoot is in the DOM), and again next frame for
-    // first paint.
-    this.euclidView.layout();
-    requestAnimationFrame(() => this.euclidView.layout());
+    // Size the rings only when shown (zoomed out drops them); sync now (viewRoot is in the
+    // DOM) and again next frame for first paint.
+    if (!this.loopZoomOut) {
+      this.euclidView.layout();
+      requestAnimationFrame(() => this.euclidView.layout());
+    }
   }
 
   /** Place a new EMPTY node on line `li` so its sound will START at (whole) bar `bar`.
@@ -2016,7 +2043,6 @@ export class App {
     zone.addEventListener("pointermove", (e) => {
       if (!dragging) return;
       if (Math.abs(e.clientX - startX) >= 7 || Math.abs(e.clientY - startY) >= 7) clearHold(); // any drag cancels the hold
-      if (this.gridSwipeLock) { clearHold(); ghost?.remove(); ghost = null; return; } // a page-swipe took over
       if (!ghost && Math.abs(e.clientX - startX) < 7) return; // not a drag yet
       e.preventDefault();
       if (!ghost) {
@@ -2039,7 +2065,6 @@ export class App {
       this.gridDragBusy = false;
       clearHold();
       try { zone.releasePointerCapture(e.pointerId); } catch { /* already released */ }
-      if (this.gridSwipeLock) { ghost?.remove(); ghost = null; return; } // a page-swipe won
       if (ghost) {
         const [a, b] = ghostSpan;
         ghost.remove();
@@ -2278,66 +2303,6 @@ export class App {
     };
     block.addEventListener("pointerup", end);
     block.addEventListener("pointercancel", end);
-  }
-
-  /** Wire an element so a horizontal FLICK across it pages the loop-view window (left =
-      next 8 bars, right = previous). Ignores presses that begin on a node block (those
-      move/resize/edit it) and does nothing zoomed out (a single page). A committed swipe
-      raises gridSwipeLock so any add-zone sketch that shared the same press bails out.
-
-      Paging only commits on a quick flick — the horizontal motion must clear a short
-      distance AND be moving fast (a smoothed velocity over the cutoff). A slow, deliberate
-      drag (how you move / resize / place a voice) never reaches that speed, so it no longer
-      pages the window by accident. */
-  private attachPageSwipe(el: HTMLElement): void {
-    const MIN_DX = 44;  // px of horizontal travel before a flick can commit
-    const MIN_VX = 0.6; // px/ms flick speed a slow drag never reaches
-    let tracking = false, locked = false, x0 = 0, y0 = 0;
-    let lastX = 0, lastT = 0, vx = 0; // for the smoothed horizontal velocity
-    el.addEventListener("pointerdown", (e) => {
-      if (this.loopZoomOut) return; // one page — nothing to swipe to
-      const t = e.target as HTMLElement;
-      // A node owns its gesture (move/resize/edit); the mixer button owns its tap.
-      if (t.closest(".bar-node") || t.closest(".mixer-open-btn")) return;
-      tracking = true; locked = false; x0 = e.clientX; y0 = e.clientY;
-      lastX = e.clientX; lastT = e.timeStamp; vx = 0;
-      this.gridSwipeLock = false;
-      // Capture for a reliable swipe UNLESS an add-zone already owns this pointer (it
-      // captured on its own pointerdown; we still see its events bubble up here).
-      if (!t.closest(".bar-add")) { try { el.setPointerCapture(e.pointerId); } catch { /* gone */ } }
-    });
-    el.addEventListener("pointermove", (e) => {
-      if (!tracking || locked) return;
-      const dx = e.clientX - x0, dy = e.clientY - y0;
-      const dt = e.timeStamp - lastT;
-      if (dt > 0) vx = 0.7 * vx + 0.3 * ((e.clientX - lastX) / dt); // smoothed px/ms
-      lastX = e.clientX; lastT = e.timeStamp;
-      if (Math.abs(dx) > MIN_DX && Math.abs(dx) > Math.abs(dy) * 1.3 && Math.abs(vx) > MIN_VX) {
-        locked = true;
-        this.gridSwipeLock = true; // an add-zone that saw this press must abort its sketch
-        document.querySelector(".bar-drag-ghost")?.remove();
-      }
-    });
-    const end = (e: PointerEvent) => {
-      if (!tracking) return;
-      tracking = false;
-      try { el.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
-      if (locked) this.pageBy(e.clientX - x0 < 0 ? 1 : -1);
-      // Clear on the next tick so a bubbling add-zone pointerup still sees the lock.
-      setTimeout(() => { this.gridSwipeLock = false; }, 0);
-    };
-    el.addEventListener("pointerup", end);
-    el.addEventListener("pointercancel", end);
-  }
-
-  /** Step the loop-view window by whole pages, clamped to the arranged range (mirrors
-      the ‹ / › pager buttons' bounds). */
-  private pageBy(dir: number): void {
-    const bpp = this.pageBars();
-    const loopBars = this.arr.loopSteps() / STEPS_PER_BAR;
-    const maxPage = Math.max(0, Math.ceil(Math.max(loopBars, 0.001) / bpp) - 1) + 1;
-    const next = Math.max(0, Math.min(maxPage, this.loopPage + dir));
-    if (next !== this.loopPage) { this.loopPage = next; this.render(); }
   }
 
   /** Turn an existing rest node into a sounding one in place (keeping its position and
