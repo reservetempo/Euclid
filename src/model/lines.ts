@@ -149,12 +149,13 @@ export function clampEnvelopes(n: VoiceNode, keep: "intro" | "outro" = "outro"):
   }
 }
 
-// One voice line: its node chain plus line-level mix state (mute/solo silence the
-// whole chain — the mixer works per line, not per node).
+// One engine LANE: a node chain plus the colour it belongs to. Placement is now
+// procedural (see track.ts): a colour may compile to several lanes (overlapping loops)
+// or one (priority-resolved solo loops). Mute/solo live per COLOUR on the track, not
+// here — many lanes can share a colour.
 export interface VoiceLine {
   nodes: VoiceNode[]; // always at least one
-  mute?: boolean;
-  solo?: boolean;
+  color?: number;     // which colour (0..NUM_LINES-1) this lane belongs to
 }
 
 // Engine-shaped line: per node the sound id, its own step count, its length in
@@ -174,36 +175,45 @@ export interface LineMessage {
 }
 
 export class LineArrangement {
-  readonly lines: VoiceLine[] = Array.from({ length: NUM_LINES }, () => ({ nodes: [emptyNode()] }));
-  // Key context for the shuffle's pitch snap (Key mode) — global, not per grid.
+  // The COMPILED lanes (see track.ts compile()) — variable length; empty until a track
+  // is compiled in. Each lane carries its colour; every lane is padded to barLimit.
+  lines: VoiceLine[] = [];
+  // The whole-track bar limit the lanes were padded to (loop length in bars).
+  barLimit = 0;
+  // Key context for the shuffle's pitch snap (Key mode) — global, kept in sync with the
+  // track (see track.ts) so the shuffle menu still reads it here.
   root = 0;  // 0 = C
   scale = 0; // 0 = Major
 
-  /** Length of one pass of a line, in 16th steps (sum of its node windows). */
+  /** Replace the lanes with a freshly compiled set. `lanes` come straight from
+      compile(); each is padded to `barLimit` bars. */
+  setLanes(lanes: { color: number; nodes: VoiceNode[] }[], barLimit: number): void {
+    this.lines = lanes.map((l) => ({ nodes: l.nodes.length ? l.nodes : [emptyNode()], color: l.color }));
+    this.barLimit = Math.max(0, Math.round(barLimit));
+  }
+
+  /** Length of one pass of a lane, in 16th steps (sum of its node windows). */
   lineSteps(li: number): number {
     let s = 0;
     for (const n of this.lines[li].nodes) s += nodeLen(n);
     return s;
   }
 
-  /** True when the line has at least one node that makes sound. */
+  /** True when the lane has at least one node that makes sound. */
   lineActive(li: number): boolean {
     return this.lines[li].nodes.some((n) => n.soundId !== EMPTY);
   }
 
-  /** The loop length in steps: the LONGEST line's chain. Every line plays its chain
-      once per loop and then rests until it restarts, so all lines realign at the top
-      — this IS the scheduling boundary (mirrored in engine.js fireStep). Returns 0
-      when no line makes sound (nothing to play or export). */
+  /** The loop length in steps: the whole-track bar limit (every lane is padded to it).
+      Returns 0 when no lane makes sound (nothing to play or export). */
   loopSteps(): number {
-    let active = false;
-    let l = 0;
-    for (let i = 0; i < NUM_LINES; i++) {
-      if (this.lineActive(i)) active = true;
-      const s = this.lineSteps(i);
-      if (s > l) l = s;
-    }
-    return active ? l : 0;
+    const active = this.lines.some((_, i) => this.lineActive(i));
+    if (!active) return 0;
+    // Lanes are padded to barLimit; fall back to the longest lane if a bar limit
+    // hasn't been set yet (e.g. a bare load before the first compile).
+    let longest = 0;
+    for (let i = 0; i < this.lines.length; i++) longest = Math.max(longest, this.lineSteps(i));
+    return this.barLimit > 0 ? this.barLimit * STEPS_PER_BAR : longest;
   }
 
   /** Lines serialised for the worklet scheduler (patterns precomputed here so the

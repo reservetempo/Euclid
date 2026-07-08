@@ -960,3 +960,107 @@ button:active { transform: scale(0.94); }
   }
 }
 @media (prefers-reduced-motion: reduce) { .confetti { display: none; } }
+
+/* ============================================================================
+   Procedural placement panels (track → colour → placement popup). See app.ts.
+   ========================================================================== */
+
+/* Track view: whole-track bar limit + the six colour rows. */
+.track-barlimit {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; margin-top: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  font-size: 14px; font-weight: 600;
+}
+.track-barlimit input {
+  width: 82px; text-align: center; padding: 8px 6px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--text); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: ns-resize; touch-action: none;
+}
+.track-colors { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.track-color-row {
+  --vc: var(--accent);
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 14px 14px; text-align: left;
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--vc);
+  border-radius: 12px; color: var(--text);
+}
+.track-color-row:active { background: var(--panel2); }
+.track-color-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--vc); flex: none; box-shadow: 0 0 8px var(--vc); }
+.track-color-name { font-size: 15px; font-weight: 600; flex: 1; }
+.track-color-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Colour view: the loop list. */
+.loop-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.loop-row {
+  --vc: var(--accent);
+  display: flex; align-items: stretch; gap: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--vc);
+  border-radius: 12px; overflow: hidden;
+}
+.loop-order { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding-left: 6px; }
+.loop-move {
+  width: 26px; height: 20px; padding: 0; line-height: 1;
+  background: transparent; border: none; color: var(--muted); font-size: 10px;
+}
+.loop-move:disabled { opacity: 0.25; }
+.loop-move:active:not(:disabled) { color: var(--text); }
+.loop-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 12px 8px; text-align: left; background: transparent; color: var(--text); }
+.loop-name { font-size: 14px; font-weight: 600; color: var(--vc); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.loop-summary { font-size: 12px; color: var(--muted); }
+.loop-remove { width: 40px; flex: none; background: transparent; border: none; border-left: 1px solid var(--line); color: var(--muted); font-size: 20px; }
+.loop-remove:active { color: #ff453a; background: var(--panel2); }
+.loop-body.hit-flash { animation: mix-flash 0.4s ease-out; }
+.loop-add {
+  width: 100%; margin-top: 12px; padding: 13px;
+  background: var(--panel); border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 12px; color: var(--accent); font-size: 14px; font-weight: 600;
+}
+.loop-add:active { background: var(--panel2); }
+
+/* Placement popup: the rule editor block. */
+.placement-sheet { --vc: var(--accent); }
+.placement-controls { display: flex; flex-direction: column; gap: 10px; }
+.placement-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.placement-lbl { font-size: 13px; color: var(--muted); flex: none; }
+.placement-row input {
+  width: 74px; text-align: center; padding: 8px 6px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--text); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: ns-resize; touch-action: none;
+}
+.placement-seg { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.seg-btn {
+  padding: 7px 11px; font-size: 12px; font-weight: 600;
+  background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 9px;
+}
+.seg-btn.on { border-color: var(--vc); color: var(--vc); background: var(--panel2); box-shadow: inset 0 0 0 1px var(--vc); }
+.placement-roll { justify-content: flex-end; gap: 8px; }
+.roll-btn {
+  padding: 8px 14px; font-size: 13px; font-weight: 600;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+}
+.roll-btn:disabled { opacity: 0.35; }
+.roll-btn:active:not(:disabled) { background: var(--panel); border-color: var(--vc); color: var(--vc); }
+
+/* Colour panel: read-only compiled-lane timeline. */
+.color-preview { --vc: var(--accent); display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.color-preview-lane { display: flex; gap: 2px; }
+.color-preview-cell { flex: 1; height: 12px; border-radius: 2px; background: var(--panel2); }
+.color-preview-cell.on { background: var(--vc); box-shadow: 0 0 5px var(--vc); }
+
+/* Track view is now a whole-track OVERVIEW: a bar ruler + per-colour lane timelines. */
+.track-overview { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.bar-ruler { display: flex; gap: 2px; padding: 0 14px 0 18px; }
+.bar-ruler-tick { flex: 1; min-width: 0; font-size: 9px; line-height: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
+.track-overview .track-color-row { flex-direction: column; align-items: stretch; gap: 8px; }
+.track-color-head { display: flex; align-items: center; gap: 10px; }
+.track-color-lanes { display: flex; flex-direction: column; gap: 3px; }
+
+/* Manual "At bars" text field in the placement popup. */
+.placement-atbars input {
+  flex: 1; min-width: 0; width: auto; text-align: left; padding: 8px 10px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--text); font-size: 14px; font-variant-numeric: tabular-nums; cursor: text;
+}
