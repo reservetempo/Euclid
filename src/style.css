@@ -1179,27 +1179,25 @@ button:active { transform: scale(0.94); }
 }
 .melody-tree-card {
   --vc: var(--accent);
-  width: 100%; max-width: 340px; max-height: 80vh; overflow-y: auto;
+  width: 100%; max-width: 90vw; max-height: 80vh; overflow: hidden;
   display: flex; flex-direction: column; gap: 10px; padding: 16px;
   background: var(--panel2); border: 1px solid var(--line); border-radius: 16px;
   animation: pop-in 0.16s ease-out;
 }
-.melody-tree-node { display: flex; flex-direction: column; gap: 6px; }
-.melody-tree-node .melody-tree-node {
-  margin-left: 14px; padding-left: 10px; border-left: 2px solid var(--line);
+/* SVG node-graph tree: scrolls in both axes if the diagram is large. */
+.melody-tree-scroll { overflow: auto; overscroll-behavior: contain; max-height: 64vh; }
+.melody-tree-svg { display: block; }
+.melody-tree-link { fill: none; stroke: var(--line); stroke-width: 2; }
+.melody-tree-gnode { cursor: pointer; }
+.melody-tree-gnode rect {
+  fill: var(--panel); stroke: var(--line); stroke-width: 1;
+  transition: stroke 0.1s ease;
 }
-.melody-tree-go {
-  align-self: flex-start; padding: 6px 10px; font-size: 12px; font-weight: 700;
-  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
-}
-.melody-tree-go.here { color: var(--vc); border-color: var(--vc); background: var(--bg); }
-.melody-tree-notes { display: flex; flex-wrap: wrap; gap: 5px; }
-.melody-tree-chip {
-  padding: 3px 7px; font-size: 12px; font-variant-numeric: tabular-nums;
-  color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
-}
-.melody-tree-chip.has-branch { color: var(--vc); border-color: var(--vc); }
-.melody-tree-chip.empty { font-style: italic; opacity: 0.6; }
+.melody-tree-gnode:hover rect { stroke: var(--vc); }
+.melody-tree-gnode.here rect { fill: var(--bg); stroke: var(--vc); stroke-width: 2; }
+.melody-tree-t1 { fill: var(--text); font-size: 12px; font-weight: 700; }
+.melody-tree-gnode.here .melody-tree-t1 { fill: var(--vc); }
+.melody-tree-t2 { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* Loop transitions (fade in / fade out), below the placement rule. */
 .transition-controls { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }

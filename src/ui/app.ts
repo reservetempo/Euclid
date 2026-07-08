@@ -972,8 +972,9 @@ export class App {
     });
   }
 
-  /** Zoomed-out view of the whole melody tree: each context (root + branches) with its
-      notes, nested by branch. Tap a context to jump straight to editing it. */
+  /** Zoomed-out view of the whole melody as an SVG NODE GRAPH: each context (root +
+      branches) is a node box showing its scale + note letters, with connector lines from a
+      parent note down to the branch it spawns. Tap a node to jump straight to editing it. */
   private openMelodyTree(): void {
     document.querySelector(".melody-tree-overlay")?.remove();
     const overlay = document.createElement("div");
@@ -987,35 +988,79 @@ export class App {
     title.textContent = "Melody tree";
     card.append(title);
 
-    const build = (node: MelodyNode, path: MelodyNote[], label: string): HTMLElement => {
-      const block = document.createElement("div");
-      block.className = "melody-tree-node";
-      const go = document.createElement("button");
-      go.className = "melody-tree-go" + (path.length === this.melodyPath.length && path.every((p, k) => p === this.melodyPath[k]) ? " here" : "");
-      go.textContent = `${label} · ${ALL_SCALES[node.scale]} ${ALL_ROOTS[node.root]}`;
-      go.onclick = () => { this.melodyPath = path; overlay.remove(); this.view = "melody"; this.render(); };
-      block.append(go);
-      const notesLine = document.createElement("div");
-      notesLine.className = "melody-tree-notes";
-      if (node.notes.length === 0) {
-        const em = document.createElement("span");
-        em.className = "melody-tree-chip empty";
-        em.textContent = "no notes";
-        notesLine.append(em);
+    // Tidy-tree layout: leaves get sequential x slots; a parent centres over its children;
+    // y = depth. Positions are in leaf/row units, scaled to pixels below.
+    interface TNode { node: MelodyNode; path: MelodyNote[]; label: string; depth: number; x: number; kids: TNode[]; }
+    let leaf = 0, maxDepth = 0;
+    const layout = (node: MelodyNode, path: MelodyNote[], depth: number, label: string): TNode => {
+      maxDepth = Math.max(maxDepth, depth);
+      const kids: TNode[] = [];
+      for (const note of node.notes) {
+        if (note.branch) kids.push(layout(note.branch, [...path, note], depth + 1, this.noteLabelFor(node, note)));
       }
-      node.notes.forEach((note) => {
-        const chip = document.createElement("span");
-        chip.className = "melody-tree-chip" + (note.branch ? " has-branch" : "");
-        chip.textContent = this.noteLabelFor(node, note) + (note.branch ? " ›" : "");
-        notesLine.append(chip);
-      });
-      block.append(notesLine);
-      node.notes.forEach((note) => {
-        if (note.branch) block.append(build(note.branch, [...path, note], `⌐ ${this.noteLabelFor(node, note)}`));
-      });
-      return block;
+      const x = kids.length ? kids.reduce((s, k) => s + k.x, 0) / kids.length : leaf++;
+      return { node, path, label, depth, x, kids };
     };
-    card.append(build(this.track.melody, [], "Melody"));
+    const rootT = layout(this.track.melody, [], 0, "Melody");
+
+    const NS = "http://www.w3.org/2000/svg";
+    const NW = 128, NH = 50, GX = 16, GY = 46;
+    const cx = (t: TNode) => t.x * (NW + GX) + NW / 2;
+    const cy = (t: TNode) => t.depth * (NH + GY);
+    const width = Math.max(1, leaf) * (NW + GX);
+    const height = maxDepth * (NH + GY) + NH;
+    const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+    const here = (t: TNode) => t.path.length === this.melodyPath.length && t.path.every((p, k) => p === this.melodyPath[k]);
+
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "melody-tree-svg");
+    svg.setAttribute("viewBox", `-8 -6 ${width + 16} ${height + 12}`);
+    svg.setAttribute("width", String(width));
+    svg.setAttribute("height", String(height));
+
+    // Connectors first (drawn under the nodes): a vertical S-curve parent → child.
+    const link = (t: TNode) => {
+      for (const k of t.kids) {
+        const x1 = cx(t), y1 = cy(t) + NH, x2 = cx(k), y2 = cy(k), my = (y1 + y2) / 2;
+        const p = document.createElementNS(NS, "path");
+        p.setAttribute("d", `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`);
+        p.setAttribute("class", "melody-tree-link");
+        svg.append(p);
+        link(k);
+      }
+    };
+    link(rootT);
+
+    // Node boxes.
+    const draw = (t: TNode) => {
+      const x = cx(t) - NW / 2, y = cy(t);
+      const g = document.createElementNS(NS, "g");
+      g.setAttribute("class", "melody-tree-gnode" + (here(t) ? " here" : ""));
+      g.onclick = () => { this.melodyPath = t.path; overlay.remove(); this.view = "melody"; this.render(); };
+      const rect = document.createElementNS(NS, "rect");
+      rect.setAttribute("x", String(x)); rect.setAttribute("y", String(y));
+      rect.setAttribute("width", String(NW)); rect.setAttribute("height", String(NH));
+      rect.setAttribute("rx", "11");
+      g.append(rect);
+      const t1 = document.createElementNS(NS, "text");
+      t1.setAttribute("x", String(x + 11)); t1.setAttribute("y", String(y + 20));
+      t1.setAttribute("class", "melody-tree-t1");
+      t1.textContent = trunc(`${t.label} · ${ALL_SCALES[t.node.scale]} ${ALL_ROOTS[t.node.root]}`, 17);
+      g.append(t1);
+      const t2 = document.createElementNS(NS, "text");
+      t2.setAttribute("x", String(x + 11)); t2.setAttribute("y", String(y + 38));
+      t2.setAttribute("class", "melody-tree-t2");
+      t2.textContent = trunc(t.node.notes.length ? t.node.notes.map((n) => this.noteLabelFor(t.node, n)).join(" ") : "no notes", 18);
+      g.append(t2);
+      svg.append(g);
+      t.kids.forEach(draw);
+    };
+    draw(rootT);
+
+    const scroll = document.createElement("div");
+    scroll.className = "melody-tree-scroll";
+    scroll.append(svg);
+    card.append(scroll);
 
     const close = document.createElement("button");
     close.className = "tr-cancel";
