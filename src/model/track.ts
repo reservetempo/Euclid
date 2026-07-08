@@ -22,7 +22,7 @@ import {
   VoiceNode, IntroEnv, OutroEnv, emptyNode, clampEnvelopes,
   STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
-import { MelodyNode, emptyMelody } from "./melody";
+import { MelodyNode, emptyMelody, melodyLaneNodes, MELODY_COLOR_INDEX } from "./melody";
 
 /** How a loop repeats across the track. */
 export type EveryRule =
@@ -83,11 +83,16 @@ export class Track {
   barLimit = DEFAULT_BAR_LIMIT;
   root = 0;  // 0 = C
   scale = 0; // 0 = Major
-  melody: MelodyNode = emptyMelody(); // the last coloured row's melody (see melody.ts)
+  melody: MelodyNode = emptyMelody();        // the last coloured row's melody (see melody.ts)
+  melodyInstrument: Loop = emptyLoop(MELODY_COLOR_INDEX, -1); // its one re-pitched sound
 
-  /** Compile to engine lanes (see compile()). */
+  /** Compile to engine lanes (see compile()). The melody adds one lane on the last
+      colour: a chain of single-note nodes tuned to its generated pitches. */
   toLanes(): Lane[] {
-    return compile(this.colors, this.barLimit);
+    const lanes = compile(this.colors, this.barLimit);
+    const mel = melodyLaneNodes(this.melody, this.melodyInstrument, this.barLimit);
+    if (mel) lanes.push({ color: MELODY_COLOR_INDEX, nodes: mel });
+    return lanes;
   }
 }
 
@@ -296,6 +301,7 @@ export function compile(colors: ColorTrack[], barLimit: number): Lane[] {
   const limit = Math.max(1, Math.round(barLimit));
   const lanes: Lane[] = [];
   for (let c = 0; c < colors.length; c++) {
+    if (c === MELODY_COLOR_INDEX) continue; // the last colour is the melody (see toLanes)
     const loops = colors[c]?.loops ?? [];
     if (loops.length === 0) continue;
     // Dice loops form a shared pool regardless of their solo/overlap mode.

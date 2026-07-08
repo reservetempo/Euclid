@@ -1107,6 +1107,14 @@ class EngineProcessor extends AudioWorkletProcessor {
     voiceSnap[P.FilterCutoff] *= 1 + (Math.random() * 2 - 1) * HUMANIZE_CUTOFF * human;
   }
 
+  // A copy of a snapshot tuned to an absolute pitch in Hz (for melody notes — one
+  // instrument re-pitched per scale degree). The rest of the sound is unchanged.
+  pitchedSnap(snap, hz) {
+    const v = snap.slice();
+    v[P.Pitch] = hz;
+    return v;
+  }
+
   // The "silence end" of a fade transition: a copy of a sound's snapshot pushed to
   // inaudibility the way the chosen style wants — pure level ("fade"), a shut filter
   // ("filter"; up for HP so every type sweeps from its quiet end), drowned far away
@@ -1320,12 +1328,15 @@ class EngineProcessor extends AudioWorkletProcessor {
         // Destination sound gone — play plainly.
       }
 
-      // Steady middle: the node's own sound.
-      const hit = this.perHit(snd.snap, isAccent);
+      // Steady middle: the node's own sound. A melody note carries its own pitch
+      // (`pitchHz`) — the one re-pitched instrument playing a scale degree — so it plays
+      // from a copy of the snapshot with P.Pitch swapped to that note.
+      const baseSnap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+      const hit = this.perHit(baseSnap, isAccent);
       if (!hit) continue; // dropped by HitChance
-      const voiceSnap = snd.snap.slice();
+      const voiceSnap = baseSnap.slice();
       this.jitterSnap(voiceSnap, hit.human);
-      this.triggerSound(nd.soundId, snd.snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat);
+      this.triggerSound(nd.soundId, baseSnap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat);
       fired.push(nd.soundId);
     }
     this.reportPlayhead(states, fired, pos);

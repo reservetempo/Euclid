@@ -12,9 +12,9 @@ import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import { IntroEnv, OutroEnv, TransitionMode, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
-  Track, ColorTrack, Loop, PlacementRule, EveryRule, DEFAULT_BAR_LIMIT, randomSeed,
+  Track, ColorTrack, Loop, PlacementRule, EveryRule, DEFAULT_BAR_LIMIT, randomSeed, emptyLoop,
 } from "./track";
-import { MelodyNode, MelodyNote, emptyMelody, melodySeed } from "./melody";
+import { MelodyNode, MelodyNote, emptyMelody, melodySeed, MELODY_COLOR_INDEX } from "./melody";
 
 export interface RuleJSON {
   every: EveryRule;
@@ -60,6 +60,7 @@ export interface ProjectJSON {
   presets?: Record<number, string>;
   soundName?: string;
   melody?: MelodyJSON;
+  melodyInstrument?: LoopJSON; // the melody's one re-pitched sound
 }
 
 // A melody node serialises recursively (a note may carry a branch node).
@@ -125,6 +126,7 @@ export function serialize(
     presets: drumPresets,
     soundName,
     melody: cloneMelody(track.melody),
+    melodyInstrument: cloneLoop(track.melodyInstrument),
   };
 }
 
@@ -230,10 +232,12 @@ export function deserialize(
   track.root = 0;
   track.scale = 0;
   track.melody = emptyMelody();
+  track.melodyInstrument = emptyLoop(MELODY_COLOR_INDEX, -1);
 
   const v = json && json.version;
   if (json && typeof v === "number" && v === 11) {
     track.melody = readMelody(json.melody);
+    if (json.melodyInstrument) track.melodyInstrument = readLoop(json.melodyInstrument, MELODY_COLOR_INDEX);
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
         if (ci >= NUM_LINES || !cj) return;

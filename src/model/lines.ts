@@ -91,6 +91,10 @@ export interface VoiceNode {
   // its sound throughout — the envelopes only shape how its ends blend.
   intro?: IntroEnv;
   outro?: OutroEnv;
+  // A melody note's absolute pitch in Hz (the one re-pitched instrument playing a scale
+  // degree). Set only on generated melody nodes; the engine swaps P.Pitch to it. Unset
+  // on ordinary loop nodes, which keep their sound's own pitch.
+  pitchHz?: number;
   // Inline-shuffle editor state, so a reloaded node keeps shuffling where it left:
   preset?: string;                          // active preset (Reset target + label)
   ranges?: { lo: number[]; hi: number[] };  // live shuffle window per param
@@ -171,6 +175,7 @@ export interface LineMessage {
     // Intro/outro fade spans, in STEPS within the sounding window (after any lead-in).
     intro?: { steps: number; mode: TransitionMode; fromId: number };
     outro?: { steps: number; mode: TransitionMode; toId: number };
+    pitchHz?: number; // melody notes only — absolute pitch the engine tunes to
   }[];
 }
 
@@ -237,6 +242,7 @@ export class LineArrangement {
           outro: n.outro
             ? { steps: Math.min(n.outro.reps, reps) * unit, mode: n.outro.mode, toId: n.outro.toId }
             : undefined,
+          pitchHz: n.pitchHz,
         };
       }),
     }));

@@ -210,6 +210,14 @@ export class App {
         sounds.push({ id: l.soundId, snap, lo: l.pitch[0], hi: l.pitch[1], tail: estimateLength(snap, this.tempo) });
       }
     });
+    // The melody's one re-pitched instrument (its notes override P.Pitch in the engine).
+    const inst = this.track.melodyInstrument;
+    if (inst.soundId >= 0 && inst.snapshot.length && !seen.has(inst.soundId)) {
+      const snap = inst.snapshot.slice();
+      if (!this.colorAudible(MELODY_COLOR_INDEX)) snap[ParamId.Volume] = 0;
+      else if (inst.gain && inst.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * inst.gain;
+      sounds.push({ id: inst.soundId, snap, lo: inst.pitch[0], hi: inst.pitch[1], tail: estimateLength(snap, this.tempo) });
+    }
     return sounds;
   }
 
@@ -647,8 +655,20 @@ export class App {
   }
 
   // --- melody view (the last coloured row) ------------------------------
-  /** The last overview row: a tap-through to the melody editor (no lane preview yet —
-      the generated note stream lands here once generation is wired up). */
+  /** Open the melody editor, minting its instrument sound on first entry. */
+  private openMelody(): void {
+    if (this.track.melodyInstrument.soundId < 0) this.mintLoopSound(this.track.melodyInstrument, MELODY_COLOR_INDEX);
+    this.view = "melody";
+    this.render();
+  }
+
+  /** Re-generate + resend after any melody edit (recompile persists + updates the lane). */
+  private melodyChanged(): void {
+    this.recompile();
+    this.render();
+  }
+
+  /** The last overview row: the melody's generated lane, tapping through to its editor. */
   private melodyOverviewRow(): HTMLElement {
     const m = this.track.melody;
     const c = MELODY_COLOR_INDEX;
@@ -668,7 +688,8 @@ export class App {
     count.textContent = n === 0 ? "no notes" : `${ALL_SCALES[m.scale]} · ${n} note${n === 1 ? "" : "s"}`;
     head.append(dot, name, count);
     row.append(head);
-    row.onclick = () => { this.view = "melody"; this.render(); };
+    if (this.melodyLaneCells().some((x) => x > 0)) row.append(this.melodyStrip(this.segRows));
+    row.onclick = () => this.openMelody();
     return row;
   }
 
@@ -690,7 +711,21 @@ export class App {
     head.append(back, title);
     v.append(head);
 
+    // Generated-lane preview + Generate/Back (the order is a seeded walk over the weights).
+    if (this.melodyLaneCells().some((x) => x > 0)) v.append(this.melodyStrip(null));
+    v.append(this.melodyGenerateRow());
+
     v.append(this.melodyScaleControls());
+
+    // Instrument: the single re-pitched sound the whole melody plays through.
+    const instHd = document.createElement("div");
+    instHd.className = "placement-row melody-notes-head";
+    const iLbl = document.createElement("span");
+    iLbl.className = "placement-lbl transition-head";
+    iLbl.textContent = "Instrument";
+    instHd.append(iLbl);
+    v.append(instHd);
+    v.append(this.melodyInstrumentMenu());
 
     const notesHd = document.createElement("div");
     notesHd.className = "placement-row melody-notes-head";
@@ -716,13 +751,40 @@ export class App {
     const add = document.createElement("button");
     add.className = "loop-add";
     add.textContent = "＋ Add note";
-    add.onclick = () => { m.notes.push(defaultNote()); this.persist(); this.render(); };
+    add.onclick = () => { m.notes.push(defaultNote()); this.melodyChanged(); };
     v.append(add);
+  }
 
-    const soon = document.createElement("p");
-    soon.className = "hint melody-soon";
-    soon.textContent = "Next: branches off a note, and Generate — a seeded walk that orders these to fill the track.";
-    v.append(soon);
+  /** Generate-again / Back for the melody's seeded note order, plus a note-count read-out. */
+  private melodyGenerateRow(): HTMLElement {
+    const m = this.track.melody;
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls melody-generate";
+    wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const row = document.createElement("div");
+    row.className = "placement-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Order";
+    const hint = document.createElement("span");
+    hint.className = "melody-gen-hint";
+    hint.textContent = m.notes.length === 0 ? "add notes to generate" : "seeded — same weights, new order";
+    row.append(lbl, hint);
+    wrap.append(row, this.rollRow(m, () => this.render()));
+    return wrap;
+  }
+
+  /** The melody instrument's shuffle menu (same authoring surface as a loop's sound). */
+  private melodyInstrumentMenu(): HTMLElement {
+    const inst = this.track.melodyInstrument;
+    return buildVoiceShuffleMenu(this.voiceEditorFor(inst), REF_DRUM, {
+      onChange: async () => { await this.writeAndNormalizeLoop(inst); this.render(); },
+      audition: () => this.auditionLoop(inst),
+      onFullParams: () => { this.soundLoop = inst; this.soundReturn = "melody"; this.view = "sound"; this.render(); },
+      context: () => this.shuffleContext(),
+      mates: () => this.breedMatesFor(inst),
+      report: (kind) => this.reportLoopSound(inst, kind),
+    });
   }
 
   /** Scale / root / octave pickers for the melody's root context. */
@@ -731,11 +793,53 @@ export class App {
     const wrap = document.createElement("div");
     wrap.className = "placement-controls melody-scale";
     wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
-    wrap.append(this.selectRow("Scale", ALL_SCALES, m.scale, (i) => { m.scale = i; this.persist(); this.render(); }));
-    wrap.append(this.selectRow("Root", ALL_ROOTS, m.root, (i) => { m.root = i; this.persist(); this.render(); }));
+    wrap.append(this.selectRow("Scale", ALL_SCALES, m.scale, (i) => { m.scale = i; this.melodyChanged(); }));
+    wrap.append(this.selectRow("Root", ALL_ROOTS, m.root, (i) => { m.root = i; this.melodyChanged(); }));
     wrap.append(this.stepperRow("Octave", m.octave, -3, 3,
-      (n) => { m.octave = n; this.persist(); this.render(); },
+      (n) => { m.octave = n; this.melodyChanged(); },
       (n) => (n > 0 ? `+${n}` : `${n}`)));
+    return wrap;
+  }
+
+  /** Bar-resolution coverage of the compiled melody lane: 1 where a note sounds. */
+  private melodyLaneCells(): number[] {
+    const bars = Math.max(1, this.track.barLimit);
+    const cells = new Array(bars).fill(0);
+    const lane = this.arr.lines.find((l) => l.color === MELODY_COLOR_INDEX);
+    if (!lane) return cells;
+    let bar = 0;
+    for (const n of lane.nodes) {
+      const span = (n.reps * (n.steps >= 1 ? n.steps : STEPS_PER_BAR)) / STEPS_PER_BAR;
+      if (n.soundId >= 0) for (let b = Math.floor(bar); b < Math.min(bars, Math.ceil(bar + span)); b++) cells[b] = 1;
+      bar += span;
+    }
+    return cells;
+  }
+
+  /** The melody lane as a lit/empty timeline strip, wrapped every BARS_PER_ROW bars. */
+  private melodyStrip(collect: HTMLElement[] | null): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "color-preview melody-preview";
+    wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const cells = this.melodyLaneCells();
+    const barLimit = Math.max(1, this.track.barLimit);
+    const segCount = Math.max(1, Math.ceil(barLimit / BARS_PER_ROW));
+    const rowBars = segCount > 1 ? BARS_PER_ROW : barLimit;
+    for (let s = 0; s < segCount; s++) {
+      const rowEl = document.createElement("div");
+      rowEl.className = "color-preview-lane";
+      for (let i = 0; i < rowBars; i++) {
+        const bar = s * rowBars + i;
+        const cell = document.createElement("span");
+        const on = bar < barLimit && cells[bar] > 0;
+        cell.className = "color-preview-cell" + (on ? " on" : bar >= barLimit ? " pad" : "");
+        if (on) cell.style.background = VOICE_COLORS[MELODY_COLOR_INDEX];
+        rowEl.append(cell);
+      }
+      rowEl.dataset.seg = String(s);
+      collect?.push(rowEl);
+      wrap.append(rowEl);
+    }
     return wrap;
   }
 
@@ -756,12 +860,12 @@ export class App {
     const hd = document.createElement("div");
     hd.className = "melody-note-head";
     hd.append(this.stepperRow("Note", note.degree, 0, len * 3 - 1,
-      (n) => { note.degree = n; this.persist(); this.render(); }, noteLbl));
+      (n) => { note.degree = n; this.melodyChanged(); }, noteLbl));
     const rm = document.createElement("button");
     rm.className = "loop-remove";
     rm.textContent = "×";
     rm.title = "Remove this note";
-    rm.onclick = () => { m.notes.splice(i, 1); this.persist(); this.render(); };
+    rm.onclick = () => { m.notes.splice(i, 1); this.melodyChanged(); };
     hd.append(rm);
     card.append(hd);
 
@@ -778,17 +882,17 @@ export class App {
       const b = document.createElement("button");
       b.className = "dice-face" + (note.weight === d ? " on" : "");
       b.textContent = FACES[d - 1];
-      b.onclick = () => { note.weight = d; this.persist(); this.render(); };
+      b.onclick = () => { note.weight = d; this.melodyChanged(); };
       faces.append(b);
     }
     wRow.append(wLbl, faces);
     card.append(wRow);
 
     card.append(this.numRow("Length", () => note.lengthSteps,
-      (n) => { note.lengthSteps = Math.max(1, Math.round(n)); this.persist(); },
+      (n) => { note.lengthSteps = Math.max(1, Math.round(n)); this.recompile(); },
       () => this.render(), () => this.stepLabel(note.lengthSteps)));
     card.append(this.numRow("Rest before", () => note.restSteps,
-      (n) => { note.restSteps = Math.max(0, Math.round(n)); this.persist(); },
+      (n) => { note.restSteps = Math.max(0, Math.round(n)); this.recompile(); },
       () => this.render(), () => (note.restSteps === 0 ? "none" : this.stepLabel(note.restSteps))));
     return card;
   }
@@ -1368,7 +1472,7 @@ export class App {
   /** Re-roll / Back for a seeded rule (Chance or Dice): re-roll mints a new seed (pushing
       the old one onto the history stack), Back pops it. For a Dice loop the pool is seeded
       from every member's seed, so re-rolling any one reshuffles the whole colour. */
-  private rollRow(r: Loop["rule"], rerender: () => void): HTMLElement {
+  private rollRow(r: { seed: number; seedHistory: number[] }, rerender: () => void): HTMLElement {
     const rollRow = document.createElement("div");
     rollRow.className = "placement-row placement-roll";
     const reroll = document.createElement("button");
@@ -1505,6 +1609,7 @@ export class App {
   }
 
   private colorOf(loop: Loop): number {
+    if (loop === this.track.melodyInstrument) return MELODY_COLOR_INDEX;
     for (let c = 0; c < this.track.colors.length; c++) {
       if (this.track.colors[c].loops.includes(loop)) return c;
     }
