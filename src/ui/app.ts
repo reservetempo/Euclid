@@ -41,6 +41,10 @@ const PROJECT_KEY = "msq010.project";
 // only picks parameter specs — Full Range opens all ranges so any character is reachable.
 const REF_DRUM = DrumType.Kick;
 
+// Overview timeline wraps to a new row ("line") every this many bars, so a long track
+// stays legible; the playhead loops back at each wrap and a badge names the active line.
+const BARS_PER_ROW = 32;
+
 type View = "track" | "color" | "sound" | "mixer";
 
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
@@ -76,6 +80,11 @@ export class App {
   private euclidView = new EuclidView();
   private loopTimeEl: HTMLElement | null = null;
   private trackPlayheadEl: HTMLElement | null = null; // overview playback line
+  private trackOverviewEl: HTMLElement | null = null; // overview container (dims inactive lines while playing)
+  private trackSegEl: HTMLElement | null = null;      // "Line n / N" badge
+  private segRows: HTMLElement[] = [];                 // overview lane sub-rows, tagged by their wrap segment
+  private overviewSegCount = 1;                        // how many 32-bar lines the track wraps into
+  private overviewRowBars = BARS_PER_ROW;              // bars per overview line (= barLimit when it fits in one)
   // Channel -> flash LED (mixer) and sound id -> loop-row button (colour panel).
   private mixerLeds: Map<number, HTMLElement> | null = null;
   private voiceBtns: Map<number, HTMLElement> | null = null;
@@ -105,14 +114,23 @@ export class App {
     if (!p.lines) {
       this.refreshRings();
       this.trackPlayheadEl?.classList.remove("live");
+      this.trackOverviewEl?.classList.remove("playing");
+      for (const row of this.segRows) row.classList.remove("seg-live");
       return;
     }
-    // Overview: sweep the playback line to the current track position.
+    // Overview: sweep the playback line to the current position — it loops back at each
+    // 32-bar wrap — highlight the active wrapped line, and name it in the badge.
     if (this.trackPlayheadEl) {
       const loopLen = this.arr.loopSteps();
       if (loopLen > 0) {
-        this.trackPlayheadEl.style.setProperty("--ph", String((p.pos % loopLen) / loopLen));
+        const bar = (p.pos % loopLen) / STEPS_PER_BAR;
+        const rowBars = this.overviewRowBars;
+        const seg = Math.floor(bar / rowBars);
+        this.trackPlayheadEl.style.setProperty("--ph", String((bar % rowBars) / rowBars));
         this.trackPlayheadEl.classList.add("live");
+        this.trackOverviewEl?.classList.add("playing");
+        for (const row of this.segRows) row.classList.toggle("seg-live", Number(row.dataset.seg) === seg);
+        if (this.trackSegEl) this.trackSegEl.textContent = `Line ${seg + 1} / ${this.overviewSegCount}`;
       }
     }
     // Rings show ONLY what's audibly playing, aggregated to the six colours: for each
@@ -361,6 +379,9 @@ export class App {
     this.root.innerHTML = "";
     this.loopTimeEl = null;
     this.trackPlayheadEl = null;
+    this.trackOverviewEl = null;
+    this.trackSegEl = null;
+    this.segRows = [];
     this.mixerLeds = null;
     this.voiceBtns = null;
 
@@ -562,13 +583,26 @@ export class App {
     // Whole-track overview: every colour's compiled lanes laid out across the full bar
     // limit (zoomed out — the entire loop at once). Tap a colour to open its loop list.
     this.voiceBtns = new Map();
+    const barLimit = Math.max(1, this.track.barLimit);
+    this.overviewSegCount = Math.max(1, Math.ceil(barLimit / BARS_PER_ROW));
+    this.overviewRowBars = this.overviewSegCount > 1 ? BARS_PER_ROW : barLimit;
+
     const overview = document.createElement("div");
     overview.className = "track-overview";
-    // A vertical line that sweeps to the current playback position (see handlePlayhead).
+    this.trackOverviewEl = overview;
+    // A vertical line that sweeps to the current playback position and loops back at each
+    // 32-bar wrap (see handlePlayhead).
     this.trackPlayheadEl = document.createElement("div");
     this.trackPlayheadEl.className = "track-playhead";
     overview.append(this.trackPlayheadEl);
-    overview.append(this.barRuler());
+    // "Line n / N" badge — which wrapped line is playing (only when the track wraps).
+    if (this.overviewSegCount > 1) {
+      this.trackSegEl = document.createElement("div");
+      this.trackSegEl.className = "track-line-indicator";
+      this.trackSegEl.textContent = `Line 1 / ${this.overviewSegCount}`;
+      overview.append(this.trackSegEl);
+    }
+    overview.append(this.barRuler(this.overviewRowBars));
     for (let c = 0; c < NUM_LINES; c++) {
       const ct = this.track.colors[c];
       const row = document.createElement("button");
@@ -589,13 +623,11 @@ export class App {
       head.append(dot, name, count);
       row.append(head);
 
-      // Lane timeline(s) for this colour — or one empty lane so the grid still reads.
-      const lanes = this.colorLaneNumbers(c);
-      const bars = Math.max(1, this.track.barLimit);
+      // Lane timeline(s) for this colour, wrapped into 32-bar lines; the active line is
+      // highlighted while playing (segRows collects each sub-row for the playhead).
       const strip = document.createElement("div");
       strip.className = "track-color-lanes";
-      if (lanes.length === 0) strip.append(this.laneCells(new Array(bars).fill(0)));
-      else for (const cells of lanes) strip.append(this.laneCells(cells));
+      this.appendLanes(strip, this.colorLaneNumbers(c), c, this.segRows);
       row.append(strip);
       for (const l of ct.loops) if (l.soundId >= 0) this.voiceBtns.set(l.soundId, row);
 
@@ -712,17 +744,63 @@ export class App {
     });
   }
 
-  /** A row of `barLimit` timeline cells for one lane; a filled cell shows its loop number. */
-  private laneCells(cells: number[]): HTMLElement {
+  /** A shade of `hex` at t∈[0,1]: 0 = darkest, 0.5 = the colour itself, 1 = lightest.
+      Used to give each loop of a colour its own tint so they're distinct at a glance. */
+  private shade(hex: string, t: number): string {
+    const m = hex.replace("#", "");
+    const r = parseInt(m.slice(0, 2), 16), g = parseInt(m.slice(2, 4), 16), b = parseInt(m.slice(4, 6), 16);
+    const f = (t - 0.5) * 2; // -1 (dark) .. +1 (light)
+    const mix = (ch: number) => (f >= 0 ? Math.round(ch + (255 - ch) * f * 0.7) : Math.round(ch * (1 + f * 0.6)));
+    const to2 = (x: number) => Math.max(0, Math.min(255, x)).toString(16).padStart(2, "0");
+    return `#${to2(mix(r))}${to2(mix(g))}${to2(mix(b))}`;
+  }
+
+  /** A row of timeline cells for one lane segment. Cell value: -1 = pad (off the track),
+      0 = empty bar, >0 = a loop number — filled with that loop's own shade of the colour
+      (spread across the colour's loops) so same-row loops read apart even when tiny. */
+  private laneCells(cells: number[], c: number): HTMLElement {
+    const total = this.track.colors[c].loops.length;
     const row = document.createElement("div");
     row.className = "color-preview-lane";
     for (let b = 0; b < cells.length; b++) {
       const cell = document.createElement("span");
-      cell.className = "color-preview-cell" + (cells[b] > 0 ? " on" : "");
-      if (cells[b] > 0) cell.textContent = String(cells[b]);
+      const num = cells[b];
+      cell.className = "color-preview-cell" + (num > 0 ? " on" : num < 0 ? " pad" : "");
+      if (num > 0) {
+        const t = total > 1 ? (num - 1) / (total - 1) : 0.5;
+        const bg = this.shade(VOICE_COLORS[c], t);
+        cell.style.background = bg;
+        // Dark text on light shades, light text on dark shades.
+        const lum = 0.299 * parseInt(bg.slice(1, 3), 16) + 0.587 * parseInt(bg.slice(3, 5), 16) + 0.114 * parseInt(bg.slice(5, 7), 16);
+        cell.style.color = lum > 150 ? "rgba(0,0,0,0.8)" : "#fff";
+        cell.textContent = String(num);
+      }
       row.append(cell);
     }
     return row;
+  }
+
+  /** Append a colour's lanes to `parent` as timeline rows, wrapping every BARS_PER_ROW
+      bars into stacked "line" sub-rows (each tagged data-seg). When `collect` is given,
+      each sub-row is pushed onto it (so the playhead can highlight the active line). */
+  private appendLanes(parent: HTMLElement, lanes: number[][], c: number, collect: HTMLElement[] | null): void {
+    const barLimit = Math.max(1, this.track.barLimit);
+    const segCount = Math.max(1, Math.ceil(barLimit / BARS_PER_ROW));
+    const rowBars = segCount > 1 ? BARS_PER_ROW : barLimit;
+    const laneList = lanes.length ? lanes : [new Array(barLimit).fill(0)];
+    for (const cells of laneList) {
+      for (let s = 0; s < segCount; s++) {
+        const segCells: number[] = [];
+        for (let i = 0; i < rowBars; i++) {
+          const bar = s * rowBars + i;
+          segCells.push(bar < barLimit ? cells[bar] : -1); // -1 pads a short final line
+        }
+        const rowEl = this.laneCells(segCells, c);
+        rowEl.dataset.seg = String(s);
+        collect?.push(rowEl);
+        parent.append(rowEl);
+      }
+    }
   }
 
   /** A read-only timeline of one colour's compiled lanes (used on the colour panel). */
@@ -730,16 +808,16 @@ export class App {
     const wrap = document.createElement("div");
     wrap.className = "color-preview";
     wrap.style.setProperty("--vc", VOICE_COLORS[c]);
-    for (const cells of this.colorLaneNumbers(c)) wrap.append(this.laneCells(cells));
+    this.appendLanes(wrap, this.colorLaneNumbers(c), c, null);
     return wrap;
   }
 
-  /** A bar-number ruler aligned with the timeline cells (labels every 4 bars). */
-  private barRuler(): HTMLElement {
-    const bars = Math.max(1, this.track.barLimit);
+  /** A bar-number ruler `width` cells wide, aligned with the timeline cells (labels every
+      4 bars). Numbers are the bar position WITHIN a line (1, 5, 9…) since lines wrap. */
+  private barRuler(width: number): HTMLElement {
     const row = document.createElement("div");
     row.className = "bar-ruler";
-    for (let b = 0; b < bars; b++) {
+    for (let b = 0; b < width; b++) {
       const cell = document.createElement("span");
       cell.className = "bar-ruler-tick";
       if (b % 4 === 0) cell.textContent = String(b + 1);
