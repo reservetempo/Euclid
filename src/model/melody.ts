@@ -10,7 +10,7 @@
 // One instrument, re-pitched: the whole melody plays through a single shuffled sound;
 // each emitted note only sets its pitch (computed in TS via melodyScale.degreeHz).
 
-import { ScaleType, degreeHz } from "./melodyScale";
+import { ScaleType, degreeHz, degreesPerOctave } from "./melodyScale";
 import { VoiceNode, emptyNode, STEPS_PER_BAR } from "./lines";
 import type { Loop } from "./track";
 
@@ -51,6 +51,27 @@ export function emptyMelody(): MelodyNode {
 /** A default note for a context: the root degree, mid weight, a quarter note, no rest. */
 export function defaultNote(): MelodyNote {
   return { degree: 0, weight: 3, lengthSteps: 4, restSteps: 0 };
+}
+
+/** Fill a context with `count` freshly RANDOM notes drawn from its scale: all distinct
+    degrees (from ~two octaves), each a random dice weight (1..6), with lengths mostly
+    uniform (one base, a minority a step longer/shorter) and rests mostly none with the
+    occasional short pause — "random but mostly the same" so it grooves. A direct design
+    action (Math.random); the seeded WALK still governs playback order (see generateMelody).
+    Branches are dropped, since the degrees change. */
+export function randomizeNotes(node: MelodyNode, count: number): void {
+  const span = Math.max(1, degreesPerOctave(node.scale) * 2);
+  const k = Math.max(1, Math.min(Math.round(count), span));
+  // Distinct degrees: shuffle [0, span) and take k.
+  const pool = Array.from({ length: span }, (_, i) => i);
+  for (let i = span - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [pool[i], pool[j]] = [pool[j], pool[i]]; }
+  const base = 2 + ((Math.random() * 3) | 0); // 2..4 sixteenth-steps (eighth..quarter-ish)
+  node.notes = pool.slice(0, k).map((degree): MelodyNote => {
+    let len = base;
+    if (Math.random() < 0.3) len += Math.random() < 0.5 ? -1 : 1; // slight variation
+    const rest = Math.random() < 0.25 ? 1 + ((Math.random() * 2) | 0) : 0; // occasional short pause
+    return { degree, weight: 1 + ((Math.random() * 6) | 0), lengthSteps: Math.max(1, len), restSteps: rest };
+  });
 }
 
 /** A fresh branch context off a parent note: inherits the parent's scale/root/octave (a

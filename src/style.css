@@ -1121,6 +1121,41 @@ button:active { transform: scale(0.94); }
 .melody-gen-hint { font-size: 12px; color: var(--muted); font-style: italic; }
 .melody-tree-btn { margin-left: auto; }
 
+/* Generation bar: note count + Generate + Add-branch toggle. */
+.melody-genbar { --vc: var(--accent); margin-bottom: 8px; }
+.melody-genbtns { display: flex; gap: 8px; }
+.melody-genbtns .seg-btn { flex: 1 1 0; }
+.melody-gen-btn.seg-btn { color: var(--vc); border-color: var(--vc); }
+.melody-branch-toggle.on { color: var(--vc); border-color: var(--vc); background: var(--panel2); box-shadow: inset 0 0 0 1px var(--vc); }
+
+/* Compact square note grid — a note = a small tile (letter + weight); wraps on phones. */
+.melody-grid {
+  --vc: var(--accent);
+  display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
+}
+.melody-sq {
+  position: relative; width: 52px; height: 52px; padding: 4px 0; flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  cursor: pointer; transition: transform 0.06s ease, border-color 0.1s ease;
+}
+.melody-sq:active { transform: scale(0.94); }
+.melody-sq-letter { font-size: 17px; font-weight: 700; line-height: 1; }
+.melody-sq-weight { font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.melody-sq.has-branch { border-color: var(--vc); }
+/* Add-branch mode: note tiles glow to invite a tap; already-branched ones dim. */
+.melody-sq.arm { border-color: var(--vc); box-shadow: 0 0 0 1px var(--vc); }
+.melody-sq.arm.has-branch { opacity: 0.55; box-shadow: none; }
+/* Branch tile (B1, B2…): filled in the melody colour to read as a "go deeper" chip. */
+.melody-sq.branch {
+  color: #0b0d10; background: var(--vc); border-color: var(--vc);
+}
+.melody-sq.branch .melody-sq-weight { color: rgba(0, 0, 0, 0.6); }
+
+/* Note settings popup: reuses the voice-sheet card; the note card fills it flush. */
+.melody-note-sheet { max-width: 420px; }
+.melody-note-sheet .melody-note { border: none; border-left: none; padding: 0; background: transparent; }
+
 /* Breadcrumb trail when editing a branch. */
 .melody-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 10px; }
 .melody-crumb {

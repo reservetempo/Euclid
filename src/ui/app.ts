@@ -32,7 +32,7 @@ import {
 } from "../model/track";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
-  MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes,
+  MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes, randomizeNotes,
 } from "../model/melody";
 import {
   ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree,
@@ -69,6 +69,9 @@ export class App {
   private lastView: View | null = null; // view at the previous render (scroll-preserve guard)
   private openColor = 0;               // which colour panel is open
   private melodyPath: MelodyNote[] = []; // notes descended into (branch drill-down); [] = root
+  private melodyBranchMode = false;      // Add-branch mode: tapping a note square branches it
+  private melodyGenCount = 4;            // desired note count for the Generate button
+  private melodyNoteEdit: MelodyNote | null = null; // note whose settings popup is open
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
@@ -430,6 +433,8 @@ export class App {
     // An open placement popup floats above everything (appended to root, so it survives
     // the panel re-render below it).
     if (this.view === "color" && this.editLoop) this.openPlacement(this.editLoop);
+    // Likewise the melody note-settings popup (re-opens over the rebuilt grid).
+    if (this.view === "melody" && this.melodyNoteEdit) this.buildMelodyNotePopup(this.currentMelodyNode(), this.melodyNoteEdit);
 
     if (sameView) this.viewRoot.scrollTop = savedScroll;
   }
@@ -773,24 +778,134 @@ export class App {
     notesHd.append(nLbl);
     v.append(notesHd);
 
-    const list = document.createElement("div");
-    list.className = "melody-notes";
-    list.style.setProperty("--vc", VOICE_COLORS[c]);
-    if (node.notes.length === 0) {
-      const hint = document.createElement("p");
-      hint.className = "hint";
-      hint.textContent = "Add notes from the scale and weight them (a bigger dice = picked more often). Each note has its own length, an optional pause before it, and can branch into a sub-phrase.";
-      list.append(hint);
-    } else {
-      node.notes.forEach((note, i) => list.append(this.melodyNoteRow(node, note, i)));
-    }
-    v.append(list);
+    v.append(this.melodyGenerateBar(node));
+    v.append(this.melodyNoteGrid(node));
 
     const add = document.createElement("button");
     add.className = "loop-add";
     add.textContent = "＋ Add note";
     add.onclick = () => { node.notes.push(defaultNote()); this.melodyChanged(); };
     v.append(add);
+  }
+
+  /** Scale-driven generation controls: how many notes to draw, a Generate button that
+      fills the grid with fresh random notes, and the Add-branch mode toggle. */
+  private melodyGenerateBar(node: MelodyNode): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls melody-genbar";
+    wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const maxNotes = degreesPerOctave(node.scale) * 2;
+    wrap.append(this.stepperRow("Count", this.melodyGenCount, 1, maxNotes,
+      (n) => { this.melodyGenCount = n; this.render(); }, (n) => `${n} note${n === 1 ? "" : "s"}`));
+
+    const row = document.createElement("div");
+    row.className = "placement-row melody-genbtns";
+    const gen = document.createElement("button");
+    gen.className = "seg-btn melody-gen-btn";
+    gen.textContent = "⚄ Generate";
+    gen.onclick = () => { randomizeNotes(node, this.melodyGenCount); this.melodyChanged(); };
+    const branch = document.createElement("button");
+    branch.className = "seg-btn melody-branch-toggle" + (this.melodyBranchMode ? " on" : "");
+    branch.textContent = this.melodyBranchMode ? "⑃ Branching…" : "⑃ Add branch";
+    branch.title = "When on, tap a note square to branch a sub-phrase off it";
+    branch.onclick = () => { this.melodyBranchMode = !this.melodyBranchMode; this.render(); };
+    row.append(gen, branch);
+    wrap.append(row);
+    return wrap;
+  }
+
+  /** The context's notes as a compact wrapping grid of squares (letter + weight). Branch
+      (Bn) squares sit inline right after the note they branch from. Tapping a note square
+      opens its settings popup — or, in Add-branch mode, branches it; tapping a Bn square
+      drills into that sub-phrase. */
+  private melodyNoteGrid(node: MelodyNode): HTMLElement {
+    const grid = document.createElement("div");
+    grid.className = "melody-grid";
+    grid.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    if (node.notes.length === 0) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "Pick a scale and a count, then Generate — or add notes by hand. Tap a square to edit it; turn on Add branch to branch a note into a sub-phrase.";
+      grid.append(hint);
+      return grid;
+    }
+    let branchN = 0;
+    node.notes.forEach((note) => {
+      const sq = document.createElement("button");
+      sq.className = "melody-sq" + (note.branch ? " has-branch" : "") + (this.melodyBranchMode ? " arm" : "");
+      const letter = document.createElement("span");
+      letter.className = "melody-sq-letter";
+      letter.textContent = this.noteLabelFor(node, note);
+      const w = document.createElement("span");
+      w.className = "melody-sq-weight";
+      w.textContent = String(note.weight);
+      sq.append(letter, w);
+      sq.onclick = () => {
+        if (this.melodyBranchMode) {
+          if (!note.branch) { note.branch = newBranch(node); this.melodyChanged(); }
+        } else {
+          this.openMelodyNotePopup(node, note);
+        }
+      };
+      grid.append(sq);
+
+      if (note.branch) {
+        branchN++;
+        const n = countNotes(note.branch);
+        const b = document.createElement("button");
+        b.className = "melody-sq branch";
+        const bl = document.createElement("span");
+        bl.className = "melody-sq-letter";
+        bl.textContent = `B${branchN}`;
+        const bc = document.createElement("span");
+        bc.className = "melody-sq-weight";
+        bc.textContent = `${n}n`;
+        b.append(bl, bc);
+        b.title = "Open this branch";
+        b.onclick = () => { this.melodyPath = [...this.melodyPath, note]; this.render(); };
+        grid.append(b);
+      }
+    });
+    return grid;
+  }
+
+  /** Open (or re-open, after a re-render) a note's settings popup — the full per-note
+      controls in a floating card over the grid. */
+  private openMelodyNotePopup(node: MelodyNode, note: MelodyNote): void {
+    this.melodyNoteEdit = note;
+    this.buildMelodyNotePopup(node, note);
+  }
+
+  private buildMelodyNotePopup(node: MelodyNode, note: MelodyNote): void {
+    document.querySelector(".melody-note-overlay")?.remove();
+    const i = node.notes.indexOf(note);
+    if (i < 0) { this.melodyNoteEdit = null; return; } // note gone (removed / drilled away)
+    const overlay = document.createElement("div");
+    overlay.className = "voice-sheet-overlay melody-note-overlay";
+    overlay.onclick = (e) => { if (e.target === overlay) this.closeMelodyNotePopup(); };
+    const card = document.createElement("div");
+    card.className = "voice-sheet placement-sheet melody-note-sheet";
+    card.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const head = document.createElement("div");
+    head.className = "voice-sheet-head";
+    const back = document.createElement("button");
+    back.className = "mixer-back";
+    back.textContent = "‹ Notes";
+    back.onclick = () => this.closeMelodyNotePopup();
+    const title = document.createElement("h2");
+    title.className = "voice-sheet-title";
+    title.textContent = `Note ${this.noteLabelFor(node, note)}`;
+    head.append(back, title);
+    card.append(head);
+    card.append(this.melodyNoteRow(node, note, i));
+    overlay.append(card);
+    this.root.append(overlay);
+  }
+
+  private closeMelodyNotePopup(): void {
+    this.melodyNoteEdit = null;
+    document.querySelector(".melody-note-overlay")?.remove();
+    this.render();
   }
 
   /** The path from the root context down to the branch being edited, each crumb tapping
