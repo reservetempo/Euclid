@@ -361,7 +361,8 @@ button:active { transform: scale(0.94); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* Inside the sheet the shuffle menu flows inline instead of floating over a row. */
-.voice-sheet .voice-shuffle {
+.voice-sheet .voice-shuffle,
+.melody-inst .voice-shuffle {
   position: static; max-height: none; box-shadow: none;
   border: none; padding: 0; background: transparent;
 }
@@ -1121,6 +1122,25 @@ button:active { transform: scale(0.94); }
 .melody-gen-hint { font-size: 12px; color: var(--muted); font-style: italic; }
 .melody-tree-btn { margin-left: auto; }
 
+/* Compact scale/root/octave — three small fields on one row instead of tall rows. */
+.melody-scale-compact {
+  --vc: var(--accent);
+  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 4px;
+}
+.melody-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 0 0 auto; }
+.melody-field.grow { flex: 1 1 90px; }
+.melody-field-lbl { font-size: 11px; font-weight: 600; color: var(--muted); }
+.melody-select.compact { max-width: none; width: 100%; padding: 7px 8px; font-size: 13px; }
+.stepper.compact { gap: 6px; }
+.stepper.compact .stepper-val { min-width: 34px; }
+
+/* Mini piano roll of the generated melody (time →, pitch ↑, colour = pitch class). */
+.melody-seq {
+  --vc: var(--accent);
+  padding: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+}
+.melody-seq-svg { display: block; width: 100%; }
+
 /* Generation bar: note count + Generate + Add-branch toggle. */
 .melody-genbar { --vc: var(--accent); margin-bottom: 8px; }
 .melody-genbtns { display: flex; gap: 8px; }
@@ -1134,15 +1154,21 @@ button:active { transform: scale(0.94); }
   display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
 }
 .melody-sq {
+  --nc: var(--vc);
   position: relative; width: 52px; height: 52px; padding: 4px 0; flex: 0 0 auto;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-  cursor: pointer; transition: transform 0.06s ease, border-color 0.1s ease;
+  color: var(--text); background: var(--panel); border: 1px solid var(--nc); border-radius: 12px;
+  cursor: pointer; transition: transform 0.06s ease, box-shadow 0.1s ease;
+}
+/* Each note carries its own pitch colour: a tinted top stripe + coloured letter. */
+.melody-sq::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5px;
+  background: var(--nc); border-radius: 11px 11px 0 0;
 }
 .melody-sq:active { transform: scale(0.94); }
-.melody-sq-letter { font-size: 17px; font-weight: 700; line-height: 1; }
+.melody-sq-letter { font-size: 17px; font-weight: 700; line-height: 1; color: var(--nc); }
 .melody-sq-weight { font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
-.melody-sq.has-branch { border-color: var(--vc); }
+.melody-sq.has-branch { box-shadow: inset 0 0 0 1px var(--vc); }
 /* Add-branch mode: note tiles glow to invite a tap; already-branched ones dim. */
 .melody-sq.arm { border-color: var(--vc); box-shadow: 0 0 0 1px var(--vc); }
 .melody-sq.arm.has-branch { opacity: 0.55; box-shadow: none; }
@@ -1150,6 +1176,8 @@ button:active { transform: scale(0.94); }
 .melody-sq.branch {
   color: #0b0d10; background: var(--vc); border-color: var(--vc);
 }
+.melody-sq.branch::before { display: none; } /* no pitch stripe — it's a branch, not a note */
+.melody-sq.branch .melody-sq-letter { color: #0b0d10; }
 .melody-sq.branch .melody-sq-weight { color: rgba(0, 0, 0, 0.6); }
 
 /* Note settings popup: reuses the voice-sheet card; the note card fills it flush. */

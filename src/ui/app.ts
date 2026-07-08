@@ -33,9 +33,10 @@ import {
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
   MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes, randomizeNotes,
+  generateMelody,
 } from "../model/melody";
 import {
-  ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree,
+  ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree, semitoneForDegree,
 } from "../model/melodyScale";
 import { EuclidView, RingState } from "./euclidView";
 import { SoundView, CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS, randomSeed } from "./soundView";
@@ -753,7 +754,8 @@ export class App {
 
     // Root-only: the whole-melody preview, Generate/Back, and the shared instrument.
     if (atRoot) {
-      if (this.melodyLaneCells().some((x) => x > 0)) v.append(this.melodyStrip(null));
+      const seqView = this.melodySequenceView();
+      if (seqView) v.append(seqView);
       v.append(this.melodyGenerateRow());
     }
 
@@ -767,7 +769,12 @@ export class App {
       iLbl.textContent = "Instrument";
       instHd.append(iLbl);
       v.append(instHd);
-      v.append(this.melodyInstrumentMenu());
+      // Wrap so the shuffle menu (a position:absolute dropdown by default) flows inline
+      // here instead of floating off the bottom of the screen (see .melody-inst CSS).
+      const instWrap = document.createElement("div");
+      instWrap.className = "melody-inst";
+      instWrap.append(this.melodyInstrumentMenu());
+      v.append(instWrap);
     }
 
     const notesHd = document.createElement("div");
@@ -833,6 +840,7 @@ export class App {
     node.notes.forEach((note) => {
       const sq = document.createElement("button");
       sq.className = "melody-sq" + (note.branch ? " has-branch" : "") + (this.melodyBranchMode ? " arm" : "");
+      sq.style.setProperty("--nc", this.noteColor(node, note)); // each note its own colour
       const letter = document.createElement("span");
       letter.className = "melody-sq-letter";
       letter.textContent = this.noteLabelFor(node, note);
@@ -1071,16 +1079,110 @@ export class App {
     this.root.append(overlay);
   }
 
-  /** Scale / root / octave pickers for a melody context (root or branch). */
+  /** Scale / root / octave pickers for a melody context, laid out as one COMPACT row
+      (each a small labelled field) instead of three tall rows — saves vertical space on
+      a phone so the notes + instrument stay in reach. */
   private melodyScaleControls(node: MelodyNode): HTMLElement {
     const wrap = document.createElement("div");
-    wrap.className = "placement-controls melody-scale";
+    wrap.className = "melody-scale-compact";
     wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
-    wrap.append(this.selectRow("Scale", ALL_SCALES, node.scale, (i) => { node.scale = i; this.melodyChanged(); }));
-    wrap.append(this.selectRow("Root", ALL_ROOTS, node.root, (i) => { node.root = i; this.melodyChanged(); }));
-    wrap.append(this.stepperRow("Octave", node.octave, -3, 3,
-      (n) => { node.octave = n; this.melodyChanged(); },
-      (n) => (n > 0 ? `+${n}` : `${n}`)));
+
+    const field = (label: string, control: HTMLElement, cls = ""): HTMLElement => {
+      const f = document.createElement("div");
+      f.className = "melody-field" + (cls ? " " + cls : "");
+      const l = document.createElement("span");
+      l.className = "melody-field-lbl";
+      l.textContent = label;
+      f.append(l, control);
+      return f;
+    };
+    const mkSelect = (options: readonly string[], index: number, onChange: (i: number) => void): HTMLSelectElement => {
+      const s = document.createElement("select");
+      s.className = "melody-select compact";
+      options.forEach((o, i) => {
+        const opt = document.createElement("option");
+        opt.value = String(i); opt.textContent = o;
+        if (i === index) opt.selected = true;
+        s.append(opt);
+      });
+      s.onchange = () => onChange(parseInt(s.value, 10));
+      return s;
+    };
+
+    const oct = document.createElement("div");
+    oct.className = "stepper compact";
+    const mkStep = (text: string, disabled: boolean, to: number) => {
+      const b = document.createElement("button");
+      b.className = "tr-step"; b.textContent = text; b.disabled = disabled;
+      b.onclick = () => { node.octave = to; this.melodyChanged(); };
+      return b;
+    };
+    const oval = document.createElement("span");
+    oval.className = "stepper-val";
+    oval.textContent = node.octave > 0 ? `+${node.octave}` : `${node.octave}`;
+    oct.append(mkStep("−", node.octave <= -3, Math.max(-3, node.octave - 1)), oval, mkStep("+", node.octave >= 3, Math.min(3, node.octave + 1)));
+
+    wrap.append(
+      field("Scale", mkSelect(ALL_SCALES, node.scale, (i) => { node.scale = i; this.melodyChanged(); }), "grow"),
+      field("Root", mkSelect(ALL_ROOTS, node.root, (i) => { node.root = i; this.melodyChanged(); })),
+      field("Octave", oct, "oct"),
+    );
+    return wrap;
+  }
+
+  /** A stable colour for a pitch class (semitone mod 12): a hue around the wheel, so each
+      note reads as its own colour and repeats of the same pitch match across the UI. */
+  private pcColor(semitone: number): string {
+    const pc = ((Math.round(semitone) % 12) + 12) % 12;
+    return `hsl(${Math.round((pc / 12) * 360)}, 70%, 62%)`;
+  }
+  /** The colour of a note in its context (by its scale degree's pitch class). */
+  private noteColor(node: MelodyNode, note: MelodyNote): string {
+    return this.pcColor(semitoneForDegree(note.degree, node.scale) + node.root);
+  }
+  /** The colour of an emitted pitch (Hz → pitch class), matching noteColor. */
+  private hzColor(hz: number): string {
+    return this.pcColor(12 * Math.log2(hz / 440));
+  }
+
+  /** A mini PIANO ROLL of the generated melody: time →, pitch ↑, each note a coloured bar
+      (colour = its pitch class, so the sequence reads at a glance and matches the note
+      squares). Rests are gaps. Returns null when there's nothing generated. */
+  private melodySequenceView(): HTMLElement | null {
+    const seq = generateMelody(this.track.melody, this.track.barLimit);
+    if (!seq.length) return null;
+
+    let total = 0;
+    for (const e of seq) total += Math.max(0, e.restSteps) + Math.max(1, e.lengthSteps);
+    total = Math.max(1, total);
+    const semis = seq.map((e) => Math.round(12 * Math.log2(e.hz / 440)));
+    const minS = Math.min(...semis), maxS = Math.max(...semis);
+    const rows = Math.max(1, maxS - minS + 1);
+
+    const wrap = document.createElement("div");
+    wrap.className = "melody-seq";
+    wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "melody-seq-svg");
+    svg.setAttribute("viewBox", `0 0 ${total} ${rows}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("height", String(Math.min(120, Math.max(46, rows * 11))));
+
+    let cursor = 0;
+    seq.forEach((e, i) => {
+      cursor += Math.max(0, e.restSteps);
+      const len = Math.max(1, e.lengthSteps);
+      const r = document.createElementNS(NS, "rect");
+      r.setAttribute("x", String(cursor));
+      r.setAttribute("y", String(maxS - semis[i] + 0.12));
+      r.setAttribute("width", String(Math.max(0.5, len - 0.12)));
+      r.setAttribute("height", "0.76");
+      r.setAttribute("fill", this.hzColor(e.hz));
+      svg.append(r);
+      cursor += len;
+    });
+    wrap.append(svg);
     return wrap;
   }
 
@@ -1210,27 +1312,6 @@ export class App {
     branchRow.append(bLbl, bBtns);
     card.append(branchRow);
     return card;
-  }
-
-  /** A labelled native <select> row (used for scale/root — many options, phone-friendly). */
-  private selectRow(label: string, options: readonly string[], index: number, onChange: (i: number) => void): HTMLElement {
-    const row = document.createElement("div");
-    row.className = "placement-row";
-    const lbl = document.createElement("span");
-    lbl.className = "placement-lbl";
-    lbl.textContent = label;
-    const sel = document.createElement("select");
-    sel.className = "melody-select";
-    options.forEach((o, i) => {
-      const opt = document.createElement("option");
-      opt.value = String(i);
-      opt.textContent = o;
-      if (i === index) opt.selected = true;
-      sel.append(opt);
-    });
-    sel.onchange = () => onChange(parseInt(sel.value, 10));
-    row.append(lbl, sel);
-    return row;
   }
 
   /** A labelled −/+ stepper row (integers within [min,max]); `fmt` renders the value. */
