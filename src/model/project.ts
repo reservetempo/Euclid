@@ -128,6 +128,7 @@ function readEvery(ev: unknown): EveryRule {
     if (e.kind === "pow2") return { kind: "pow2" };
     if (e.kind === "fill") return { kind: "fill" };
     if (e.kind === "weight") return { kind: "weight", weight: Math.max(0, Math.min(1, Number(e.weight) || 0)) };
+    if (e.kind === "dice") return { kind: "dice", weight: Math.max(1, Math.min(6, Math.round(Number(e.weight) || 3))) };
     if (e.kind === "at") {
       const bars = Array.isArray(e.bars)
         ? (e.bars as unknown[]).map((x) => Math.max(1, Math.round(Number(x) || 1))).filter((n) => n >= 1)

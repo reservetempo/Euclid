@@ -26,6 +26,10 @@ import {
 /** How a loop repeats across the track. */
 export type EveryRule =
   | { kind: "weight"; weight: number } // probability per forBars slot (0..1)
+  | { kind: "dice"; weight: number }   // pool weight 1..6 (a dice face). ALL a colour's
+                                        // dice loops share the bars: the track is filled
+                                        // bar-by-bar, each slot drawn from the pool with
+                                        // odds ∝ weight (no overlap). See dicePoolLane.
   | { kind: "nth"; n: number }         // every n-th bar (n, 2n, 3n …)
   | { kind: "pow2" }                   // at bars 1, 2, 4, 8, 16 …
   | { kind: "at"; bars: number[] }     // at explicit, 1-indexed bar numbers
@@ -136,9 +140,9 @@ export function placementsFor(loop: Loop, barLimit: number): Interval[] {
   } else if (every.kind === "at") {
     // Explicit 1-indexed bar numbers the user typed; stored 0-indexed here.
     for (const b of every.bars) push(Math.round(b) - 1);
-  } else if (every.kind === "fill") {
-    // Every bar (tiled by forBars). As a low-priority solo loop this fills the gaps
-    // higher-priority loops leave; the priority resolution masks the rest.
+  } else if (every.kind === "fill" || every.kind === "dice") {
+    // Every bar (tiled by forBars). "fill" masks behind higher-priority solo loops; a
+    // stray "dice" loop (its pool resolved elsewhere by dicePoolLane) tiles as a fallback.
     for (let b = 0; b < barLimit; b += forBars) push(b);
   } else {
     // Weighted: walk the track in forBars slots, placing when the seeded roll passes.
@@ -256,19 +260,52 @@ function soloLane(soloLoops: Loop[], barLimit: number): Interval[] {
   return out;
 }
 
-/** Compile a whole track into engine lanes: per colour, one solo lane (priority-resolved)
-    plus one lane per simultaneous overlap. Lanes carry their colour; each spans barLimit. */
+/** Resolve a colour's DICE loops to a SINGLE non-overlapping lane that fills every bar:
+    walk the track bar-by-bar and at each cursor draw one loop from the pool with odds
+    proportional to its dice face (1..6), placing it for its own forBars. Seeded by the
+    XOR of every pool member's seed, so re-rolling ANY dice loop reshuffles the whole pool
+    (and its Back restores it). Returns [] when the pool is empty. */
+function dicePoolLane(diceLoops: Loop[], barLimit: number): Interval[] {
+  if (diceLoops.length === 0) return [];
+  const weights = diceLoops.map((l) =>
+    Math.max(1, Math.min(6, Math.round((l.rule.every as { weight: number }).weight))));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let seed = 0;
+  for (const l of diceLoops) seed = (seed ^ (l.rule.seed >>> 0)) >>> 0;
+  const rng = rng01(seed);
+  const out: Interval[] = [];
+  let bar = 0;
+  while (bar < barLimit) {
+    let roll = rng() * total, idx = 0;
+    for (; idx < weights.length - 1; idx++) { roll -= weights[idx]; if (roll < 0) break; }
+    const loop = diceLoops[idx];
+    const forBars = Math.max(1, Math.round(loop.rule.forBars));
+    const place = Math.min(forBars, barLimit - bar);
+    out.push({ startBar: bar, forBars: place, loop });
+    bar += place;
+  }
+  return out;
+}
+
+/** Compile a whole track into engine lanes: per colour, one solo lane (priority-resolved),
+    one dice-pool lane (proportional fill), plus one lane per simultaneous overlap. Lanes
+    carry their colour; each spans barLimit. */
 export function compile(colors: ColorTrack[], barLimit: number): Lane[] {
   const limit = Math.max(1, Math.round(barLimit));
   const lanes: Lane[] = [];
   for (let c = 0; c < colors.length; c++) {
     const loops = colors[c]?.loops ?? [];
     if (loops.length === 0) continue;
-    const solo = loops.filter((l) => l.rule.mode === "solo");
-    const overlap = loops.filter((l) => l.rule.mode === "overlap");
+    // Dice loops form a shared pool regardless of their solo/overlap mode.
+    const dice = loops.filter((l) => l.rule.every.kind === "dice");
+    const solo = loops.filter((l) => l.rule.every.kind !== "dice" && l.rule.mode === "solo");
+    const overlap = loops.filter((l) => l.rule.every.kind !== "dice" && l.rule.mode === "overlap");
 
     const soloIvs = soloLane(solo, limit);
     if (soloIvs.length) lanes.push({ color: c, nodes: buildLane(soloIvs, limit) });
+
+    const diceIvs = dicePoolLane(dice, limit);
+    if (diceIvs.length) lanes.push({ color: c, nodes: buildLane(diceIvs, limit) });
 
     const overlapIvs: Interval[] = [];
     for (const lp of overlap) overlapIvs.push(...placementsFor(lp, limit));

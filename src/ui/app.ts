@@ -25,6 +25,7 @@ import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { addReport, reportCount, exportReports, clearReports, ReportKind } from "../model/soundReports";
 import {
   LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
+  TransitionMode, FADE_MODES,
 } from "../model/lines";
 import {
   Track, Loop, EveryRule, emptyLoop, loopToNode, randomSeed as newSeed,
@@ -834,6 +835,7 @@ export class App {
     else if (r.every.kind === "pow2") every = "at 1,2,4,8…";
     else if (r.every.kind === "at") every = r.every.bars.length ? `at bars ${r.every.bars.join(",")}` : "no bars set";
     else if (r.every.kind === "fill") every = "fill the blanks";
+    else if (r.every.kind === "dice") every = `dice ${r.every.weight} of the pool`;
     else every = `${Math.round(r.every.weight * 100)}% chance`;
     const forB = r.forBars === 1 ? "1 bar" : `${r.forBars} bars`;
     return `${every} · for ${forB} · ${r.mode}`;
@@ -902,6 +904,7 @@ export class App {
     sheet.append(head);
 
     sheet.append(this.placementControls(loop, rerender));
+    sheet.append(this.transitionControls(loop, rerender));
 
     // Rhythm circles (Hits/Steps/Start/Split) + the shuffle menu for the sound.
     const detail = document.createElement("div");
@@ -956,6 +959,7 @@ export class App {
         else if (key === "pow2") r.every = { kind: "pow2" };
         else if (key === "at") r.every = { kind: "at", bars: [1] };
         else if (key === "fill") r.every = { kind: "fill" };
+        else if (key === "dice") r.every = { kind: "dice", weight: 3 };
         else r.every = { kind: "weight", weight: 0.5 };
         this.recompile();
         rerender();
@@ -964,7 +968,7 @@ export class App {
     };
     seg.append(
       mkSeg("nth", "Nth bar"), mkSeg("pow2", "Powers of 2"), mkSeg("at", "At bars"),
-      mkSeg("fill", "Fill blanks"), mkSeg("weight", "Chance"),
+      mkSeg("fill", "Fill blanks"), mkSeg("dice", "Dice"), mkSeg("weight", "Chance"),
     );
     everyRow.append(everyLbl, seg);
     wrap.append(everyRow);
@@ -976,7 +980,8 @@ export class App {
         this.recompile();
       }, rerender, () => `${(r.every as { n: number }).n}`));
     } else if (r.every.kind === "at") {
-      // Manual bar list: a free-text field (comma/space separated, 1-indexed).
+      // Manual bar list: a read-only field that opens the custom list numpad (the native
+      // numeric keyboard has no comma, so multi-bar entry needs our own pad).
       const row = document.createElement("div");
       row.className = "placement-row placement-atbars";
       const lbl = document.createElement("span");
@@ -984,15 +989,23 @@ export class App {
       lbl.textContent = "Bars";
       const inp = document.createElement("input");
       inp.type = "text";
-      inp.inputMode = "numeric";
-      inp.placeholder = "e.g. 1, 5, 9";
-      inp.value = (r.every as { bars: number[] }).bars.join(", ");
-      const parse = () => {
-        const bars = (inp.value.match(/\d+/g) ?? []).map((s) => parseInt(s, 10)).filter((n) => n >= 1);
-        r.every = { kind: "at", bars };
-        this.recompile();
-      };
-      inp.oninput = parse; // recompile live; no re-render so the field keeps focus
+      inp.readOnly = true;
+      inp.inputMode = "none";
+      inp.placeholder = "tap to set — e.g. 1, 5, 9";
+      const shown = () => (r.every as { bars: number[] }).bars.join(", ");
+      inp.value = shown();
+      inp.onclick = () => this.openNumpad({
+        title: "At bars",
+        value: shown() || "—",
+        color: loop.soundId >= 0 ? loop.color : undefined,
+        list: true,
+        onSubmitList: (raw) => {
+          const bars = (raw.match(/\d+/g) ?? []).map((s) => parseInt(s, 10)).filter((n) => n >= 1);
+          r.every = { kind: "at", bars };
+          this.recompile();
+          rerender();
+        },
+      });
       row.append(lbl, inp);
       wrap.append(row);
     } else if (r.every.kind === "fill") {
@@ -1000,36 +1013,36 @@ export class App {
       hint.className = "hint placement-hint";
       hint.textContent = "Fills every bar. Order it below other solo loops (▼) so they win and it fills only the gaps.";
       wrap.append(hint);
+    } else if (r.every.kind === "dice") {
+      const hint = document.createElement("p");
+      hint.className = "hint placement-hint";
+      hint.textContent = "All this colour's Dice loops share the bars — a bigger face wins more of the track. Every bar is filled, none overlap.";
+      wrap.append(hint);
+      // Dice-face picker (1..6): this loop's slice of the pool.
+      const diceRow = document.createElement("div");
+      diceRow.className = "placement-row placement-dice";
+      const diceLbl = document.createElement("span");
+      diceLbl.className = "placement-lbl";
+      diceLbl.textContent = "Weight";
+      const faces = document.createElement("div");
+      faces.className = "dice-faces";
+      const FACES = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
+      for (let d = 1; d <= 6; d++) {
+        const b = document.createElement("button");
+        b.className = "dice-face" + ((r.every as { weight: number }).weight === d ? " on" : "");
+        b.textContent = FACES[d - 1];
+        b.title = `${d}`;
+        b.onclick = () => { r.every = { kind: "dice", weight: d }; this.recompile(); rerender(); };
+        faces.append(b);
+      }
+      diceRow.append(diceLbl, faces);
+      wrap.append(diceRow, this.rollRow(r, rerender));
     } else if (r.every.kind === "weight") {
       const chanceRow = this.numRow("Chance %", () => Math.round((r.every as { weight: number }).weight * 100), (n) => {
         r.every = { kind: "weight", weight: Math.max(0, Math.min(1, Math.round(n) / 100)) };
         this.recompile();
       }, rerender, () => `${Math.round((r.every as { weight: number }).weight * 100)}%`);
-      // Re-roll / Back for the seeded roll.
-      const rollRow = document.createElement("div");
-      rollRow.className = "placement-row placement-roll";
-      const reroll = document.createElement("button");
-      reroll.className = "roll-btn";
-      reroll.textContent = "⟳ Re-roll";
-      reroll.onclick = () => {
-        r.seedHistory.push(r.seed);
-        r.seed = newSeed();
-        this.recompile();
-        rerender();
-      };
-      const backBtn = document.createElement("button");
-      backBtn.className = "roll-btn";
-      backBtn.textContent = "↩ Back";
-      backBtn.disabled = r.seedHistory.length === 0;
-      backBtn.onclick = () => {
-        const prev = r.seedHistory.pop();
-        if (prev === undefined) return;
-        r.seed = prev;
-        this.recompile();
-        rerender();
-      };
-      rollRow.append(reroll, backBtn);
-      wrap.append(chanceRow, rollRow);
+      wrap.append(chanceRow, this.rollRow(r, rerender));
     }
 
     // For: n bars.
@@ -1057,6 +1070,117 @@ export class App {
     modeRow.append(modeLbl, modeSeg);
     wrap.append(modeRow);
     return wrap;
+  }
+
+  /** Fade in / fade out for a loop, folded into its own window as intro/outro envelopes
+      (see lines.ts — they add no length, covering the loop's first/last reps). Each side:
+      an On/Off toggle, a fade-style picker, and a length in reps capped so the two never
+      overrun a single placement. */
+  private transitionControls(loop: Loop, rerender: () => void): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls transition-controls";
+    const head = document.createElement("span");
+    head.className = "placement-lbl transition-head";
+    head.textContent = "Transitions";
+    wrap.append(head);
+    // Reps a single placement spans (pattern cycles per forBars) — the fade budget.
+    const unit = loop.steps >= 1 ? loop.steps : STEPS_PER_BAR;
+    const forBars = Math.max(1, Math.round(loop.rule.forBars));
+    const maxReps = Math.max(1, Math.floor((forBars * STEPS_PER_BAR) / unit));
+    wrap.append(this.fadeRow(loop, "intro", maxReps, rerender));
+    wrap.append(this.fadeRow(loop, "outro", maxReps, rerender));
+    return wrap;
+  }
+
+  /** One fade side (intro/outro) of a loop: toggle + style + length. */
+  private fadeRow(loop: Loop, side: "intro" | "outro", maxReps: number, rerender: () => void): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = side === "intro" ? "Fade in" : "Fade out";
+
+    const env = side === "intro" ? loop.intro : loop.outro;
+    const other = side === "intro" ? loop.outro : loop.intro;
+    const cap = Math.max(1, maxReps - (other ? other.reps : 0));
+
+    const controls = document.createElement("div");
+    controls.className = "fade-controls";
+
+    const toggle = document.createElement("button");
+    toggle.className = "seg-btn fade-toggle" + (env ? " on" : "");
+    toggle.textContent = env ? "On" : "Off";
+    toggle.onclick = () => {
+      if (env) {
+        if (side === "intro") loop.intro = undefined; else loop.outro = undefined;
+      } else {
+        const reps = Math.min(2, cap);
+        if (side === "intro") loop.intro = { reps, mode: FADE_MODES[0], fromId: -1 };
+        else loop.outro = { reps, mode: FADE_MODES[0], toId: -1 };
+      }
+      this.recompile();
+      rerender();
+    };
+    controls.append(toggle);
+
+    if (env) {
+      const modes = document.createElement("div");
+      modes.className = "placement-seg fade-modes";
+      for (const m of FADE_MODES) {
+        const b = document.createElement("button");
+        b.className = "seg-btn" + (env.mode === m ? " on" : "");
+        b.textContent = this.fadeModeLabel(m, side);
+        b.onclick = () => { env.mode = m; this.recompile(); rerender(); };
+        modes.append(b);
+      }
+      controls.append(modes);
+      controls.append(this.numRow("Length", () => env.reps, (n) => {
+        env.reps = Math.max(1, Math.min(cap, Math.round(n)));
+        this.recompile();
+      }, rerender, () => `${env.reps} rep${env.reps === 1 ? "" : "s"}`));
+    }
+    row.append(lbl, controls);
+    return row;
+  }
+
+  /** User-facing name for a silence-fade style (a couple depend on the direction). */
+  private fadeModeLabel(m: TransitionMode, side: "intro" | "outro"): string {
+    switch (m) {
+      case "filter": return "Filter";
+      case "wash": return "Wash";
+      case "thin": return side === "outro" ? "Thin out" : "Fill in";
+      default: return "Fade";
+    }
+  }
+
+  /** Re-roll / Back for a seeded rule (Chance or Dice): re-roll mints a new seed (pushing
+      the old one onto the history stack), Back pops it. For a Dice loop the pool is seeded
+      from every member's seed, so re-rolling any one reshuffles the whole colour. */
+  private rollRow(r: Loop["rule"], rerender: () => void): HTMLElement {
+    const rollRow = document.createElement("div");
+    rollRow.className = "placement-row placement-roll";
+    const reroll = document.createElement("button");
+    reroll.className = "roll-btn";
+    reroll.textContent = "⟳ Re-roll";
+    reroll.onclick = () => {
+      r.seedHistory.push(r.seed);
+      r.seed = newSeed();
+      this.recompile();
+      rerender();
+    };
+    const backBtn = document.createElement("button");
+    backBtn.className = "roll-btn";
+    backBtn.textContent = "↩ Back";
+    backBtn.disabled = r.seedHistory.length === 0;
+    backBtn.onclick = () => {
+      const prev = r.seedHistory.pop();
+      if (prev === undefined) return;
+      r.seed = prev;
+      this.recompile();
+      rerender();
+    };
+    rollRow.append(reroll, backBtn);
+    return rollRow;
   }
 
   /** A labelled scrub/numpad row inside the placement popup. */
@@ -1322,10 +1446,22 @@ export class App {
     input.addEventListener("pointercancel", end);
   }
 
-  private openNumpad(opts: { title: string; value: number; color?: string; onSubmit: (n: number) => void }): void {
+  /** The custom on-screen numpad. Single-value by default (`onSubmit` gets the integer);
+      pass `list: true` for a comma-separated list (a comma key appears and `onSubmitList`
+      gets the raw string). A Clear (C) key wipes the buffer like a calculator. */
+  private openNumpad(opts: {
+    title: string;
+    value: number | string;
+    color?: string;
+    list?: boolean;
+    onSubmit?: (n: number) => void;
+    onSubmitList?: (raw: string) => void;
+  }): void {
     document.querySelector(".numpad-overlay")?.remove();
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 
+    const list = !!opts.list;
+    const maxLen = list ? 60 : 3;
     let buf = "";
     const overlay = document.createElement("div");
     overlay.className = "numpad-overlay";
@@ -1344,7 +1480,7 @@ export class App {
     head.append(title, hint);
 
     const display = document.createElement("div");
-    display.className = "numpad-display";
+    display.className = "numpad-display" + (list ? " list" : "");
     const refresh = () => {
       display.textContent = buf === "" ? String(opts.value) : buf;
       display.classList.toggle("empty", buf === "");
@@ -1352,9 +1488,19 @@ export class App {
     refresh();
 
     const close = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); };
-    const submit = () => { if (buf !== "") opts.onSubmit(parseInt(buf, 10)); close(); };
-    const press = (d: string) => { if (buf.length < 3) { buf += d; refresh(); } };
-    const backspace = () => { buf = buf.slice(0, -1); refresh(); };
+    const submit = () => {
+      if (list) opts.onSubmitList?.(buf);
+      else if (buf !== "") opts.onSubmit?.(parseInt(buf, 10));
+      close();
+    };
+    const press = (d: string) => { if (buf.length < maxLen) { buf += d; refresh(); } };
+    const comma = () => {
+      // No leading comma, no doubling; a single ", " separator.
+      if (buf === "" || buf.endsWith(",") || buf.endsWith(", ")) return;
+      if (buf.length < maxLen) { buf += ", "; refresh(); }
+    };
+    const backspace = () => { buf = buf.replace(/, $|.$/, ""); refresh(); };
+    const clear = () => { buf = ""; refresh(); };
 
     const grid = document.createElement("div");
     grid.className = "numpad-grid";
@@ -1366,10 +1512,13 @@ export class App {
       return b;
     };
     ["1", "2", "3", "4", "5", "6", "7", "8", "9"].forEach((d) => grid.append(key(d, "", () => press(d))));
-    grid.append(key("⌫", "back", backspace), key("0", "", () => press("0")), key("✓", "enter", submit));
+    grid.append(key("C", "clear", clear), key("0", "", () => press("0")), key("⌫", "back", backspace));
+    if (list) grid.append(key(",", "comma", comma), key("✓", "enter wide2", submit));
+    else grid.append(key("✓", "enter wide3", submit));
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key >= "0" && e.key <= "9") press(e.key);
+      else if (list && (e.key === "," || e.key === " ")) comma();
       else if (e.key === "Backspace") backspace();
       else if (e.key === "Enter") submit();
       else if (e.key === "Escape") close();
