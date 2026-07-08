@@ -66,6 +66,7 @@ export class App {
   private saveTimer = 0;
 
   private view: View = "track";
+  private lastView: View | null = null; // view at the previous render (scroll-preserve guard)
   private openColor = 0;               // which colour panel is open
   private melodyPath: MelodyNote[] = []; // notes descended into (branch drill-down); [] = root
   private editLoop: Loop | null = null; // loop whose placement popup is open
@@ -392,6 +393,13 @@ export class App {
 
   // --- main render ------------------------------------------------------
   private render(): void {
+    // Preserve the scroll position across an in-view re-render: render() rebuilds the
+    // whole view (a fresh .viewroot scroller), which would otherwise snap back to the
+    // top on every edit. Only restore when the view is unchanged — a genuine navigation
+    // should start at the top.
+    const savedScroll = this.viewRoot?.scrollTop ?? 0;
+    const sameView = this.lastView === this.view;
+    this.lastView = this.view;
     this.root.innerHTML = "";
     this.loopTimeEl = null;
     this.trackPlayheadEl = null;
@@ -422,6 +430,8 @@ export class App {
     // An open placement popup floats above everything (appended to root, so it survives
     // the panel re-render below it).
     if (this.view === "color" && this.editLoop) this.openPlacement(this.editLoop);
+
+    if (sameView) this.viewRoot.scrollTop = savedScroll;
   }
 
   private menu(): HTMLElement {
