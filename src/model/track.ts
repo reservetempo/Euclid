@@ -22,6 +22,7 @@ import {
   VoiceNode, IntroEnv, OutroEnv, emptyNode, clampEnvelopes,
   STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
+import { MelodyNode, emptyMelody } from "./melody";
 
 /** How a loop repeats across the track. */
 export type EveryRule =
@@ -82,6 +83,7 @@ export class Track {
   barLimit = DEFAULT_BAR_LIMIT;
   root = 0;  // 0 = C
   scale = 0; // 0 = Major
+  melody: MelodyNode = emptyMelody(); // the last coloured row's melody (see melody.ts)
 
   /** Compile to engine lanes (see compile()). */
   toLanes(): Lane[] {

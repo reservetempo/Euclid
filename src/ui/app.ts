@@ -31,6 +31,12 @@ import {
   Track, Loop, EveryRule, emptyLoop, loopToNode, randomSeed as newSeed,
 } from "../model/track";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
+import {
+  MelodyNote, MELODY_COLOR_INDEX, defaultNote,
+} from "../model/melody";
+import {
+  ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree,
+} from "../model/melodyScale";
 import { EuclidView, RingState } from "./euclidView";
 import { SoundView, CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS, randomSeed } from "./soundView";
 import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
@@ -46,7 +52,7 @@ const REF_DRUM = DrumType.Kick;
 // stays legible; the playhead loops back at each wrap and a badge names the active line.
 const BARS_PER_ROW = 32;
 
-type View = "track" | "color" | "sound" | "mixer";
+type View = "track" | "color" | "sound" | "mixer" | "melody";
 
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
 type RhythmField = "hits" | "steps" | "rotation" | "split";
@@ -398,6 +404,7 @@ export class App {
     if (this.view === "track") this.renderTrackPanel();
     else if (this.view === "color") this.renderColorPanel();
     else if (this.view === "mixer") this.renderMixer();
+    else if (this.view === "melody") this.renderMelodyPanel();
     else this.renderSound();
 
     this.updateLoopTime();
@@ -605,6 +612,7 @@ export class App {
     }
     overview.append(this.barRuler(this.overviewRowBars));
     for (let c = 0; c < NUM_LINES; c++) {
+      if (c === MELODY_COLOR_INDEX) { overview.append(this.melodyOverviewRow()); continue; }
       const ct = this.track.colors[c];
       const row = document.createElement("button");
       row.className = "track-color-row";
@@ -636,6 +644,210 @@ export class App {
       overview.append(row);
     }
     v.append(overview);
+  }
+
+  // --- melody view (the last coloured row) ------------------------------
+  /** The last overview row: a tap-through to the melody editor (no lane preview yet —
+      the generated note stream lands here once generation is wired up). */
+  private melodyOverviewRow(): HTMLElement {
+    const m = this.track.melody;
+    const c = MELODY_COLOR_INDEX;
+    const row = document.createElement("button");
+    row.className = "track-color-row melody-row";
+    row.style.setProperty("--vc", VOICE_COLORS[c]);
+    const head = document.createElement("div");
+    head.className = "track-color-head";
+    const dot = document.createElement("span");
+    dot.className = "track-color-dot";
+    const name = document.createElement("span");
+    name.className = "track-color-name";
+    name.textContent = "Melody";
+    const count = document.createElement("span");
+    count.className = "track-color-count";
+    const n = m.notes.length;
+    count.textContent = n === 0 ? "no notes" : `${ALL_SCALES[m.scale]} · ${n} note${n === 1 ? "" : "s"}`;
+    head.append(dot, name, count);
+    row.append(head);
+    row.onclick = () => { this.view = "melody"; this.render(); };
+    return row;
+  }
+
+  private renderMelodyPanel(): void {
+    const v = this.viewRoot;
+    const m = this.track.melody;
+    const c = MELODY_COLOR_INDEX;
+
+    const head = document.createElement("div");
+    head.className = "mixer-head";
+    head.style.setProperty("--vc", VOICE_COLORS[c]);
+    const back = document.createElement("button");
+    back.className = "mixer-back";
+    back.textContent = "‹ Track";
+    back.onclick = () => { this.view = "track"; this.render(); };
+    const title = document.createElement("h2");
+    title.className = "mixer-title";
+    title.textContent = "Melody";
+    head.append(back, title);
+    v.append(head);
+
+    v.append(this.melodyScaleControls());
+
+    const notesHd = document.createElement("div");
+    notesHd.className = "placement-row melody-notes-head";
+    const nLbl = document.createElement("span");
+    nLbl.className = "placement-lbl transition-head";
+    nLbl.textContent = "Notes";
+    notesHd.append(nLbl);
+    v.append(notesHd);
+
+    const list = document.createElement("div");
+    list.className = "melody-notes";
+    list.style.setProperty("--vc", VOICE_COLORS[c]);
+    if (m.notes.length === 0) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "Add notes from the scale and weight them (a bigger dice = picked more often). Each note has its own length and an optional pause before it.";
+      list.append(hint);
+    } else {
+      m.notes.forEach((note, i) => list.append(this.melodyNoteRow(note, i)));
+    }
+    v.append(list);
+
+    const add = document.createElement("button");
+    add.className = "loop-add";
+    add.textContent = "＋ Add note";
+    add.onclick = () => { m.notes.push(defaultNote()); this.persist(); this.render(); };
+    v.append(add);
+
+    const soon = document.createElement("p");
+    soon.className = "hint melody-soon";
+    soon.textContent = "Next: branches off a note, and Generate — a seeded walk that orders these to fill the track.";
+    v.append(soon);
+  }
+
+  /** Scale / root / octave pickers for the melody's root context. */
+  private melodyScaleControls(): HTMLElement {
+    const m = this.track.melody;
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls melody-scale";
+    wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    wrap.append(this.selectRow("Scale", ALL_SCALES, m.scale, (i) => { m.scale = i; this.persist(); this.render(); }));
+    wrap.append(this.selectRow("Root", ALL_ROOTS, m.root, (i) => { m.root = i; this.persist(); this.render(); }));
+    wrap.append(this.stepperRow("Octave", m.octave, -3, 3,
+      (n) => { m.octave = n; this.persist(); this.render(); },
+      (n) => (n > 0 ? `+${n}` : `${n}`)));
+    return wrap;
+  }
+
+  /** One note of the melody: degree (note name) + weight + length + pre-note rest. */
+  private melodyNoteRow(note: MelodyNote, i: number): HTMLElement {
+    const m = this.track.melody;
+    const len = degreesPerOctave(m.scale);
+    const card = document.createElement("div");
+    card.className = "melody-note";
+    card.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+
+    const noteLbl = (deg: number) => {
+      const nm = noteNameForDegree(deg, m.root, m.scale);
+      const oct = Math.floor(deg / len);
+      return oct === 0 ? nm : `${nm}${oct > 0 ? "+" : ""}${oct}`;
+    };
+
+    const hd = document.createElement("div");
+    hd.className = "melody-note-head";
+    hd.append(this.stepperRow("Note", note.degree, 0, len * 3 - 1,
+      (n) => { note.degree = n; this.persist(); this.render(); }, noteLbl));
+    const rm = document.createElement("button");
+    rm.className = "loop-remove";
+    rm.textContent = "×";
+    rm.title = "Remove this note";
+    rm.onclick = () => { m.notes.splice(i, 1); this.persist(); this.render(); };
+    hd.append(rm);
+    card.append(hd);
+
+    // Weight (dice faces 1..6).
+    const wRow = document.createElement("div");
+    wRow.className = "placement-row";
+    const wLbl = document.createElement("span");
+    wLbl.className = "placement-lbl";
+    wLbl.textContent = "Weight";
+    const faces = document.createElement("div");
+    faces.className = "dice-faces";
+    const FACES = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
+    for (let d = 1; d <= 6; d++) {
+      const b = document.createElement("button");
+      b.className = "dice-face" + (note.weight === d ? " on" : "");
+      b.textContent = FACES[d - 1];
+      b.onclick = () => { note.weight = d; this.persist(); this.render(); };
+      faces.append(b);
+    }
+    wRow.append(wLbl, faces);
+    card.append(wRow);
+
+    card.append(this.numRow("Length", () => note.lengthSteps,
+      (n) => { note.lengthSteps = Math.max(1, Math.round(n)); this.persist(); },
+      () => this.render(), () => this.stepLabel(note.lengthSteps)));
+    card.append(this.numRow("Rest before", () => note.restSteps,
+      (n) => { note.restSteps = Math.max(0, Math.round(n)); this.persist(); },
+      () => this.render(), () => (note.restSteps === 0 ? "none" : this.stepLabel(note.restSteps))));
+    return card;
+  }
+
+  /** A labelled native <select> row (used for scale/root — many options, phone-friendly). */
+  private selectRow(label: string, options: readonly string[], index: number, onChange: (i: number) => void): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "placement-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = label;
+    const sel = document.createElement("select");
+    sel.className = "melody-select";
+    options.forEach((o, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = o;
+      if (i === index) opt.selected = true;
+      sel.append(opt);
+    });
+    sel.onchange = () => onChange(parseInt(sel.value, 10));
+    row.append(lbl, sel);
+    return row;
+  }
+
+  /** A labelled −/+ stepper row (integers within [min,max]); `fmt` renders the value. */
+  private stepperRow(label: string, value: number, min: number, max: number, onChange: (n: number) => void, fmt: (n: number) => string): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "placement-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = label;
+    const grp = document.createElement("div");
+    grp.className = "stepper";
+    const minus = document.createElement("button");
+    minus.className = "tr-step";
+    minus.textContent = "−";
+    minus.disabled = value <= min;
+    minus.onclick = () => onChange(Math.max(min, value - 1));
+    const val = document.createElement("span");
+    val.className = "stepper-val";
+    val.textContent = fmt(value);
+    const plus = document.createElement("button");
+    plus.className = "tr-step";
+    plus.textContent = "+";
+    plus.disabled = value >= max;
+    plus.onclick = () => onChange(Math.min(max, value + 1));
+    grp.append(minus, val, plus);
+    row.append(lbl, grp);
+    return row;
+  }
+
+  /** A 16th-step count as a musical note value where it maps cleanly (else "N steps"). */
+  private stepLabel(steps: number): string {
+    const map: Record<number, string> = {
+      1: "1/16", 2: "1/8", 3: "dotted 1/8", 4: "1/4", 6: "dotted 1/4",
+      8: "1/2", 12: "dotted 1/2", 16: "1 bar",
+    };
+    return map[steps] ? `${steps} · ${map[steps]}` : `${steps} steps`;
   }
 
   // --- colour view (loop list) ------------------------------------------

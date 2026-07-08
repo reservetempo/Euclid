@@ -1096,6 +1096,29 @@ button:active { transform: scale(0.94); }
 }
 .dice-face.on { color: var(--vc); border-color: var(--vc); background: var(--panel2); box-shadow: inset 0 0 0 1px var(--vc); }
 
+/* Melody (last coloured row): scale settings + weighted note cards. */
+.melody-row .track-color-count { font-style: italic; }
+.melody-scale { margin-bottom: 12px; }
+.melody-select {
+  flex: 0 1 auto; max-width: 60%; padding: 8px 10px; font-size: 14px;
+  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+}
+.melody-select:focus { outline: none; border-color: var(--vc); }
+.stepper { display: flex; align-items: center; gap: 10px; }
+.stepper-val { min-width: 52px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+.melody-notes-head { margin-top: 4px; }
+.melody-notes { display: flex; flex-direction: column; gap: 10px; }
+.melody-note {
+  --vc: var(--accent);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--vc); border-radius: 12px;
+}
+.melody-note-head { display: flex; align-items: center; gap: 8px; }
+.melody-note-head .placement-row { flex: 1 1 auto; }
+.melody-note .placement-row input { max-width: 150px; }
+.melody-soon { margin-top: 14px; text-align: left; opacity: 0.8; }
+
 /* Loop transitions (fade in / fade out), below the placement rule. */
 .transition-controls { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
 .transition-head { font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.05em; font-size: 12px; }

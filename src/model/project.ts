@@ -14,6 +14,7 @@ import { IntroEnv, OutroEnv, TransitionMode, MAX_REPS, NUM_LINES, VOICE_COLORS }
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, DEFAULT_BAR_LIMIT, randomSeed,
 } from "./track";
+import { MelodyNode, MelodyNote, emptyMelody, melodySeed } from "./melody";
 
 export interface RuleJSON {
   every: EveryRule;
@@ -58,6 +59,27 @@ export interface ProjectJSON {
   ranges?: Record<number, { lo: number[]; hi: number[] }>;
   presets?: Record<number, string>;
   soundName?: string;
+  melody?: MelodyJSON;
+}
+
+// A melody node serialises recursively (a note may carry a branch node).
+export interface MelodyNoteJSON {
+  degree: number; weight: number; lengthSteps: number; restSteps: number; branch?: MelodyJSON;
+}
+export interface MelodyJSON {
+  scale: number; root: number; octave: number;
+  notes: MelodyNoteJSON[]; seed: number; seedHistory: number[];
+}
+
+function cloneMelody(m: MelodyNode): MelodyJSON {
+  return {
+    scale: m.scale, root: m.root, octave: m.octave,
+    seed: m.seed, seedHistory: m.seedHistory.slice(),
+    notes: m.notes.map((n): MelodyNoteJSON => ({
+      degree: n.degree, weight: n.weight, lengthSteps: n.lengthSteps, restSteps: n.restSteps,
+      branch: n.branch ? cloneMelody(n.branch) : undefined,
+    })),
+  };
 }
 
 const cloneLoop = (l: Loop): LoopJSON => ({
@@ -102,6 +124,7 @@ export function serialize(
     ranges: drumRanges,
     presets: drumPresets,
     soundName,
+    melody: cloneMelody(track.melody),
   };
 }
 
@@ -173,6 +196,29 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
   };
 }
 
+function readMelody(mv: unknown): MelodyNode {
+  const base = emptyMelody();
+  if (!mv || typeof mv !== "object") return base;
+  const m = mv as Partial<MelodyJSON>;
+  const notes: MelodyNote[] = Array.isArray(m.notes)
+    ? m.notes.map((nj): MelodyNote => ({
+        degree: Math.round(Number(nj?.degree) || 0),
+        weight: Math.max(1, Math.min(6, Math.round(Number(nj?.weight) || 3))),
+        lengthSteps: Math.max(1, Math.round(Number(nj?.lengthSteps) || 4)),
+        restSteps: Math.max(0, Math.round(Number(nj?.restSteps) || 0)),
+        branch: nj?.branch ? readMelody(nj.branch) : undefined,
+      }))
+    : [];
+  return {
+    scale: Math.max(0, Math.round(Number(m.scale) || 0)),
+    root: typeof m.root === "number" ? ((m.root % 12) + 12) % 12 : 0,
+    octave: typeof m.octave === "number" ? Math.max(-3, Math.min(3, Math.round(m.octave))) : 0,
+    notes,
+    seed: typeof m.seed === "number" ? (m.seed >>> 0) : melodySeed(),
+    seedHistory: Array.isArray(m.seedHistory) ? m.seedHistory.map((x) => Number(x) >>> 0) : [],
+  };
+}
+
 /** Apply a loaded project into the live track + kit. Returns the tempo. A v≤10 file
     loads a BLANK track (tempo + kit still restored). */
 export function deserialize(
@@ -183,9 +229,11 @@ export function deserialize(
   track.barLimit = DEFAULT_BAR_LIMIT;
   track.root = 0;
   track.scale = 0;
+  track.melody = emptyMelody();
 
   const v = json && json.version;
   if (json && typeof v === "number" && v === 11) {
+    track.melody = readMelody(json.melody);
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
         if (ci >= NUM_LINES || !cj) return;
