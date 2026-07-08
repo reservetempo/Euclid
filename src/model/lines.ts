@@ -14,11 +14,13 @@
 // bar cycles at its own rate — and node chains let a voice change rhythm over the
 // loop.
 //
-// A node may instead be a TRANSITION: it carries `transition:{fromId,toId,mode}` and
-// blends the previous node's sound into the next across its window, progressively per
-// hit. `mode` picks how: "morph" lerps their parameters into one voice (one sound
-// mutating into the other); "crossfade" plays BOTH, fading one out as the other in.
-// See engine.js fireStep.
+// A sound node may carry an intro and/or outro TRANSITION: a fade folded into its OWN
+// window (adding no length). `intro` covers the first `reps` of the node — rising from
+// silence (fromId = -1, a fade-in) or morphing from another sound (fromId = a previous
+// node's sound). `outro` covers the last `reps` — falling to silence (toId = -1) or
+// morphing into a next sound. `mode` picks the blend style. So a 4-bar loop can spend 2
+// bars fading in and 2 bars steady, or all 4 bars fading — it's always ONE block.
+// See engine.js fireStep for the per-hit blend.
 //
 // This replaces the previous 6-grids + 20-slot-order arrangement (every voice used
 // to switch grids together); see project.ts for the migration of old saves.
@@ -53,12 +55,17 @@ export type TransitionMode =
 export const PAIR_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter"];
 export const FADE_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin"];
 
-/** Which way a transition blends: between two sounds, in from silence, or out to it. */
-export function transitionKind(t: { fromId: number; toId: number }): "pair" | "in" | "out" {
-  if (t.fromId < 0) return "in";
-  if (t.toId < 0) return "out";
-  return "pair";
-}
+/** An intro fade folded into a node's start: covers the first `reps` of its window,
+    rising from silence (fromId < 0) or morphing from another sound (fromId = its id). */
+export interface IntroEnv { reps: number; mode: TransitionMode; fromId: number; }
+/** An outro fade folded into a node's end: covers the last `reps` of its window,
+    falling to silence (toId < 0) or morphing into another sound (toId = its id). */
+export interface OutroEnv { reps: number; mode: TransitionMode; toId: number; }
+
+/** Which way an intro blends: in from silence, or morphing from a previous sound. */
+export function introKind(fromId: number): "in" | "pair" { return fromId < 0 ? "in" : "pair"; }
+/** Which way an outro blends: out to silence, or morphing into a next sound. */
+export function outroKind(toId: number): "out" | "pair" { return toId < 0 ? "out" : "pair"; }
 
 // One node of a line: an assigned sound plus its rhythm and repeat count. soundId =
 // EMPTY when no sound is assigned (a REST that still occupies its window, so the
@@ -79,10 +86,11 @@ export interface VoiceNode {
   gain?: number;  // loudness makeup (×): measured after a shuffle so every generated
                   // sound lands at a consistent level. Applied to Volume in the engine
                   // message only — the snapshot (and mixer fader) keep their meaning.
-  // Transition: blend fromId→toId over this node's window (see TransitionMode).
-  // Either end may be EMPTY (-1) = silence, making it a fade-in / fade-out.
-  // Present => this node is a transition, not a sound.
-  transition?: { fromId: number; toId: number; mode: TransitionMode };
+  // Transitions folded into this node's OWN window (see IntroEnv/OutroEnv). They cover
+  // the first (intro) / last (outro) `reps` of the node and add no length; a node keeps
+  // its sound throughout — the envelopes only shape how its ends blend.
+  intro?: IntroEnv;
+  outro?: OutroEnv;
   // Inline-shuffle editor state, so a reloaded node keeps shuffling where it left:
   preset?: string;                          // active preset (Reset target + label)
   ranges?: { lo: number[]; hi: number[] };  // live shuffle window per param
@@ -122,6 +130,25 @@ export function nodeBars(n: VoiceNode): number {
   return nodeLen(n) / STEPS_PER_BAR;
 }
 
+/** Keep a node's intro/outro fades within its own reps: each ≥ 1 rep, and the two
+    together no longer than the node (they must not overlap in the middle). When they
+    would overlap, `keep` says which one just changed and wins the space; the other
+    shrinks, and is dropped if nothing is left for it. Call after any reps change. */
+export function clampEnvelopes(n: VoiceNode, keep: "intro" | "outro" = "outro"): void {
+  const reps = Math.max(1, n.reps | 0);
+  if (n.intro) n.intro.reps = Math.max(1, Math.min(reps, Math.round(n.intro.reps)));
+  if (n.outro) n.outro.reps = Math.max(1, Math.min(reps, Math.round(n.outro.reps)));
+  if (n.intro && n.outro && n.intro.reps + n.outro.reps > reps) {
+    if (keep === "intro") {
+      n.outro.reps = reps - n.intro.reps;
+      if (n.outro.reps < 1) n.outro = undefined;
+    } else {
+      n.intro.reps = reps - n.outro.reps;
+      if (n.intro.reps < 1) n.intro = undefined;
+    }
+  }
+}
+
 // One voice line: its node chain plus line-level mix state (mute/solo silence the
 // whole chain — the mixer works per line, not per node).
 export interface VoiceLine {
@@ -140,7 +167,9 @@ export interface LineMessage {
     lenSteps: number;
     waitSteps: number; // leading silent steps inside lenSteps (lead-in; hits muted here)
     pattern: number[];
-    transition?: { fromId: number; toId: number; mode: TransitionMode };
+    // Intro/outro fade spans, in STEPS within the sounding window (after any lead-in).
+    intro?: { steps: number; mode: TransitionMode; fromId: number };
+    outro?: { steps: number; mode: TransitionMode; toId: number };
   }[];
 }
 
@@ -157,10 +186,9 @@ export class LineArrangement {
     return s;
   }
 
-  /** True when the line has at least one node that makes sound (a real sound or a
-      transition between two sounds). */
+  /** True when the line has at least one node that makes sound. */
   lineActive(li: number): boolean {
-    return this.lines[li].nodes.some((n) => n.soundId !== EMPTY || !!n.transition);
+    return this.lines[li].nodes.some((n) => n.soundId !== EMPTY);
   }
 
   /** The loop length in steps: the LONGEST line's chain. Every line plays its chain
@@ -182,18 +210,25 @@ export class LineArrangement {
       worklet stays pattern-only). Every node ships, including silent rests. */
   linesMessage(): LineMessage[] {
     return this.lines.map((ln) => ({
-      nodes: ln.nodes.map((n) => ({
-        soundId: n.soundId,
-        steps: n.steps,
-        lenSteps: nodeLen(n),
-        waitSteps: waitLen(n),
-        pattern: n.steps >= 1 && (n.soundId !== EMPTY || n.transition)
-          ? voicePattern(n.hits, n.steps, n.rotation, n.split).map((b) => (b ? 1 : 0))
-          : [],
-        transition: n.transition
-          ? { fromId: n.transition.fromId, toId: n.transition.toId, mode: n.transition.mode }
-          : undefined,
-      })),
+      nodes: ln.nodes.map((n) => {
+        const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
+        const reps = Math.max(1, n.reps | 0);
+        return {
+          soundId: n.soundId,
+          steps: n.steps,
+          lenSteps: nodeLen(n),
+          waitSteps: waitLen(n),
+          pattern: n.steps >= 1 && n.soundId !== EMPTY
+            ? voicePattern(n.hits, n.steps, n.rotation, n.split).map((b) => (b ? 1 : 0))
+            : [],
+          intro: n.intro
+            ? { steps: Math.min(n.intro.reps, reps) * unit, mode: n.intro.mode, fromId: n.intro.fromId }
+            : undefined,
+          outro: n.outro
+            ? { steps: Math.min(n.outro.reps, reps) * unit, mode: n.outro.mode, toId: n.outro.toId }
+            : undefined,
+        };
+      }),
     }));
   }
 }

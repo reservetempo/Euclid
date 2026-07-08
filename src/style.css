@@ -240,8 +240,15 @@ button:active { transform: scale(0.94); }
   background: var(--panel2); color: var(--vc); box-shadow: inset 0 0 0 1.5px var(--vc);
 }
 .bar-node.has-sound { background: var(--vc); color: #15161a; box-shadow: none; }
-/* Transition block: a from→to gradient (set inline), dark glyph. */
-.bar-node.transition { color: #15161a; box-shadow: none; font-size: 16px; }
+/* A sound carrying an intro/outro fade paints a gradient inside the one block (set
+   inline); a small ↗ / ↘ marker flags the faded end. */
+.bar-node.has-in::before,
+.bar-node.has-out::after {
+  position: absolute; top: 2px; z-index: 2; pointer-events: none;
+  font-size: 10px; font-weight: 700; color: #15161a; opacity: 0.75;
+}
+.bar-node.has-in::before { content: "↗"; left: 3px; }
+.bar-node.has-out::after { content: "↘"; right: 3px; }
 /* A rest reads as a faint dashed placeholder inviting a sound. */
 .bar-node.rest { background: transparent; color: var(--muted); box-shadow: none; border: 1.5px dashed var(--muted); }
 .bar-node.editing { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); z-index: 3; }
@@ -318,6 +325,19 @@ button:active { transform: scale(0.94); }
   background: var(--panel);
 }
 .sheet-add-transition:active { background: var(--panel2); }
+
+/* A row per existing fade in the voice sheet: label · style toggle · Remove. */
+.sheet-env {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 2px;
+}
+.sheet-env-label { font-weight: 600; font-size: 13px; color: var(--vc); }
+.sheet-env .tr-modes { flex: 1 1 auto; }
+.sheet-env-remove {
+  margin-left: auto; padding: 4px 10px; font-size: 12px; font-weight: 600;
+  border-radius: 14px; border: 1px solid var(--line); color: var(--muted); background: var(--panel);
+}
+.sheet-env-remove:active { background: var(--panel2); }
 
 /* Voice sheet: a modal card over the whole app when a grid voice is tapped. The card
    margin:auto-centres when it fits and pins to the (safe-area-padded) top when taller

@@ -904,7 +904,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     this.clock = 0; // running sample counter, for busyUntil/steal decisions
 
     // --- lines + transport state ---
-    // Active voice lines: [{ nodes: [{soundId, steps, lenSteps, waitSteps, pattern, transition?}] } x 6].
+    // Active voice lines: [{ nodes: [{soundId, steps, lenSteps, waitSteps, pattern, intro?, outro?}] } x 6].
     // The loop is the LONGEST line; each reads pos = absStep % loopTotal, plays its
     // chain once (active node by cumulative lenSteps; inside a node the leading
     // waitSteps are silent, then the pattern cycles via activeLocal % steps), then
@@ -1148,6 +1148,74 @@ class EngineProcessor extends AudioWorkletProcessor {
     return out;
   }
 
+  // Fire one blended hit for a node's intro/outro fade at blend point t∈[0,1]. `from`
+  // and `to` are the two ends' sounds (null = silence). `ownId` is the channel the
+  // morph/fade sounds on (the node's OWN sound); `fromId`/`toId` name the channels used
+  // when both voices play at once (crossfade/alternate/filter). Modes mirror the four
+  // pair blends plus the silence-end fade styles (fade/filter/wash/thin).
+  fireBlend(ownId, fromId, from, toId, to, mode, t, isAccent, gate, beat, fired) {
+    if (!from && !to) return;
+    if (!from || !to) {
+      // One end is silence: morph the real sound against its derived silent variant.
+      const real = to || from;
+      const ghost = this.silentVariant(real.snap, mode);
+      const snap = to ? this.lerpSnap(ghost, real.snap, t) : this.lerpSnap(real.snap, ghost, t);
+      const hit = this.perHit(snap, isAccent);
+      if (!hit) return;
+      const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
+      this.triggerSound(ownId, snap, voiceSnap, gate, real.tail, hit.vel, hit.count, hit.interval, beat);
+      fired.push(ownId);
+    } else if (mode === "crossfade") {
+      // Both sounds play on their own channels, from fading out as to fades in.
+      const hit = this.perHit(from.snap, isAccent);
+      if (!hit) return;
+      if (1 - t > 0.02) {
+        const vsA = from.snap.slice(); this.jitterSnap(vsA, hit.human);
+        this.triggerSound(fromId, from.snap, vsA, gate, from.tail, hit.vel * (1 - t), hit.count, hit.interval, beat);
+        fired.push(fromId);
+      }
+      if (t > 0.02) {
+        const vsB = to.snap.slice(); this.jitterSnap(vsB, hit.human);
+        this.triggerSound(toId, to.snap, vsB, gate, to.tail, hit.vel * t, hit.count, hit.interval, beat);
+        fired.push(toId);
+      }
+    } else if (mode === "alternate") {
+      // Every hit comes from ONE side, the coin weighting to→1 as t rises.
+      const pickTo = Math.random() < t;
+      const src = pickTo ? to : from;
+      const id = pickTo ? toId : fromId;
+      const hit = this.perHit(src.snap, isAccent);
+      if (!hit) return;
+      const vs = src.snap.slice(); this.jitterSnap(vs, hit.human);
+      this.triggerSound(id, src.snap, vs, gate, src.tail, hit.vel, hit.count, hit.interval, beat);
+      fired.push(id);
+    } else if (mode === "filter") {
+      // Spectral crossfade: both play while from's filter closes and to's opens.
+      const hit = this.perHit(from.snap, isAccent);
+      if (!hit) return;
+      if (1 - t > 0.02) {
+        const a = this.lerpSnap(from.snap, this.silentVariant(from.snap, "filter"), t);
+        const vsA = a.slice(); this.jitterSnap(vsA, hit.human);
+        this.triggerSound(fromId, a, vsA, gate, from.tail, hit.vel, hit.count, hit.interval, beat);
+        fired.push(fromId);
+      }
+      if (t > 0.02) {
+        const b = this.lerpSnap(this.silentVariant(to.snap, "filter"), to.snap, t);
+        const vsB = b.slice(); this.jitterSnap(vsB, hit.human);
+        this.triggerSound(toId, b, vsB, gate, to.tail, hit.vel, hit.count, hit.interval, beat);
+        fired.push(toId);
+      }
+    } else {
+      // Morph: one voice with its parameters lerped from→to (the sound mutates).
+      const snap = this.lerpSnap(from.snap, to.snap, t);
+      const hit = this.perHit(snap, isAccent);
+      if (!hit) return;
+      const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
+      this.triggerSound(ownId, snap, voiceSnap, gate, Math.max(from.tail || 0, to.tail || 0), hit.vel, hit.count, hit.interval, beat);
+      fired.push(ownId);
+    }
+  }
+
   // Fire one step. The loop length is the LONGEST line's chain; every line reads its
   // position as `absStep % loopTotal`, plays its chain once (active NODE by cumulative
   // lenSteps, the node's pattern cycling inside its window via `activeLocal % steps`),
@@ -1216,87 +1284,43 @@ class EngineProcessor extends AudioWorkletProcessor {
       const isAccent = (activeLocal % vs) === firstHit;
       const beat = this.absStep * 0.25;
 
-      if (nd.transition) {
-        // Either endpoint may be -1 = SILENCE (a fade-in / fade-out); a real endpoint
-        // that lost its sound leaves nothing to blend.
-        const fromId = nd.transition.fromId, toId = nd.transition.toId;
-        const from = fromId >= 0 ? this.sounds.get(fromId) : null;
-        const to = toId >= 0 ? this.sounds.get(toId) : null;
-        if ((fromId >= 0 && !from) || (toId >= 0 && !to) || (!from && !to)) continue;
-        // t: 0 at the sounding window's start (after any lead-in wait), 1 at its last
-        // step — the progressive blend point.
-        const activeLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
-        const t = activeLen > 1 ? clamp(activeLocal / (activeLen - 1), 0, 1) : 0;
-        const mode = nd.transition.mode;
-
-        if (!from || !to) {
-          // Fade in/out: morph the real sound against its derived silent variant
-          // (which end is silent picks the direction). Styles: fade/filter/wash/thin.
-          const real = to || from;
-          const ghost = this.silentVariant(real.snap, mode);
-          const snap = to ? this.lerpSnap(ghost, real.snap, t) : this.lerpSnap(real.snap, ghost, t);
-          const hit = this.perHit(snap, isAccent);
-          if (!hit) continue;
-          const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
-          this.triggerSound(nd.soundId, snap, voiceSnap, gate, real.tail, hit.vel, hit.count, hit.interval, beat);
-          fired.push(nd.soundId);
-        } else if (mode === "crossfade") {
-          // Play BOTH sounds on their own channels, from fading out as to fades in.
-          const hit = this.perHit(from.snap, isAccent);
-          if (!hit) continue;
-          if (1 - t > 0.02) {
-            const vsA = from.snap.slice(); this.jitterSnap(vsA, hit.human);
-            this.triggerSound(fromId, from.snap, vsA, gate, from.tail, hit.vel * (1 - t), hit.count, hit.interval, beat);
-            fired.push(fromId);
-          }
-          if (t > 0.02) {
-            const vsB = to.snap.slice(); this.jitterSnap(vsB, hit.human);
-            this.triggerSound(toId, to.snap, vsB, gate, to.tail, hit.vel * t, hit.count, hit.interval, beat);
-            fired.push(toId);
-          }
-        } else if (mode === "alternate") {
-          // Every hit comes from ONE side, the coin weighting to→1 as t rises — a
-          // stuttery hand-over where the sounds trade hits instead of layering.
-          const pickTo = Math.random() < t;
-          const src = pickTo ? to : from;
-          const id = pickTo ? toId : fromId;
-          const hit = this.perHit(src.snap, isAccent);
-          if (!hit) continue;
-          const vs = src.snap.slice(); this.jitterSnap(vs, hit.human);
-          this.triggerSound(id, src.snap, vs, gate, src.tail, hit.vel, hit.count, hit.interval, beat);
-          fired.push(id);
-        } else if (mode === "filter") {
-          // Spectral crossfade: both play near full level while from's filter closes
-          // and to's opens (each morphing toward/away from its own silent variant).
-          const hit = this.perHit(from.snap, isAccent);
-          if (!hit) continue;
-          if (1 - t > 0.02) {
-            const a = this.lerpSnap(from.snap, this.silentVariant(from.snap, "filter"), t);
-            const vsA = a.slice(); this.jitterSnap(vsA, hit.human);
-            this.triggerSound(fromId, a, vsA, gate, from.tail, hit.vel, hit.count, hit.interval, beat);
-            fired.push(fromId);
-          }
-          if (t > 0.02) {
-            const b = this.lerpSnap(this.silentVariant(to.snap, "filter"), to.snap, t);
-            const vsB = b.slice(); this.jitterSnap(vsB, hit.human);
-            this.triggerSound(toId, b, vsB, gate, to.tail, hit.vel, hit.count, hit.interval, beat);
-            fired.push(toId);
-          }
-        } else {
-          // Morph: one voice with its parameters lerped from→to (the sound mutates).
-          const snap = this.lerpSnap(from.snap, to.snap, t);
-          const hit = this.perHit(snap, isAccent);
-          if (!hit) continue;
-          const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
-          this.triggerSound(nd.soundId, snap, voiceSnap, gate, Math.max(from.tail || 0, to.tail || 0), hit.vel, hit.count, hit.interval, beat);
-          fired.push(nd.soundId);
-        }
-        continue;
-      }
-
-      // Normal node: play its own sound.
+      // Normal node: play its own sound, but shape its ends where it carries fades.
+      // A node keeps its sound throughout; an intro fades the first `introSteps` of the
+      // sounding window, an outro the last `outroSteps` (clampEnvelopes keeps them from
+      // overlapping, so at most one region contains any given step).
       const snd = this.sounds.get(nd.soundId);
       if (!snd) continue;
+      const activeLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
+      const introSteps = nd.intro ? Math.min(activeLen, Math.max(1, nd.intro.steps | 0)) : 0;
+      const outroSteps = nd.outro ? Math.min(activeLen, Math.max(1, nd.outro.steps | 0)) : 0;
+
+      // Intro: rise from silence (fromId < 0) or morph from a previous sound into this
+      // one, over introSteps. t runs 0→1 across the span.
+      if (introSteps > 0 && activeLocal < introSteps) {
+        const fromId = nd.intro.fromId;
+        const from = fromId >= 0 ? this.sounds.get(fromId) : null;
+        if (fromId < 0 || from) {
+          const t = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
+          this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.mode, t, isAccent, gate, beat, fired);
+          continue;
+        }
+        // Source sound gone — fall through and play this node plainly.
+      }
+      // Outro: fall to silence (toId < 0) or morph this sound into a next one, over the
+      // last outroSteps. t runs 0→1 as the sound gives way.
+      if (outroSteps > 0 && activeLocal >= activeLen - outroSteps) {
+        const toId = nd.outro.toId;
+        const to = toId >= 0 ? this.sounds.get(toId) : null;
+        if (toId < 0 || to) {
+          const local = activeLocal - (activeLen - outroSteps);
+          const t = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
+          this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.mode, t, isAccent, gate, beat, fired);
+          continue;
+        }
+        // Destination sound gone — play plainly.
+      }
+
+      // Steady middle: the node's own sound.
       const hit = this.perHit(snd.snap, isAccent);
       if (!hit) continue; // dropped by HitChance
       const voiceSnap = snd.snap.slice();

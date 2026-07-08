@@ -26,8 +26,8 @@ import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { addReport, reportCount, exportReports, clearReports, ReportKind } from "../model/soundReports";
 import {
-  LineArrangement, VoiceNode, TransitionMode, emptyNode, nodeLen, nodeBars, waitLen,
-  transitionKind, PAIR_MODES, FADE_MODES,
+  LineArrangement, VoiceNode, TransitionMode, IntroEnv, OutroEnv, emptyNode,
+  nodeLen, nodeBars, waitLen, clampEnvelopes, introKind, outroKind, PAIR_MODES, FADE_MODES,
   NUM_LINES, STEPS_PER_BAR, MAX_REPS, VOICE_COLORS,
 } from "../model/lines";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
@@ -134,9 +134,9 @@ export class App {
     return this.barsBefore(li) + Math.max(0, this.node(li).wait ?? 0) + 1;
   }
 
-  /** A sounding (non-transition, non-rest) node — the kind a transition can blend. */
+  /** A sounding (non-rest) node — the kind a transition can blend. */
   private isSounding(n: VoiceNode | undefined): boolean {
-    return !!n && n.soundId >= 0 && !n.transition;
+    return !!n && n.soundId >= 0;
   }
 
   /** Bars per loop-view page: 8 normally; zoomed out, the whole loop in ONE page
@@ -254,9 +254,9 @@ export class App {
     this.arr.lines.forEach((ln, li) => {
       const audible = this.lineAudible(li);
       for (const n of ln.nodes) {
-        // Transitions have no snapshot of their own — the engine morphs their
-        // neighbours (whose ids are already in the table), so skip them here.
-        if (n.soundId < 0 || n.transition) continue;
+        // Rests have no sound to push; a sounding node ships its snapshot even when it
+        // carries intro/outro fades (the engine morphs against it in place).
+        if (n.soundId < 0) continue;
         const snap = n.snapshot.slice();
         if (!audible) snap[ParamId.Volume] = 0;
         else if (n.gain && n.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * n.gain;
@@ -793,7 +793,7 @@ export class App {
 
     const vals = document.createElement("div");
     vals.className = "euclid-vals";
-    vals.style.setProperty("--vc", (node.soundId >= 0 || node.transition) ? node.color : "#4a4e58");
+    vals.style.setProperty("--vc", node.soundId >= 0 ? node.color : "#4a4e58");
     vals.append(hits, steps, start, split, reps, bar);
     return vals;
   }
@@ -813,26 +813,11 @@ export class App {
       const r = document.createElement("div");
       r.className = "euclid-row" + (isOpen ? " open" : "");
 
-      // Title: the node's sound (voice-coloured pill), a transition (from→to
-      // gradient), or a wiggling die inviting a first shuffle. Tap = expand the row;
-      // tap again (expanded, sounding node) = shuffle menu (transitions have none).
+      // Title: the node's sound (voice-coloured pill) or a wiggling die inviting a first
+      // shuffle. Tap = expand the row; tap again (expanded, sounding node) = shuffle menu.
       const k = this.editNode[i];
       const sound = document.createElement("button");
-      if (node.transition) {
-        const kind = transitionKind(node.transition);
-        const fromC = kind === "in" ? "transparent" : nodes[k - 1]?.color ?? node.color;
-        const toC = kind === "out" ? "transparent" : nodes[k + 1]?.color ?? node.color;
-        const solid = kind === "out" ? nodes[k - 1]?.color ?? node.color : nodes[k + 1]?.color ?? node.color;
-        sound.className = "euclid-sound transition";
-        sound.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
-        sound.style.borderColor = solid;
-        // Pair blends are solid colour end-to-end (dark text); a fade's gradient
-        // thins to transparent over the dark panel, so light text reads better.
-        sound.style.color = kind === "pair" ? "#15161a" : "#eef0f4";
-        sound.style.setProperty("--vc", solid);
-        sound.textContent = kind === "in" ? "↗ fade in" : kind === "out" ? "↘ fade out" : "→ transition";
-        this.voiceBtns.set(node.soundId, sound);
-      } else if (node.soundId >= 0) {
+      if (node.soundId >= 0) {
         sound.className = "euclid-sound has-sound";
         sound.style.background = node.color;
         sound.style.borderColor = node.color;
@@ -856,7 +841,7 @@ export class App {
       }
       sound.onclick = () => {
         if (this.expanded !== i) { this.expanded = i; this.render(); }
-        else if (!node.transition) this.openVoiceShuffleMenu(sound, i);
+        else this.openVoiceShuffleMenu(sound, i);
       };
 
       // Previous-node button on the LEFT of the voice — •— steps back through the
@@ -891,9 +876,10 @@ export class App {
         detail.append(vals, rm);
         r.append(detail);
 
-        // A transition also gets its style toggle (pair modes or fade styles) so the
+        // A sound carrying intro/outro fades gets a style toggle per envelope so the
         // blend can be changed after it's created.
-        if (node.transition) r.append(this.transitionModeToggle(node, true));
+        if (node.intro) r.append(this.envModeToggle(node, "intro", true));
+        if (node.outro) r.append(this.envModeToggle(node, "outro", true));
       }
 
       // Next-node button on the RIGHT of the voice — —• steps forward, or grows the
@@ -952,6 +938,7 @@ export class App {
     // Cap hits at steps only once steps is set (a blank node defaults to 0 steps and
     // shouldn't swallow a hits value the user types first).
     if (v.steps >= 1 && v.hits > v.steps) v.hits = v.steps;
+    clampEnvelopes(v); // a shorter loop can't hold a longer fade
     this.syncLines();
     this.syncSection(); // the edited node's window may have changed length
     if (!this.playing) this.refreshRings();
@@ -1011,7 +998,7 @@ export class App {
       this.openNumpad({
         title: label,
         value: startVal,
-        color: (node.soundId >= 0 || node.transition) ? node.color : undefined,
+        color: node.soundId >= 0 ? node.color : undefined,
         onSubmit: (n) => this.setNodeNum(li, field, n),
       });
     };
@@ -1150,7 +1137,7 @@ export class App {
       any render failure the previous gain stands. */
   private async normalizeVoice(li: number): Promise<void> {
     const v = this.node(li);
-    if (v.soundId < 0 || v.transition || !v.snapshot.length) return;
+    if (v.soundId < 0 || !v.snapshot.length) return;
     const token = v.snapshot; // writeVoiceFromEditor replaces the array on every write
     const meas = v.snapshot.slice();
     meas[ParamId.Volume] = 1;    // measure at unit volume; the gain rides on top
@@ -1190,7 +1177,7 @@ export class App {
       JSON files (see model/soundReports.ts). */
   private reportVoiceSound(li: number, kind: ReportKind): void {
     const v = this.node(li);
-    if (v.soundId < 0 || v.transition || !v.snapshot.length) return;
+    if (v.soundId < 0 || !v.snapshot.length) return;
     const ed = this.voiceEditors.get(`${li}:${this.editNode[li]}`);
     const n = addReport(kind, {
       at: new Date().toISOString(),
@@ -1232,11 +1219,9 @@ export class App {
     return out;
   }
 
-  /** Inline shuffle menu for one line's edited node: generate/replace its sound live.
-      Transitions have no sound of their own (they morph their neighbours), so there's
-      nothing to shuffle. */
+  /** Inline shuffle menu for one line's edited node: generate/replace its sound live
+      (a rest shuffles into its first sound). */
   private openVoiceShuffleMenu(anchor: HTMLElement, li: number): void {
-    if (this.node(li).transition) return;
     const existing = this.viewRoot.querySelector(".voice-shuffle");
     if (existing) { existing.remove(); return; }
     const editor = this.voiceEditorFor(li);
@@ -1269,33 +1254,28 @@ export class App {
 
   /** Remove the edited node from a line's chain — or, when it's the only node, just
       clear its sound and rhythm (a line always keeps at least one node). Keeps `reps`
-      on a clear so the line's timing holds. Any transition touching the removed node
-      is dropped too (it has nothing left to morph). */
+      on a clear so the line's timing holds. A fade on a sibling that morphed from/into
+      the removed sound is dropped (it has nothing left to blend). */
   private removeNode(li: number): void {
     const nodes = this.arr.lines[li].nodes;
     const k = this.editNode[li];
     if (nodes.length > 1) {
       const removedId = nodes[k].soundId;
-      // Every node this removal takes out: the node itself, plus any transition left
-      // orphaned by it (it referenced the gone sound, or sat next to it and now bridges
-      // the wrong pair). A removed REST has id -1 — that must not match a fade's silence
-      // endpoint (-1).
-      const cut = new Set<number>([k]);
-      for (let j = 0; j < nodes.length; j++) {
-        const t = nodes[j].transition;
-        if (t && removedId >= 0 && (t.fromId === removedId || t.toId === removedId)) cut.add(j);
-      }
-      // The whole-bar span those nodes occupy, and the earliest index they touch — the
-      // node that FOLLOWS the removed run inherits this as extra lead-in so every LATER
-      // voice keeps its place in time instead of sliding earlier to fill the gap.
-      let cutSteps = 0;
-      let firstCut = nodes.length;
-      for (const j of cut) { cutSteps += nodeLen(nodes[j]); firstCut = Math.min(firstCut, j); }
-      for (const j of [...cut].sort((a, b) => b - a)) nodes.splice(j, 1);
-      const follow = nodes[firstCut]; // the first surviving node past the removed run
+      // The node's whole-bar span — the node that FOLLOWS it inherits this as extra
+      // lead-in so every LATER voice keeps its place in time instead of sliding earlier.
+      const cutSteps = nodeLen(nodes[k]);
+      nodes.splice(k, 1);
+      const follow = nodes[k]; // the first surviving node past the removed one
       if (follow) {
         const addBars = Math.round(cutSteps / STEPS_PER_BAR);
         if (addBars > 0) follow.wait = Math.min(MAX_REPS, Math.max(0, follow.wait ?? 0) + addBars);
+      }
+      // A neighbour that morphed from/into the removed sound now has nothing to blend.
+      if (removedId >= 0) {
+        for (const n of nodes) {
+          if (n.intro && n.intro.fromId === removedId) n.intro = undefined;
+          if (n.outro && n.outro.toId === removedId) n.outro = undefined;
+        }
       }
       if (nodes.length === 0) nodes.push(emptyNode());
       this.editNode[li] = Math.min(k, nodes.length - 1);
@@ -1305,7 +1285,7 @@ export class App {
       }
     } else {
       const v = nodes[0];
-      if (v.soundId < 0 && !v.transition) return;
+      if (v.soundId < 0 && !v.intro && !v.outro) return;
       const reps = v.reps;
       nodes[0] = emptyNode();
       nodes[0].reps = reps;
@@ -1317,66 +1297,40 @@ export class App {
     this.render();
   }
 
-  /** Insert a transition node into line `li` at chain gap `gap` (between nodes
-      gap-1 and gap). `kind` picks what it blends: "pair" = the sound before into the
-      sound after (both must be sounding nodes); "in" = SILENCE into the sound after
-      (a fade-in — the voice's entry); "out" = the sound before into SILENCE (a
-      fade-out — the voice's exit). `mode` picks the blend style; `reps` its length. */
-  private insertTransition(
-    li: number, gap: number, mode: TransitionMode, reps: number,
-    kind: "pair" | "in" | "out" = "pair",
-  ): void {
-    const nodes = this.arr.lines[li].nodes;
-    const from = nodes[gap - 1];
-    const to = nodes[gap];
-    const tr = emptyNode();
-    tr.soundId = this.nextSoundId++; // its own channel id (no table entry needed)
-    tr.name = "→";
-    tr.reps = Math.max(1, Math.min(MAX_REPS, Math.round(reps)));
-    if (kind === "in") {
-      if (!this.isSounding(to)) return;
-      tr.transition = { fromId: -1, toId: to!.soundId, mode };
-      tr.color = to!.color; // ring shows the destination colour
-      // Inherit the TARGET's rhythm — the fade rises on the groove it becomes.
-      tr.hits = to!.hits; tr.steps = to!.steps; tr.rotation = to!.rotation; tr.split = to!.split;
-      // Rise THROUGH the sound's lead-in silence where possible: the fade eats the
-      // tail of the target's Wait so the entry bar holds; any leftover heads the fade.
-      const unit = tr.steps >= 1 ? tr.steps : STEPS_PER_BAR;
-      const wait = Math.max(0, to!.wait ?? 0);
-      const eaten = Math.min(wait, Math.round((tr.reps * unit) / STEPS_PER_BAR));
-      tr.wait = wait - eaten > 0 ? wait - eaten : undefined;
-      to!.wait = undefined;
-    } else if (kind === "out") {
-      if (!this.isSounding(from)) return;
-      tr.transition = { fromId: from!.soundId, toId: -1, mode };
-      tr.color = from!.color;
-      // Inherit the SOURCE's rhythm — the sound dies away on its own groove.
-      tr.hits = from!.hits; tr.steps = from!.steps; tr.rotation = from!.rotation; tr.split = from!.split;
-    } else {
-      if (!this.isSounding(from) || !this.isSounding(to)) return;
-      tr.transition = { fromId: from!.soundId, toId: to!.soundId, mode };
-      tr.color = to!.color;
-      // Inherit the "from" node's rhythm so the blend is heard on a familiar groove.
-      tr.hits = from!.hits; tr.steps = from!.steps; tr.rotation = from!.rotation; tr.split = from!.split;
-    }
-    nodes.splice(gap, 0, tr);
-    this.editNode[li] = gap;
-    // Editors keyed by node index are now stale for this line.
-    for (const key of [...this.voiceEditors.keys()]) {
-      if (key.startsWith(`${li}:`)) this.voiceEditors.delete(key);
-    }
+  /** Set an intro/outro fade on node `k` of line `li` and clamp it into the node's own
+      reps (so the loop's total length never changes). `side` decides which end; the
+      envelope carries its `reps`, blend `mode`, and its non-silence endpoint id. */
+  private setEnvelope(li: number, k: number, side: "intro" | "outro", env: IntroEnv | OutroEnv): void {
+    const node = this.arr.lines[li].nodes[k];
+    if (!node || node.soundId < 0) return;
+    if (side === "intro") node.intro = env as IntroEnv;
+    else node.outro = env as OutroEnv;
+    clampEnvelopes(node, side);
+    this.editNode[li] = k;
     this.syncLines();
+    if (!this.playing) this.refreshRings();
     this.render();
   }
 
-  /** The voice sheet's Transitions menu for node `k` of line `li`: pick WHERE the
-      blend goes. At the start: the previous sound blends into this one — or, when
-      nothing sounds before it (first node, or after a rest), the voice FADES IN from
-      silence. At the end: this sound blends into the next — or fades OUT to silence
-      (into the rest after it, or as the chain's tail; a fresh sound can also be
-      minted to blend into). An impossible side stays visible but disabled. */
+  /** Remove one fade from node `k` — the sound keeps its full length. */
+  private clearEnvelope(li: number, k: number, side: "intro" | "outro"): void {
+    const node = this.arr.lines[li].nodes[k];
+    if (!node) return;
+    if (side === "intro") node.intro = undefined;
+    else node.outro = undefined;
+    this.syncLines();
+    if (!this.playing) this.refreshRings();
+    this.render();
+  }
+
+  /** The voice sheet's Transitions menu for node `k` of line `li`: pick WHERE this
+      sound's fade goes — its start (an intro) or end (an outro). At the start it can
+      rise from silence (fade in) or morph from the previous sound; at the end it can
+      fall to silence (fade out) or morph into the next sound (or a freshly minted one
+      when it's the chain's tail). Picking a side that's already set just replaces it. */
   private openTransitionMenu(li: number, k: number): void {
     const nodes = this.arr.lines[li].nodes;
+    const node = nodes[k];
     const prev = nodes[k - 1];
     const next = nodes[k + 1];
 
@@ -1391,11 +1345,10 @@ export class App {
     title.textContent = "Transition";
     const sub = document.createElement("p");
     sub.className = "hint";
-    sub.textContent = "Blend this sound — where?";
+    sub.textContent = "Fade this sound — it stays part of one loop.";
     dialog.append(title, sub);
 
-    // A stacked choice: main line + a small note (the reason when disabled).
-    const choice = (main: string, note: string, enabled: boolean, pick: () => void) => {
+    const choice = (main: string, note: string, pick: () => void) => {
       const b = document.createElement("button");
       b.className = "tr-place";
       const m = document.createElement("span");
@@ -1403,76 +1356,51 @@ export class App {
       const s = document.createElement("small");
       s.textContent = note;
       b.append(m, s);
-      b.disabled = !enabled;
       b.onclick = () => { overlay.remove(); pick(); };
       return b;
     };
 
-    // At the start of this sound, fading in from silence is ALWAYS an option; when a
-    // sound plays right before it, blending from that previous sound is offered too.
-    // Both are given so a sound with a silent gap before it isn't forced to blend
-    // across the gap — it can just fade in from nothing instead.
+    // Start of this sound → an INTRO. Morph from the previous sound if one plays before
+    // it; otherwise (or as well) rise from silence.
     if (this.isSounding(prev)) {
       dialog.append(choice(
         "At the start — from the previous sound",
-        "the previous sound blends into this one", true,
-        () => this.openTransitionOptions(li, k, "pair"),
-      ));
-      dialog.append(choice(
-        "At the start — fade in",
-        "rises out of silence into this sound instead", true,
-        () => this.openTransitionOptions(li, k, "in"),
-      ));
-    } else if (prev?.transition) {
-      dialog.append(choice(
-        "At the start", "there's already a transition into this sound", false, () => {},
-      ));
-    } else {
-      // Nothing sounds before it — the voice ENTERS here: fade in from silence.
-      dialog.append(choice(
-        "At the start — fade in",
-        prev ? "rises out of silence into this sound" : "the voice's entry rises out of silence",
-        true,
-        () => this.openTransitionOptions(li, k, "in"),
+        node.intro ? "replaces the fade at the start" : "the previous sound blends into this one",
+        () => this.editEnvelope(li, k, "intro", prev!.soundId),
       ));
     }
+    dialog.append(choice(
+      "At the start — fade in",
+      node.intro ? "replaces the fade at the start"
+        : this.isSounding(prev) ? "rises out of silence into this sound instead"
+        : "the voice's entry rises out of silence",
+      () => this.editEnvelope(li, k, "intro", -1),
+    ));
 
-    if (next) {
-      if (this.isSounding(next)) {
-        // Same freedom at the end: blend into the next sound, or fade out to silence
-        // (so a next sound far away across a gap doesn't force a blend across it).
-        dialog.append(choice(
-          "At the end — into the next sound", "this sound blends into the next one", true,
-          () => this.openTransitionOptions(li, k + 1, "pair"),
-        ));
-        dialog.append(choice(
-          "At the end — fade out", "dies away into silence instead", true,
-          () => this.openTransitionOptions(li, k + 1, "out"),
-        ));
-      } else if (next.transition) {
-        dialog.append(choice(
-          "At the end", "there's already a transition out of this sound", false, () => {},
-        ));
-      } else {
-        dialog.append(choice(
-          "At the end — fade out", "dies away into the silence after it", true,
-          () => this.openTransitionOptions(li, k + 1, "out"),
-        ));
-      }
-    } else {
+    // End of this sound → an OUTRO. Morph into the next sound if one follows; always
+    // offer a plain fade out. With no next node, offer to mint a sound to blend into.
+    if (next && this.isSounding(next)) {
       dialog.append(choice(
-        "At the end — fade out", "the loop's tail — this sound dies away to silence", true,
-        () => this.openTransitionOptions(li, k + 1, "out"),
+        "At the end — into the next sound",
+        node.outro ? "replaces the fade at the end" : "this sound blends into the next one",
+        () => this.editEnvelope(li, k, "outro", next!.soundId),
       ));
-      // Or mint a fresh adjacent sound, then blend into it.
+    }
+    dialog.append(choice(
+      "At the end — fade out",
+      node.outro ? "replaces the fade at the end"
+        : next ? "dies away into silence" : "the loop's tail — dies away to silence",
+      () => this.editEnvelope(li, k, "outro", -1),
+    ));
+    if (!next) {
       dialog.append(choice(
         "＋ At the end, into a new sound",
         "adds a shuffled sound after this one and blends into it",
-        true,
         () => {
           nodes.push(emptyNode());
           this.giveNodeSound(li, k + 1); // mints the sound in place + renders
-          this.openTransitionOptions(li, k + 1, "pair");
+          const made = this.arr.lines[li].nodes[k + 1];
+          if (made && made.soundId >= 0) this.editEnvelope(li, k, "outro", made.soundId);
         },
       ));
     }
@@ -1522,34 +1450,37 @@ export class App {
     }
   }
 
-  /** Style buttons for an EXISTING transition node (the pair modes or the fade
+  /** Style buttons for one of a node's EXISTING fades (the pair modes or the fade
       styles, by its kind) — shared by the sequencer's expanded row and the voice
       sheet, so a blend can be re-styled after it's created. */
-  private transitionModeToggle(node: VoiceNode, inline = false): HTMLElement {
-    const tr = node.transition!;
-    const kind = transitionKind(tr);
+  private envModeToggle(node: VoiceNode, side: "intro" | "outro", inline = false): HTMLElement {
+    const env = side === "intro" ? node.intro! : node.outro!;
+    const otherId = side === "intro" ? (env as IntroEnv).fromId : (env as OutroEnv).toId;
+    const kind = side === "intro" ? introKind(otherId) : outroKind(otherId);
     const choices = kind === "pair" ? PAIR_MODES : FADE_MODES;
     const wrap = document.createElement("div");
     wrap.className = "tr-modes" + (inline ? " inline" : "");
     for (const m of choices) {
       const b = document.createElement("button");
-      b.className = "tr-mode" + (tr.mode === m ? " on" : "");
+      b.className = "tr-mode" + (env.mode === m ? " on" : "");
       b.textContent = this.transitionModeLabel(m, kind);
       b.title = this.transitionModeTitle(m, kind);
-      b.onclick = () => { tr.mode = m; this.syncLines(); this.render(); };
+      b.onclick = () => { env.mode = m; this.syncLines(); this.render(); };
       wrap.append(b);
     }
     return wrap;
   }
 
-  /** Popup shown after picking a placement: pick the blend style + length, then
-      insert. `kind` = what the gap blends (two sounds, or silence in/out). For a
-      pair whose neighbours aren't both sounding, it explains and offers to jump to
-      the node that needs a sound. */
-  private openTransitionOptions(li: number, gap: number, kind: "pair" | "in" | "out" = "pair"): void {
-    const nodes = this.arr.lines[li].nodes;
-    const from = nodes[gap - 1];
-    const to = nodes[gap];
+  /** Popup for a chosen fade on node `k`: pick the blend style + length, then apply.
+      `side` = intro (start) or outro (end); `otherId` = the endpoint it blends against
+      (-1 = silence, a plain fade; else a neighbour sound's id, a morph). The length is
+      measured in THIS node's reps and capped so it never overruns the loop (leaving room
+      for a fade already on the other end) — the loop's stated length never changes. */
+  private editEnvelope(li: number, k: number, side: "intro" | "outro", otherId: number): void {
+    const node = this.arr.lines[li].nodes[k];
+    if (!node || node.soundId < 0) return;
+    const kind = side === "intro" ? introKind(otherId) : outroKind(otherId);
+
     const overlay = document.createElement("div");
     overlay.className = "tr-overlay";
     const dialog = document.createElement("div");
@@ -1561,40 +1492,10 @@ export class App {
     title.textContent = kind === "in" ? "Fade in" : kind === "out" ? "Fade out" : "Transition";
     dialog.append(title);
 
-    const ready = kind === "in" ? this.isSounding(to)
-      : kind === "out" ? this.isSounding(from)
-      : this.isSounding(from) && this.isSounding(to);
-    if (!ready) {
-      const msg = document.createElement("p");
-      msg.className = "hint";
-      msg.textContent = kind === "pair"
-        ? "A transition morphs one sound into another, so both neighbouring nodes need a sound. Give the empty one a sound first."
-        : "A fade needs the sound it rises into (or falls from). Give that node a sound first.";
-      dialog.append(msg);
-      const gapNode = to && to.soundId < 0 ? gap : gap - 1; // the node lacking a sound
-      const edit = document.createElement("button");
-      edit.className = "tr-add";
-      edit.textContent = "Edit that node →";
-      edit.onclick = () => {
-        overlay.remove();
-        this.openVoiceSheet(li, Math.max(0, Math.min(nodes.length - 1, gapNode)));
-      };
-      const cancel = document.createElement("button");
-      cancel.className = "tr-cancel";
-      cancel.textContent = "Cancel";
-      cancel.onclick = () => overlay.remove();
-      const btns = document.createElement("div");
-      btns.className = "tr-btns";
-      btns.append(cancel, edit);
-      dialog.append(btns);
-      overlay.append(dialog);
-      this.root.append(overlay);
-      return;
-    }
-
     // Style picker: how the blend travels (pair modes, or the fade styles).
     const choices = kind === "pair" ? PAIR_MODES : FADE_MODES;
-    let mode: TransitionMode = choices[0];
+    const existing = side === "intro" ? node.intro : node.outro;
+    let mode: TransitionMode = existing && choices.includes(existing.mode) ? existing.mode : choices[0];
     const modeRow = document.createElement("div");
     modeRow.className = "tr-modes";
     const modeBtns = choices.map((m) => {
@@ -1611,11 +1512,13 @@ export class App {
     modeRow.append(...modeBtns);
     dialog.append(modeRow);
 
-    // Length stepper (reps of the inherited rhythm), with a bars helper. Fades ride
-    // the rhythm of the sound they rise into / fall from.
-    let reps = 2;
-    const anchor = kind === "in" ? to! : from!;
-    const unit = anchor.steps >= 1 ? anchor.steps : STEPS_PER_BAR;
+    // Length stepper, in this node's own reps. Cap = the node's reps minus whatever a
+    // fade on the OTHER end already claims, so the two can't overlap and the loop can be
+    // covered end-to-end (a 4-bar fade on a 4-bar loop is allowed).
+    const unit = node.steps >= 1 ? node.steps : STEPS_PER_BAR;
+    const other = side === "intro" ? node.outro : node.intro;
+    const maxReps = Math.max(1, node.reps - (other ? other.reps : 0));
+    let reps = Math.min(Math.max(1, existing?.reps ?? 2), maxReps);
     const lenRow = document.createElement("div");
     lenRow.className = "tr-len";
     const lbl = document.createElement("span");
@@ -1633,10 +1536,18 @@ export class App {
       val.textContent = `${reps} rep${reps === 1 ? "" : "s"} · ${Number.isInteger(bars) ? bars : +bars.toFixed(2)} bar${bars === 1 ? "" : "s"}`;
     };
     minus.onclick = () => { reps = Math.max(1, reps - 1); syncLen(); };
-    plus.onclick = () => { reps = Math.min(MAX_REPS, reps + 1); syncLen(); };
+    plus.onclick = () => { reps = Math.min(maxReps, reps + 1); syncLen(); };
     syncLen();
     lenRow.append(lbl, minus, val, plus);
     dialog.append(lenRow);
+
+    // Reassure that the fade lives INSIDE the loop, not on top of it.
+    const foldHint = document.createElement("p");
+    foldHint.className = "hint";
+    foldHint.textContent = side === "intro"
+      ? "Covers the start of this loop — its length doesn't change."
+      : "Covers the end of this loop — its length doesn't change.";
+    dialog.append(foldHint);
 
     const cancel = document.createElement("button");
     cancel.className = "tr-cancel";
@@ -1645,7 +1556,13 @@ export class App {
     const add = document.createElement("button");
     add.className = "tr-add";
     add.textContent = kind === "in" ? "Add fade-in" : kind === "out" ? "Add fade-out" : "Add transition";
-    add.onclick = () => { overlay.remove(); this.insertTransition(li, gap, mode, reps, kind); };
+    add.onclick = () => {
+      overlay.remove();
+      const env: IntroEnv | OutroEnv = side === "intro"
+        ? { reps, mode, fromId: otherId }
+        : { reps, mode, toId: otherId };
+      this.setEnvelope(li, k, side, env);
+    };
     const btns = document.createElement("div");
     btns.className = "tr-btns";
     btns.append(cancel, add);
@@ -1791,30 +1708,42 @@ export class App {
           const wb = waitLen(n) / STEPS_PER_BAR; // lead-in bars: empty track + an add zone
           if (wb >= 1) addZone(s, s + wb);
 
-          const isSound = n.soundId >= 0 && !n.transition;
+          const isSound = n.soundId >= 0;
           const block = document.createElement("button");
           block.className = "bar-node"
-            + (n.transition ? " transition" : isSound ? " has-sound" : " rest")
+            + (isSound ? " has-sound" : " rest")
+            + (isSound && n.intro ? " has-in" : "")
+            + (isSound && n.outro ? " has-out" : "")
             + (k === this.editNode[li] ? " editing" : "");
           block.style.left = `${pct(s + wb - bandStart)}%`;
           block.style.width = `${pct(len - wb)}%`;
 
+          // Intro/outro fades live INSIDE this one block: paint their regions fading
+          // toward transparent (over the first `intro.reps` / last `outro.reps` of the
+          // node), so the fade shows without splitting the sound into a second block.
+          if (isSound && (n.intro || n.outro)) {
+            const base = VOICE_COLORS[li];
+            const reps = Math.max(1, n.reps | 0);
+            const inFrac = n.intro ? Math.min(100, (n.intro.reps / reps) * 100) : 0;
+            const outFrac = n.outro ? Math.min(100, (n.outro.reps / reps) * 100) : 0;
+            const inEdge = n.intro ? "transparent" : base;
+            const outEdge = n.outro ? "transparent" : base;
+            block.style.background =
+              `linear-gradient(90deg, ${inEdge} 0%, ${base} ${inFrac}%, ${base} ${100 - outFrac}%, ${outEdge} 100%)`;
+          }
+
           // Label: the sound's generated name (its identity, matching the mixer/sequencer);
-          // a rest shows its length, a transition its direction. The name ellipsis-truncates
-          // on narrow blocks — the full name + bars live in the tooltip.
+          // a rest shows its length. The name ellipsis-truncates on narrow blocks — the
+          // full name + bars (+ any fades) live in the tooltip.
           const label = document.createElement("span");
           label.className = "bar-node-label";
-          if (n.transition) {
-            const kind = transitionKind(n.transition);
-            const fromC = kind === "in" ? "transparent" : nodes[k - 1]?.color ?? n.color;
-            const toC = kind === "out" ? "transparent" : nodes[k + 1]?.color ?? n.color;
-            block.style.background = `linear-gradient(90deg, ${fromC}, ${toC})`;
-            label.textContent = kind === "in" ? "↗" : kind === "out" ? "↘" : "→";
-            const what = kind === "in" ? "fade in" : kind === "out" ? "fade out" : "transition";
-            block.title = `${what} · ${barsLabel(n)} bars`;
-          } else if (isSound) {
+          if (isSound) {
             label.textContent = n.name || barsLabel(n);
-            block.title = `${n.name || "node"} · ${barsLabel(n)} bars · tap to edit, hold to copy`;
+            const fades: string[] = [];
+            if (n.intro) fades.push(introKind(n.intro.fromId) === "in" ? "fade in" : "blend in");
+            if (n.outro) fades.push(outroKind(n.outro.toId) === "out" ? "fade out" : "blend out");
+            const fadeStr = fades.length ? ` · ${fades.join(" + ")}` : "";
+            block.title = `${n.name || "node"} · ${barsLabel(n)} bars${fadeStr} · tap to edit, hold to copy`;
           } else {
             label.textContent = barsLabel(n);
             block.title = `rest — tap to add a sound · ${barsLabel(n)} bars`;
@@ -1826,10 +1755,7 @@ export class App {
             // opens its editing sheet). Its slot bounds keep it from overlapping neighbours.
             this.attachMove(block, track, li, k, s + wb, bandStart, bandBars);
           } else {
-            block.onclick = () => {
-              if (n.transition) this.openVoiceSheet(li, k); // a transition's sheet floats above
-              else this.giveNodeSound(li, k);               // a rest → sound in place
-            };
+            block.onclick = () => this.giveNodeSound(li, k); // a rest → sound in place
           }
           // Right-edge grip: press-drag the node's end to resize it (reps in its own unit).
           const grip = document.createElement("span");
@@ -1846,7 +1772,7 @@ export class App {
         if (contentEnd > 0 && contentEnd <= bandStart + 0.001) {
           const lastK = nodes.length - 1;
           const lastN = nodes[lastK];
-          if (lastN.soundId >= 0 || lastN.transition) {
+          if (lastN.soundId >= 0) {
             const tab = document.createElement("button");
             tab.className = "bar-edge-grip";
             tab.textContent = "›";
@@ -1930,7 +1856,7 @@ export class App {
 
     // Past the line's end: append (or reuse a trailing empty rest), bridging with Wait.
     const last = nodes[nodes.length - 1];
-    const reuse = last.soundId < 0 && !last.transition; // a trailing empty rest slot
+    const reuse = last.soundId < 0; // a trailing empty rest slot
     const slot = reuse ? nodes.length - 1 : nodes.length;
     let base = 0; // bars occupied by the nodes before this slot
     for (let k = 0; k < slot; k++) base += nodeBars(nodes[k]);
@@ -1960,14 +1886,16 @@ export class App {
   }
 
   /** A detached copy of a node's sound for the clipboard: fresh arrays so the original
-      isn't shared, and never a transition (only real sounds are copyable). */
+      isn't shared. Fades are dropped — they'd reference neighbours that don't exist at
+      the paste spot, and the copied sound arrives clean, ready to shape again. */
   private copyNode(n: VoiceNode): VoiceNode {
     return {
       ...n,
       snapshot: n.snapshot.slice(),
       pitch: [n.pitch[0], n.pitch[1]],
       ranges: n.ranges ? { lo: n.ranges.lo.slice(), hi: n.ranges.hi.slice() } : undefined,
-      transition: undefined,
+      intro: undefined,
+      outro: undefined,
     };
   }
 
@@ -2223,6 +2151,7 @@ export class App {
       if (!moved) return;
       if (lastReps !== node.reps) {
         node.reps = lastReps;
+        clampEnvelopes(node); // a shorter loop can't hold a longer fade
         this.syncLines();
         this.syncSection(); // the resized node may be the section window
         if (!this.playing) this.refreshRings();
@@ -2250,7 +2179,7 @@ export class App {
       if (e.pointerType === "mouse" && e.button !== 0) return;
       const nodes = this.arr.lines[li].nodes;
       const node = nodes[k];
-      if (!node || node.soundId < 0 || node.transition) return; // only real sounds move
+      if (!node || node.soundId < 0) return; // only real sounds move
       const next = nodes[k + 1];
       const wait = Math.max(0, node.wait ?? 0);
       lo = -wait;                                                     // earliest: fill its own lead-in
@@ -2309,7 +2238,7 @@ export class App {
       lead-in Wait) — used when a rest block on the grid is tapped. */
   private giveNodeSound(li: number, k: number): void {
     const node = this.arr.lines[li].nodes[k];
-    if (!node || node.soundId >= 0 || node.transition) return;
+    if (!node || node.soundId >= 0) return;
     if (node.steps < 1) { node.steps = 16; node.hits = 1; node.rotation = 0; }
     this.editNode[li] = k;
     this.expanded = li;
@@ -2351,9 +2280,8 @@ export class App {
   }
 
   /** The voice sheet: a modal card in front of everything holding the tapped node's
-      editor — a Transitions menu (sounds), its value circles, a Remove, and either the
-      shuffle menu (sounds) or a blend-mode toggle (transitions). Back returns to the
-      grid. Appended to the root. */
+      editor — a Transitions menu, its value circles, a Remove, any intro/outro fade
+      editors, and the shuffle menu. Back returns to the grid. Appended to the root. */
   private renderVoiceSheet(): void {
     const li = this.sheetLine;
     const nodes = this.arr.lines[li].nodes;
@@ -2365,7 +2293,7 @@ export class App {
 
     const sheet = document.createElement("div");
     sheet.className = "voice-sheet";
-    sheet.style.setProperty("--vc", (node.soundId >= 0 || node.transition) ? node.color : "#4a4e58");
+    sheet.style.setProperty("--vc", node.soundId >= 0 ? node.color : "#4a4e58");
 
     // Header: Back to grid + the voice's generated name.
     const head = document.createElement("div");
@@ -2376,21 +2304,18 @@ export class App {
     back.onclick = () => this.closeVoiceSheet();
     const title = document.createElement("h2");
     title.className = "voice-sheet-title";
-    title.textContent = node.transition
-      ? (transitionKind(node.transition) === "in" ? "Fade in"
-        : transitionKind(node.transition) === "out" ? "Fade out" : "Transition")
-      : (node.name || `Voice ${li + 1}`);
+    title.textContent = node.name || `Voice ${li + 1}`;
     head.append(back, title);
     sheet.append(head);
 
-    // Transitions (near the top): opens the placement menu — blend this sound at its
-    // start (from the previous sound) or its end (into the next / a fresh one).
+    // Transitions (near the top): opens the placement menu — fade this sound at its
+    // start (from the previous sound / silence) or its end (into the next / silence).
     const k = this.editNode[li];
-    if (!node.transition && node.soundId >= 0) {
+    if (node.soundId >= 0) {
       const addTr = document.createElement("button");
       addTr.className = "sheet-add-transition";
       addTr.textContent = "✛ Transitions…";
-      addTr.title = "Blend this sound with the one before or after it";
+      addTr.title = "Fade this sound in or out, or blend it with a neighbour";
       addTr.onclick = () => this.openTransitionMenu(li, k);
       sheet.append(addTr);
     }
@@ -2406,25 +2331,42 @@ export class App {
     detail.append(this.nodeValueCircles(li), rm);
     sheet.append(detail);
 
-    if (node.transition) {
-      // A transition has no sound of its own — pick how it blends its ends.
-      sheet.append(this.transitionModeToggle(node));
-    } else {
-      // A real sound: the full shuffle menu, live. Keep the header name current as it
-      // shuffles (writeVoiceFromEditor renames the node but doesn't re-render the sheet).
-      const menu = buildVoiceShuffleMenu(this.voiceEditorFor(li), REF_DRUM, {
-        onChange: async () => {
-          await this.writeAndNormalizeVoice(li);
-          title.textContent = this.node(li).name || `Voice ${li + 1}`;
-        },
-        audition: () => this.auditionVoice(li),
-        onFullParams: () => { this.soundReturn = "loop"; this.soundLine = li; this.view = "sound"; this.render(); },
-        context: () => this.shuffleContext(),
-        mates: () => this.breedMates(li),
-        report: (kind) => this.reportVoiceSound(li, kind),
-      });
-      sheet.append(menu);
-    }
+    // Existing fades: a labelled row per envelope with its style toggle and a Remove
+    // (dropping a fade leaves the sound at its full length).
+    const envRow = (side: "intro" | "outro") => {
+      const env = side === "intro" ? node.intro : node.outro;
+      if (!env) return;
+      const kind = side === "intro" ? introKind((env as IntroEnv).fromId) : outroKind((env as OutroEnv).toId);
+      const row = document.createElement("div");
+      row.className = "sheet-env";
+      const lbl = document.createElement("span");
+      lbl.className = "sheet-env-label";
+      lbl.textContent = kind === "in" ? "↗ Fade in" : kind === "out" ? "↘ Fade out"
+        : side === "intro" ? "→ Blend in" : "→ Blend out";
+      const del = document.createElement("button");
+      del.className = "sheet-env-remove";
+      del.textContent = "Remove";
+      del.onclick = () => this.clearEnvelope(li, k, side);
+      row.append(lbl, this.envModeToggle(node, side, true), del);
+      sheet.append(row);
+    };
+    envRow("intro");
+    envRow("outro");
+
+    // The full shuffle menu, live. Keep the header name current as it shuffles
+    // (writeVoiceFromEditor renames the node but doesn't re-render the sheet).
+    const menu = buildVoiceShuffleMenu(this.voiceEditorFor(li), REF_DRUM, {
+      onChange: async () => {
+        await this.writeAndNormalizeVoice(li);
+        title.textContent = this.node(li).name || `Voice ${li + 1}`;
+      },
+      audition: () => this.auditionVoice(li),
+      onFullParams: () => { this.soundReturn = "loop"; this.soundLine = li; this.view = "sound"; this.render(); },
+      context: () => this.shuffleContext(),
+      mates: () => this.breedMates(li),
+      report: (kind) => this.reportVoiceSound(li, kind),
+    });
+    sheet.append(menu);
 
     overlay.append(sheet);
     this.root.append(overlay);
@@ -2468,7 +2410,7 @@ export class App {
   /** A single mixer strip for one voice line. */
   private mixerStrip(li: number): HTMLElement {
     const line = this.arr.lines[li];
-    const firstSound = line.nodes.find((n) => n.soundId >= 0 && !n.transition);
+    const firstSound = line.nodes.find((n) => n.soundId >= 0);
 
     const strip = document.createElement("div");
     strip.className = "mix-strip";
@@ -2522,7 +2464,7 @@ export class App {
       with param defaults first so no null "holes" get persisted). */
   private mixFader(label: string, li: number, id: ParamId, min = 0, max = 1): HTMLElement {
     const line = this.arr.lines[li];
-    const first = line.nodes.find((n) => n.soundId >= 0 && !n.transition);
+    const first = line.nodes.find((n) => n.soundId >= 0);
     const row = document.createElement("div");
     row.className = "mix-fader";
     const lbl = document.createElement("span");
@@ -2545,7 +2487,7 @@ export class App {
     slider.oninput = () => {
       const x = Number(slider.value);
       for (const n of line.nodes) {
-        if (n.soundId < 0 || n.transition) continue; // transitions morph their neighbours
+        if (n.soundId < 0) continue; // rests have no snapshot to move
         for (let i = n.snapshot.length; i < NUM_PARAMS; i++) n.snapshot[i] = baseSpec(i as ParamId).def;
         n.snapshot[id] = x;
       }

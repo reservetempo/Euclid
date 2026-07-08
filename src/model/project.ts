@@ -1,15 +1,17 @@
 // Whole-project save/load: the 6 voice lines (node chains), every drum's sound,
 // and tempo. Plain JSON, used for both localStorage autosave and files.
 //
-// v9 changed a node's length from `bars` to `reps` (pattern repeats; length =
-// reps × steps). v8 introduced node lines. deserialize() migrates both: v8's `bars`
-// becomes the reps that preserve the node's step length, and v1–v7's grids/order
-// collapse into one node per voice per order-run.
+// v10 folded transitions from separate chain nodes into intro/outro fades carried on a
+// sound node (see lines.ts); deserialize() migrates old transition nodes into a
+// neighbour's fade, preserving each line's total length. v9 changed a node's length
+// from `bars` to `reps` (pattern repeats; length = reps × steps). v8 introduced node
+// lines. deserialize() migrates each: v8's `bars` becomes the reps that preserve the
+// node's step length, and v1–v7's grids/order collapse into one node per voice per run.
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import {
-  LineArrangement, VoiceNode, TransitionMode, emptyNode,
+  LineArrangement, VoiceNode, TransitionMode, IntroEnv, OutroEnv, emptyNode, clampEnvelopes,
   NUM_LINES, STEPS_PER_BAR, MAX_REPS, EMPTY,
 } from "./lines";
 
@@ -26,6 +28,10 @@ export interface NodeJSON {
   reps: number;
   wait?: number;
   gain?: number; // loudness makeup (see VoiceNode.gain)
+  // Intro/outro fades folded into the node's own reps (v10+).
+  intro?: { reps: number; mode: TransitionMode; fromId: number };
+  outro?: { reps: number; mode: TransitionMode; toId: number };
+  // Legacy (pre-v10): a separate transition node. Read only, migrated into a neighbour.
   transition?: { fromId: number; toId: number; mode?: TransitionMode };
   preset?: string;
   ranges?: { lo: number[]; hi: number[] };
@@ -50,7 +56,7 @@ interface LegacyBlockJSON {
 }
 
 export interface ProjectJSON {
-  version: number; // 9 = reps; 8 = node lines w/ bars; 1-7 = legacy grids/order
+  version: number; // 10 = intro/outro fades; 9 = reps; 8 = node lines w/ bars; 1-7 = legacy grids/order
   tempo: number;
   lines?: LineJSON[];             // v8
   root?: number;                  // v8: global key context for pitch-snap shuffles
@@ -68,9 +74,8 @@ const cloneNode = (n: VoiceNode): NodeJSON => ({
   soundId: n.soundId, snapshot: n.snapshot.slice(), color: n.color, name: n.name,
   pitch: [n.pitch[0], n.pitch[1]], hits: n.hits, steps: n.steps, rotation: n.rotation,
   split: n.split, reps: n.reps, wait: n.wait, gain: n.gain,
-  transition: n.transition
-    ? { fromId: n.transition.fromId, toId: n.transition.toId, mode: n.transition.mode }
-    : undefined,
+  intro: n.intro ? { reps: n.intro.reps, mode: n.intro.mode, fromId: n.intro.fromId } : undefined,
+  outro: n.outro ? { reps: n.outro.reps, mode: n.outro.mode, toId: n.outro.toId } : undefined,
   preset: n.preset,
   ranges: n.ranges ? { lo: n.ranges.lo.slice(), hi: n.ranges.hi.slice() } : undefined,
 });
@@ -87,7 +92,7 @@ export function serialize(
     drumPresets[d] = kit.get(d).presetName();
   }
   return {
-    version: 9,
+    version: 10,
     tempo,
     root: arr.root,
     scale: arr.scale,
@@ -131,23 +136,75 @@ function readNode(sv: (Partial<NodeJSON> & { bars?: number }) | null | undefined
   // Loudness makeup (added after v9); absent -> undefined (no correction).
   n.gain = typeof sv.gain === "number" && isFinite(sv.gain)
     ? Math.max(0.2, Math.min(4, sv.gain)) : undefined;
-  if (sv.transition && typeof sv.transition.fromId === "number" && typeof sv.transition.toId === "number") {
-    const { fromId, toId } = sv.transition;
-    // Unknown modes (older builds, hand-edits) fall back per kind: "fade" for a
-    // silence end, "morph" between two sounds.
-    const known: TransitionMode[] = ["morph", "crossfade", "alternate", "filter", "fade", "wash", "thin"];
-    const mode = known.includes(sv.transition.mode as TransitionMode)
-      ? (sv.transition.mode as TransitionMode)
-      : (fromId < 0 || toId < 0 ? "fade" : "morph");
-    n.transition = { fromId, toId, mode };
-  } else {
-    n.transition = undefined;
-  }
+  // Intro/outro fades (v10+). Legacy `transition` nodes are folded into neighbours
+  // before this by migrateTransitions, so nothing here reads them.
+  n.intro = readEnv(sv.intro, "intro") ?? undefined;
+  n.outro = readEnv(sv.outro, "outro") ?? undefined;
+  clampEnvelopes(n);
   n.preset = typeof sv.preset === "string" ? sv.preset : undefined;
   n.ranges = sv.ranges && Array.isArray(sv.ranges.lo) && Array.isArray(sv.ranges.hi)
     ? { lo: sv.ranges.lo.slice(), hi: sv.ranges.hi.slice() }
     : undefined;
   return n;
+}
+
+const KNOWN_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter", "fade", "wash", "thin"];
+
+/** Coerce a stored envelope into a valid IntroEnv/OutroEnv (or null). The endpoint id
+    is `fromId` for an intro, `toId` for an outro; -1 means a silence end (a plain
+    fade). Unknown modes fall back per kind: "fade" for a silence end, else "morph". */
+function readEnv(ev: unknown, side: "intro"): IntroEnv | null;
+function readEnv(ev: unknown, side: "outro"): OutroEnv | null;
+function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | null {
+  if (!ev || typeof ev !== "object") return null;
+  const e = ev as Record<string, unknown>;
+  const idKey = side === "intro" ? "fromId" : "toId";
+  const id = typeof e[idKey] === "number" ? (e[idKey] as number) : -1;
+  const reps = typeof e.reps === "number" ? Math.max(1, Math.min(MAX_REPS, Math.round(e.reps as number))) : 1;
+  const mode: TransitionMode = KNOWN_MODES.includes(e.mode as TransitionMode)
+    ? (e.mode as TransitionMode)
+    : (id < 0 ? "fade" : "morph");
+  return side === "intro" ? { reps, mode, fromId: id } : { reps, mode, toId: id };
+}
+
+/** Fold every legacy transition NODE in a line into a neighbour as an intro/outro fade,
+    preserving the line's total length. A transition sat between its from/to nodes:
+    a fade-out (toId < 0) becomes the PREVIOUS sound's outro; a fade-in or a pair blend
+    becomes the NEXT sound's intro (its `fromId` carried over). The neighbour grows by the
+    transition's span (so nothing shifts in time) and marks that span as the fade. */
+function migrateTransitions(nodes: NodeJSON[]): NodeJSON[] {
+  if (!nodes.some((n) => n && n.transition)) return nodes;
+  const out = nodes.map((n) => ({ ...n }));
+  for (let j = out.length - 1; j >= 0; j--) {
+    const t = out[j]?.transition;
+    if (!t || typeof t.fromId !== "number" || typeof t.toId !== "number") continue;
+    const unit = (out[j].steps ?? 0) >= 1 ? out[j].steps : STEPS_PER_BAR;
+    const trReps = Math.max(1, Math.round(out[j].reps ?? 1));
+    const soundingSteps = trReps * unit;
+    const trWait = Math.max(0, Math.round(out[j].wait ?? 0));
+    const mode = KNOWN_MODES.includes(t.mode as TransitionMode) ? (t.mode as TransitionMode) : undefined;
+    const foldInto = (nb: NodeJSON | undefined, side: "intro" | "outro", endId: number): boolean => {
+      if (!nb || (nb.soundId ?? -1) < 0) return false;
+      const nbUnit = (nb.steps ?? 0) >= 1 ? nb.steps : STEPS_PER_BAR;
+      const add = Math.max(1, Math.round(soundingSteps / nbUnit));
+      nb.reps = Math.min(MAX_REPS, Math.max(1, Math.round(nb.reps ?? 1)) + add);
+      const m = mode ?? (endId < 0 ? "fade" : "morph");
+      if (side === "intro") {
+        nb.intro = { reps: add, mode: m, fromId: endId };
+        nb.wait = (Math.max(0, Math.round(nb.wait ?? 0)) + trWait) || undefined; // lead-in precedes the fade
+      } else {
+        nb.outro = { reps: add, mode: m, toId: endId };
+      }
+      return true;
+    };
+    // Fade-out → previous node's outro; fade-in / pair → next node's intro.
+    const folded = t.toId < 0
+      ? foldInto(out[j - 1], "outro", -1)
+      : foldInto(out[j + 1], "intro", t.fromId);
+    out.splice(j, 1); // the transition node itself is gone either way (dropped if unfoldable)
+    void folded;
+  }
+  return out;
 }
 
 // --- migration: grids + order (v6/v7) → node lines -----------------------------
@@ -215,12 +272,14 @@ export function deserialize(
   arr.root = 0;
   arr.scale = 0;
   const v = json && json.version;
-  if (!json || typeof v !== "number" || v < 1 || v > 9) return 120;
+  if (!json || typeof v !== "number" || v < 1 || v > 10) return 120;
 
   if (v >= 8 && Array.isArray(json.lines)) {
     json.lines.forEach((lj, i) => {
       if (i >= NUM_LINES || !lj) return;
-      const nodes = (Array.isArray(lj.nodes) ? lj.nodes : []).map((n) => readNode(n, 1));
+      // Fold any legacy transition nodes into neighbours (v10) before reading.
+      const raw = migrateTransitions(Array.isArray(lj.nodes) ? lj.nodes : []);
+      const nodes = raw.map((n) => readNode(n, 1));
       if (nodes.length) arr.lines[i].nodes = nodes;
       arr.lines[i].mute = !!lj.mute;
       arr.lines[i].solo = !!lj.solo;
