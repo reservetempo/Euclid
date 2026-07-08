@@ -28,7 +28,9 @@ export type EveryRule =
   | { kind: "weight"; weight: number } // probability per forBars slot (0..1)
   | { kind: "nth"; n: number }         // every n-th bar (n, 2n, 3n …)
   | { kind: "pow2" }                   // at bars 1, 2, 4, 8, 16 …
-  | { kind: "at"; bars: number[] };    // at explicit, 1-indexed bar numbers
+  | { kind: "at"; bars: number[] }     // at explicit, 1-indexed bar numbers
+  | { kind: "fill" };                  // every bar — fills gaps left by higher-priority
+                                       // solo loops (order it last to "fill the blanks")
 
 /** A loop's placement: where it lands, how long each hit lasts, and how it stacks. The
     `seed` fixes a weighted roll (kept until re-rolled); `seedHistory` is the Back stack. */
@@ -134,6 +136,10 @@ export function placementsFor(loop: Loop, barLimit: number): Interval[] {
   } else if (every.kind === "at") {
     // Explicit 1-indexed bar numbers the user typed; stored 0-indexed here.
     for (const b of every.bars) push(Math.round(b) - 1);
+  } else if (every.kind === "fill") {
+    // Every bar (tiled by forBars). As a low-priority solo loop this fills the gaps
+    // higher-priority loops leave; the priority resolution masks the rest.
+    for (let b = 0; b < barLimit; b += forBars) push(b);
   } else {
     // Weighted: walk the track in forBars slots, placing when the seeded roll passes.
     const w = Math.max(0, Math.min(1, every.weight));

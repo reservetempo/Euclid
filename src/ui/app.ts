@@ -75,6 +75,7 @@ export class App {
   private viewRoot!: HTMLElement;
   private euclidView = new EuclidView();
   private loopTimeEl: HTMLElement | null = null;
+  private trackPlayheadEl: HTMLElement | null = null; // overview playback line
   // Channel -> flash LED (mixer) and sound id -> loop-row button (colour panel).
   private mixerLeds: Map<number, HTMLElement> | null = null;
   private voiceBtns: Map<number, HTMLElement> | null = null;
@@ -103,7 +104,16 @@ export class App {
   private handlePlayhead(p: Playhead): void {
     if (!p.lines) {
       this.refreshRings();
+      this.trackPlayheadEl?.classList.remove("live");
       return;
+    }
+    // Overview: sweep the playback line to the current track position.
+    if (this.trackPlayheadEl) {
+      const loopLen = this.arr.loopSteps();
+      if (loopLen > 0) {
+        this.trackPlayheadEl.style.setProperty("--ph", String((p.pos % loopLen) / loopLen));
+        this.trackPlayheadEl.classList.add("live");
+      }
     }
     // Rings show ONLY what's audibly playing, aggregated to the six colours: for each
     // colour, whichever of its lanes is sounding this step lights its ring.
@@ -350,6 +360,7 @@ export class App {
   private render(): void {
     this.root.innerHTML = "";
     this.loopTimeEl = null;
+    this.trackPlayheadEl = null;
     this.mixerLeds = null;
     this.voiceBtns = null;
 
@@ -553,6 +564,10 @@ export class App {
     this.voiceBtns = new Map();
     const overview = document.createElement("div");
     overview.className = "track-overview";
+    // A vertical line that sweeps to the current playback position (see handlePlayhead).
+    this.trackPlayheadEl = document.createElement("div");
+    this.trackPlayheadEl.className = "track-playhead";
+    overview.append(this.trackPlayheadEl);
     overview.append(this.barRuler());
     for (let c = 0; c < NUM_LINES; c++) {
       const ct = this.track.colors[c];
@@ -575,12 +590,12 @@ export class App {
       row.append(head);
 
       // Lane timeline(s) for this colour — or one empty lane so the grid still reads.
-      const lanes = this.colorLaneCoverage(c);
+      const lanes = this.colorLaneNumbers(c);
       const bars = Math.max(1, this.track.barLimit);
       const strip = document.createElement("div");
       strip.className = "track-color-lanes";
-      if (lanes.length === 0) strip.append(this.laneCells(new Array(bars).fill(false)));
-      else for (const lit of lanes) strip.append(this.laneCells(lit));
+      if (lanes.length === 0) strip.append(this.laneCells(new Array(bars).fill(0)));
+      else for (const cells of lanes) strip.append(this.laneCells(cells));
       row.append(strip);
       for (const l of ct.loops) if (l.soundId >= 0) this.voiceBtns.set(l.soundId, row);
 
@@ -675,31 +690,36 @@ export class App {
     return row;
   }
 
-  /** Per-bar coverage of a colour's compiled lanes: one boolean[] per lane, `barLimit`
-      wide, true where a sounding node spans that bar. */
-  private colorLaneCoverage(c: number): boolean[][] {
+  /** Per-bar coverage of a colour's compiled lanes: one number[] per lane, `barLimit`
+      wide. Each cell is 0 when empty, else the sounding loop's 1-based number (its place
+      in the colour's priority list) — so the same-row loops can be told apart. */
+  private colorLaneNumbers(c: number): number[][] {
     const bars = Math.max(1, this.track.barLimit);
+    const numById = new Map<number, number>();
+    this.track.colors[c].loops.forEach((l, i) => { if (l.soundId >= 0) numById.set(l.soundId, i + 1); });
     return this.arr.lines.filter((l) => l.color === c).map((lane) => {
-      const lit = new Array(bars).fill(false);
+      const cells = new Array(bars).fill(0);
       let bar = 0;
       for (const n of lane.nodes) {
         const span = (n.reps * (n.steps >= 1 ? n.steps : STEPS_PER_BAR)) / STEPS_PER_BAR;
         if (n.soundId >= 0) {
-          for (let b = Math.floor(bar); b < Math.min(bars, Math.ceil(bar + span)); b++) lit[b] = true;
+          const num = numById.get(n.soundId) ?? 0;
+          for (let b = Math.floor(bar); b < Math.min(bars, Math.ceil(bar + span)); b++) cells[b] = num;
         }
         bar += span;
       }
-      return lit;
+      return cells;
     });
   }
 
-  /** A row of `barLimit` timeline cells for one lane's coverage. */
-  private laneCells(lit: boolean[]): HTMLElement {
+  /** A row of `barLimit` timeline cells for one lane; a filled cell shows its loop number. */
+  private laneCells(cells: number[]): HTMLElement {
     const row = document.createElement("div");
     row.className = "color-preview-lane";
-    for (let b = 0; b < lit.length; b++) {
+    for (let b = 0; b < cells.length; b++) {
       const cell = document.createElement("span");
-      cell.className = "color-preview-cell" + (lit[b] ? " on" : "");
+      cell.className = "color-preview-cell" + (cells[b] > 0 ? " on" : "");
+      if (cells[b] > 0) cell.textContent = String(cells[b]);
       row.append(cell);
     }
     return row;
@@ -710,7 +730,7 @@ export class App {
     const wrap = document.createElement("div");
     wrap.className = "color-preview";
     wrap.style.setProperty("--vc", VOICE_COLORS[c]);
-    for (const lit of this.colorLaneCoverage(c)) wrap.append(this.laneCells(lit));
+    for (const cells of this.colorLaneNumbers(c)) wrap.append(this.laneCells(cells));
     return wrap;
   }
 
@@ -735,6 +755,7 @@ export class App {
     if (r.every.kind === "nth") every = r.every.n === 1 ? "every bar" : `every ${r.every.n} bars`;
     else if (r.every.kind === "pow2") every = "at 1,2,4,8…";
     else if (r.every.kind === "at") every = r.every.bars.length ? `at bars ${r.every.bars.join(",")}` : "no bars set";
+    else if (r.every.kind === "fill") every = "fill the blanks";
     else every = `${Math.round(r.every.weight * 100)}% chance`;
     const forB = r.forBars === 1 ? "1 bar" : `${r.forBars} bars`;
     return `${every} · for ${forB} · ${r.mode}`;
@@ -856,13 +877,17 @@ export class App {
         if (key === "nth") r.every = { kind: "nth", n: 4 };
         else if (key === "pow2") r.every = { kind: "pow2" };
         else if (key === "at") r.every = { kind: "at", bars: [1] };
+        else if (key === "fill") r.every = { kind: "fill" };
         else r.every = { kind: "weight", weight: 0.5 };
         this.recompile();
         rerender();
       };
       return b;
     };
-    seg.append(mkSeg("nth", "Nth bar"), mkSeg("pow2", "Powers of 2"), mkSeg("at", "At bars"), mkSeg("weight", "Chance"));
+    seg.append(
+      mkSeg("nth", "Nth bar"), mkSeg("pow2", "Powers of 2"), mkSeg("at", "At bars"),
+      mkSeg("fill", "Fill blanks"), mkSeg("weight", "Chance"),
+    );
     everyRow.append(everyLbl, seg);
     wrap.append(everyRow);
 
@@ -892,6 +917,11 @@ export class App {
       inp.oninput = parse; // recompile live; no re-render so the field keeps focus
       row.append(lbl, inp);
       wrap.append(row);
+    } else if (r.every.kind === "fill") {
+      const hint = document.createElement("p");
+      hint.className = "hint placement-hint";
+      hint.textContent = "Fills every bar. Order it below other solo loops (▼) so they win and it fills only the gaps.";
+      wrap.append(hint);
     } else if (r.every.kind === "weight") {
       const chanceRow = this.numRow("Chance %", () => Math.round((r.every as { weight: number }).weight * 100), (n) => {
         r.every = { kind: "weight", weight: Math.max(0, Math.min(1, Math.round(n) / 100)) };

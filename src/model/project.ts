@@ -126,6 +126,7 @@ function readEvery(ev: unknown): EveryRule {
     const e = ev as Record<string, unknown>;
     if (e.kind === "nth") return { kind: "nth", n: Math.max(1, Math.round(Number(e.n) || 1)) };
     if (e.kind === "pow2") return { kind: "pow2" };
+    if (e.kind === "fill") return { kind: "fill" };
     if (e.kind === "weight") return { kind: "weight", weight: Math.max(0, Math.min(1, Number(e.weight) || 0)) };
     if (e.kind === "at") {
       const bars = Array.isArray(e.bars)

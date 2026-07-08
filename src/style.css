@@ -1064,3 +1064,19 @@ button:active { transform: scale(0.94); }
   background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
   color: var(--text); font-size: 14px; font-variant-numeric: tabular-nums; cursor: text;
 }
+
+/* Loop numbers on the timeline cells, the overview playback line, the Fill hint. */
+.color-preview-cell {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; line-height: 1; color: var(--bg);
+  font-variant-numeric: tabular-nums; overflow: hidden;
+}
+.track-overview { position: relative; }
+.track-playhead {
+  position: absolute; top: 0; bottom: 0; width: 2px; z-index: 5;
+  left: calc(18px + var(--ph, 0) * (100% - 32px));
+  background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none;
+  opacity: 0; transition: opacity 0.15s;
+}
+.track-playhead.live { opacity: 0.9; }
+.placement-hint { text-align: left; margin: 2px 0 0; }
