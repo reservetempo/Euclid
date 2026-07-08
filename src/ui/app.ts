@@ -32,7 +32,7 @@ import {
 } from "../model/track";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
-  MelodyNote, MELODY_COLOR_INDEX, defaultNote,
+  MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes,
 } from "../model/melody";
 import {
   ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree,
@@ -67,6 +67,7 @@ export class App {
 
   private view: View = "track";
   private openColor = 0;               // which colour panel is open
+  private melodyPath: MelodyNote[] = []; // notes descended into (branch drill-down); [] = root
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
@@ -655,11 +656,20 @@ export class App {
   }
 
   // --- melody view (the last coloured row) ------------------------------
-  /** Open the melody editor, minting its instrument sound on first entry. */
+  /** Open the melody editor at the root, minting its instrument sound on first entry. */
   private openMelody(): void {
     if (this.track.melodyInstrument.soundId < 0) this.mintLoopSound(this.track.melodyInstrument, MELODY_COLOR_INDEX);
+    this.melodyPath = [];
     this.view = "melody";
     this.render();
+  }
+
+  /** The melody context currently being edited: the root, or a branch reached by drilling
+      through `melodyPath` (each entry a note whose branch we descended into). */
+  private currentMelodyNode(): MelodyNode {
+    let node = this.track.melody;
+    for (const note of this.melodyPath) node = note.branch ?? node;
+    return node;
   }
 
   /** Re-generate + resend after any melody edit (recompile persists + updates the lane). */
@@ -695,37 +705,55 @@ export class App {
 
   private renderMelodyPanel(): void {
     const v = this.viewRoot;
-    const m = this.track.melody;
     const c = MELODY_COLOR_INDEX;
+    const atRoot = this.melodyPath.length === 0;
+    const node = this.currentMelodyNode();
 
     const head = document.createElement("div");
     head.className = "mixer-head";
     head.style.setProperty("--vc", VOICE_COLORS[c]);
     const back = document.createElement("button");
     back.className = "mixer-back";
-    back.textContent = "‹ Track";
-    back.onclick = () => { this.view = "track"; this.render(); };
+    // At the root, Back leaves to the Track; inside a branch, it pops up one level.
+    back.textContent = atRoot ? "‹ Track" : "‹ Back";
+    back.onclick = () => {
+      if (atRoot) { this.view = "track"; this.render(); }
+      else { this.melodyPath.pop(); this.render(); }
+    };
     const title = document.createElement("h2");
     title.className = "mixer-title";
-    title.textContent = "Melody";
+    title.textContent = atRoot ? "Melody" : "Branch";
     head.append(back, title);
+    if (atRoot) {
+      const tree = document.createElement("button");
+      tree.className = "mixer-open melody-tree-btn";
+      tree.textContent = "⤢ Tree";
+      tree.title = "Zoomed-out tree of the whole melody";
+      tree.onclick = () => this.openMelodyTree();
+      head.append(tree);
+    }
     v.append(head);
 
-    // Generated-lane preview + Generate/Back (the order is a seeded walk over the weights).
-    if (this.melodyLaneCells().some((x) => x > 0)) v.append(this.melodyStrip(null));
-    v.append(this.melodyGenerateRow());
+    if (!atRoot) v.append(this.melodyBreadcrumb());
 
-    v.append(this.melodyScaleControls());
+    // Root-only: the whole-melody preview, Generate/Back, and the shared instrument.
+    if (atRoot) {
+      if (this.melodyLaneCells().some((x) => x > 0)) v.append(this.melodyStrip(null));
+      v.append(this.melodyGenerateRow());
+    }
 
-    // Instrument: the single re-pitched sound the whole melody plays through.
-    const instHd = document.createElement("div");
-    instHd.className = "placement-row melody-notes-head";
-    const iLbl = document.createElement("span");
-    iLbl.className = "placement-lbl transition-head";
-    iLbl.textContent = "Instrument";
-    instHd.append(iLbl);
-    v.append(instHd);
-    v.append(this.melodyInstrumentMenu());
+    v.append(this.melodyScaleControls(node));
+
+    if (atRoot) {
+      const instHd = document.createElement("div");
+      instHd.className = "placement-row melody-notes-head";
+      const iLbl = document.createElement("span");
+      iLbl.className = "placement-lbl transition-head";
+      iLbl.textContent = "Instrument";
+      instHd.append(iLbl);
+      v.append(instHd);
+      v.append(this.melodyInstrumentMenu());
+    }
 
     const notesHd = document.createElement("div");
     notesHd.className = "placement-row melody-notes-head";
@@ -738,21 +766,53 @@ export class App {
     const list = document.createElement("div");
     list.className = "melody-notes";
     list.style.setProperty("--vc", VOICE_COLORS[c]);
-    if (m.notes.length === 0) {
+    if (node.notes.length === 0) {
       const hint = document.createElement("p");
       hint.className = "hint";
-      hint.textContent = "Add notes from the scale and weight them (a bigger dice = picked more often). Each note has its own length and an optional pause before it.";
+      hint.textContent = "Add notes from the scale and weight them (a bigger dice = picked more often). Each note has its own length, an optional pause before it, and can branch into a sub-phrase.";
       list.append(hint);
     } else {
-      m.notes.forEach((note, i) => list.append(this.melodyNoteRow(note, i)));
+      node.notes.forEach((note, i) => list.append(this.melodyNoteRow(node, note, i)));
     }
     v.append(list);
 
     const add = document.createElement("button");
     add.className = "loop-add";
     add.textContent = "＋ Add note";
-    add.onclick = () => { m.notes.push(defaultNote()); this.melodyChanged(); };
+    add.onclick = () => { node.notes.push(defaultNote()); this.melodyChanged(); };
     v.append(add);
+  }
+
+  /** The path from the root context down to the branch being edited, each crumb tapping
+      back to that level. */
+  private melodyBreadcrumb(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "melody-crumbs";
+    const crumb = (text: string, depth: number) => {
+      const b = document.createElement("button");
+      b.className = "melody-crumb" + (depth === this.melodyPath.length ? " here" : "");
+      b.textContent = text;
+      b.onclick = () => { this.melodyPath = this.melodyPath.slice(0, depth); this.render(); };
+      return b;
+    };
+    wrap.append(crumb("Melody", 0));
+    let node = this.track.melody;
+    this.melodyPath.forEach((note, i) => {
+      const sep = document.createElement("span");
+      sep.className = "melody-crumb-sep";
+      sep.textContent = "›";
+      wrap.append(sep, crumb(this.noteLabelFor(node, note), i + 1));
+      node = note.branch ?? node;
+    });
+    return wrap;
+  }
+
+  /** A note's display label ("E", "A+1") in its context's scale/root. */
+  private noteLabelFor(node: MelodyNode, note: MelodyNote): string {
+    const len = degreesPerOctave(node.scale);
+    const nm = noteNameForDegree(note.degree, node.root, node.scale);
+    const oct = Math.floor(note.degree / len);
+    return oct === 0 ? nm : `${nm}${oct > 0 ? "+" : ""}${oct}`;
   }
 
   /** Generate-again / Back for the melody's seeded note order, plus a note-count read-out. */
@@ -787,16 +847,69 @@ export class App {
     });
   }
 
-  /** Scale / root / octave pickers for the melody's root context. */
-  private melodyScaleControls(): HTMLElement {
-    const m = this.track.melody;
+  /** Zoomed-out view of the whole melody tree: each context (root + branches) with its
+      notes, nested by branch. Tap a context to jump straight to editing it. */
+  private openMelodyTree(): void {
+    document.querySelector(".melody-tree-overlay")?.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "melody-tree-overlay";
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    const card = document.createElement("div");
+    card.className = "melody-tree-card";
+    card.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const title = document.createElement("h3");
+    title.className = "tr-title";
+    title.textContent = "Melody tree";
+    card.append(title);
+
+    const build = (node: MelodyNode, path: MelodyNote[], label: string): HTMLElement => {
+      const block = document.createElement("div");
+      block.className = "melody-tree-node";
+      const go = document.createElement("button");
+      go.className = "melody-tree-go" + (path.length === this.melodyPath.length && path.every((p, k) => p === this.melodyPath[k]) ? " here" : "");
+      go.textContent = `${label} · ${ALL_SCALES[node.scale]} ${ALL_ROOTS[node.root]}`;
+      go.onclick = () => { this.melodyPath = path; overlay.remove(); this.view = "melody"; this.render(); };
+      block.append(go);
+      const notesLine = document.createElement("div");
+      notesLine.className = "melody-tree-notes";
+      if (node.notes.length === 0) {
+        const em = document.createElement("span");
+        em.className = "melody-tree-chip empty";
+        em.textContent = "no notes";
+        notesLine.append(em);
+      }
+      node.notes.forEach((note) => {
+        const chip = document.createElement("span");
+        chip.className = "melody-tree-chip" + (note.branch ? " has-branch" : "");
+        chip.textContent = this.noteLabelFor(node, note) + (note.branch ? " ›" : "");
+        notesLine.append(chip);
+      });
+      block.append(notesLine);
+      node.notes.forEach((note) => {
+        if (note.branch) block.append(build(note.branch, [...path, note], `⌐ ${this.noteLabelFor(node, note)}`));
+      });
+      return block;
+    };
+    card.append(build(this.track.melody, [], "Melody"));
+
+    const close = document.createElement("button");
+    close.className = "tr-cancel";
+    close.textContent = "Close";
+    close.onclick = () => overlay.remove();
+    card.append(close);
+    overlay.append(card);
+    this.root.append(overlay);
+  }
+
+  /** Scale / root / octave pickers for a melody context (root or branch). */
+  private melodyScaleControls(node: MelodyNode): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "placement-controls melody-scale";
     wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
-    wrap.append(this.selectRow("Scale", ALL_SCALES, m.scale, (i) => { m.scale = i; this.melodyChanged(); }));
-    wrap.append(this.selectRow("Root", ALL_ROOTS, m.root, (i) => { m.root = i; this.melodyChanged(); }));
-    wrap.append(this.stepperRow("Octave", m.octave, -3, 3,
-      (n) => { m.octave = n; this.melodyChanged(); },
+    wrap.append(this.selectRow("Scale", ALL_SCALES, node.scale, (i) => { node.scale = i; this.melodyChanged(); }));
+    wrap.append(this.selectRow("Root", ALL_ROOTS, node.root, (i) => { node.root = i; this.melodyChanged(); }));
+    wrap.append(this.stepperRow("Octave", node.octave, -3, 3,
+      (n) => { node.octave = n; this.melodyChanged(); },
       (n) => (n > 0 ? `+${n}` : `${n}`)));
     return wrap;
   }
@@ -843,16 +956,16 @@ export class App {
     return wrap;
   }
 
-  /** One note of the melody: degree (note name) + weight + length + pre-note rest. */
-  private melodyNoteRow(note: MelodyNote, i: number): HTMLElement {
-    const m = this.track.melody;
-    const len = degreesPerOctave(m.scale);
+  /** One note of a context: degree (note name) + weight + length + pre-note rest, plus a
+      Branch button that drills into (or creates) its sequential sub-phrase. */
+  private melodyNoteRow(node: MelodyNode, note: MelodyNote, i: number): HTMLElement {
+    const len = degreesPerOctave(node.scale);
     const card = document.createElement("div");
     card.className = "melody-note";
     card.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
 
     const noteLbl = (deg: number) => {
-      const nm = noteNameForDegree(deg, m.root, m.scale);
+      const nm = noteNameForDegree(deg, node.root, node.scale);
       const oct = Math.floor(deg / len);
       return oct === 0 ? nm : `${nm}${oct > 0 ? "+" : ""}${oct}`;
     };
@@ -865,7 +978,7 @@ export class App {
     rm.className = "loop-remove";
     rm.textContent = "×";
     rm.title = "Remove this note";
-    rm.onclick = () => { m.notes.splice(i, 1); this.melodyChanged(); };
+    rm.onclick = () => { node.notes.splice(i, 1); this.melodyChanged(); };
     hd.append(rm);
     card.append(hd);
 
@@ -894,6 +1007,38 @@ export class App {
     card.append(this.numRow("Rest before", () => note.restSteps,
       (n) => { note.restSteps = Math.max(0, Math.round(n)); this.recompile(); },
       () => this.render(), () => (note.restSteps === 0 ? "none" : this.stepLabel(note.restSteps))));
+
+    // Branch: a sequential sub-phrase that plays after this note, then returns.
+    const branchRow = document.createElement("div");
+    branchRow.className = "placement-row melody-branch-row";
+    const bLbl = document.createElement("span");
+    bLbl.className = "placement-lbl";
+    bLbl.textContent = "Branch";
+    const bBtns = document.createElement("div");
+    bBtns.className = "melody-branch-btns";
+    const open = document.createElement("button");
+    open.className = "seg-btn melody-branch-open";
+    if (note.branch) {
+      open.classList.add("on");
+      open.textContent = `${countNotes(note.branch)} note${countNotes(note.branch) === 1 ? "" : "s"} ›`;
+      const del = document.createElement("button");
+      del.className = "loop-remove melody-branch-del";
+      del.textContent = "×";
+      del.title = "Remove this branch";
+      del.onclick = () => { note.branch = undefined; this.melodyChanged(); };
+      open.onclick = () => { this.melodyPath = [...this.melodyPath, note]; this.render(); };
+      bBtns.append(open, del);
+    } else {
+      open.textContent = "＋ Add branch";
+      open.onclick = () => {
+        note.branch = newBranch(node);
+        this.melodyPath = [...this.melodyPath, note];
+        this.melodyChanged();
+      };
+      bBtns.append(open);
+    }
+    branchRow.append(bLbl, bBtns);
+    card.append(branchRow);
     return card;
   }
 

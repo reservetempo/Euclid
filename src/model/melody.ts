@@ -53,6 +53,22 @@ export function defaultNote(): MelodyNote {
   return { degree: 0, weight: 3, lengthSteps: 4, restSteps: 0 };
 }
 
+/** A fresh branch context off a parent note: inherits the parent's scale/root/octave (a
+    natural starting point) and seeds one default note. */
+export function newBranch(parent: MelodyNode): MelodyNode {
+  return {
+    scale: parent.scale, root: parent.root, octave: parent.octave,
+    notes: [defaultNote()], seed: melodySeed(), seedHistory: [],
+  };
+}
+
+/** Total notes in a melody tree (root + every branch), for summaries. */
+export function countNotes(node: MelodyNode): number {
+  let n = node.notes.length;
+  for (const note of node.notes) if (note.branch) n += countNotes(note.branch);
+  return n;
+}
+
 // --- generation ---------------------------------------------------------------
 // A seeded walk over the melody's weighted notes emits a linear note stream long enough
 // to fill the track. Deterministic per seed, so "Generate again" = mint a new seed. A

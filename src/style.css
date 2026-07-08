@@ -1118,6 +1118,53 @@ button:active { transform: scale(0.94); }
 .melody-note-head .placement-row { flex: 1 1 auto; }
 .melody-note .placement-row input { max-width: 150px; }
 .melody-soon { margin-top: 14px; text-align: left; opacity: 0.8; }
+.melody-gen-hint { font-size: 12px; color: var(--muted); font-style: italic; }
+.melody-tree-btn { margin-left: auto; }
+
+/* Breadcrumb trail when editing a branch. */
+.melody-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 10px; }
+.melody-crumb {
+  padding: 4px 8px; font-size: 12px; font-weight: 600; border-radius: 8px;
+  color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+}
+.melody-crumb.here { color: var(--vc); border-color: var(--vc); }
+.melody-crumb-sep { color: var(--muted); font-size: 12px; }
+
+/* Branch row inside a note card. */
+.melody-branch-row { border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 2px; }
+.melody-branch-btns { display: flex; align-items: center; gap: 6px; }
+.melody-branch-open.on { border-color: var(--vc); color: var(--vc); }
+.melody-branch-del { flex: none; }
+
+/* Zoomed-out tree overlay. */
+.melody-tree-overlay {
+  position: fixed; inset: 0; z-index: 220; padding: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+.melody-tree-card {
+  --vc: var(--accent);
+  width: 100%; max-width: 340px; max-height: 80vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; padding: 16px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 16px;
+  animation: pop-in 0.16s ease-out;
+}
+.melody-tree-node { display: flex; flex-direction: column; gap: 6px; }
+.melody-tree-node .melody-tree-node {
+  margin-left: 14px; padding-left: 10px; border-left: 2px solid var(--line);
+}
+.melody-tree-go {
+  align-self: flex-start; padding: 6px 10px; font-size: 12px; font-weight: 700;
+  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+}
+.melody-tree-go.here { color: var(--vc); border-color: var(--vc); background: var(--bg); }
+.melody-tree-notes { display: flex; flex-wrap: wrap; gap: 5px; }
+.melody-tree-chip {
+  padding: 3px 7px; font-size: 12px; font-variant-numeric: tabular-nums;
+  color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+}
+.melody-tree-chip.has-branch { color: var(--vc); border-color: var(--vc); }
+.melody-tree-chip.empty { font-style: italic; opacity: 0.6; }
 
 /* Loop transitions (fade in / fade out), below the placement rule. */
 .transition-controls { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
