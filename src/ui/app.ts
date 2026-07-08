@@ -1366,6 +1366,7 @@ export class App {
 
     sheet.append(this.placementControls(loop, rerender));
     sheet.append(this.transitionControls(loop, rerender));
+    sheet.append(this.lifeControls(loop, rerender));
 
     // Rhythm circles (Hits/Steps/Start/Split) + the shuffle menu for the sound.
     const detail = document.createElement("div");
@@ -1591,7 +1592,13 @@ export class App {
         const b = document.createElement("button");
         b.className = "seg-btn" + (env.mode === m ? " on" : "");
         b.textContent = this.fadeModeLabel(m, side);
-        b.onclick = () => { env.mode = m; this.recompile(); rerender(); };
+        b.onclick = () => {
+          env.mode = m;
+          // Speed carries a far-end rate + glide curve; seed sensible defaults on switch.
+          if (m === "speed") { if (env.rate === undefined) env.rate = 2; if (env.curve === undefined) env.curve = 0; }
+          this.recompile();
+          rerender();
+        };
         modes.append(b);
       }
       controls.append(modes);
@@ -1599,6 +1606,18 @@ export class App {
         env.reps = Math.max(1, Math.min(cap, Math.round(n)));
         this.recompile();
       }, rerender, () => `${env.reps} rep${env.reps === 1 ? "" : "s"}`));
+
+      // Speed mode: the far end's hit rate (× tempo) and the linear→exponential glide.
+      if (env.mode === "speed") {
+        controls.append(this.numRow("Rate", () => Math.round((env.rate ?? 2) * 100), (n) => {
+          env.rate = Math.max(0.25, Math.min(4, Math.round(n) / 100));
+          this.recompile();
+        }, rerender, () => `${(env.rate ?? 2).toFixed(2)}×`));
+        controls.append(this.numRow("Curve", () => Math.round((env.curve ?? 0) * 100), (n) => {
+          env.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
+          this.recompile();
+        }, rerender, () => `${Math.round((env.curve ?? 0) * 100)}%`));
+      }
     }
     row.append(lbl, controls);
     return row;
@@ -1610,8 +1629,91 @@ export class App {
       case "filter": return "Filter";
       case "wash": return "Wash";
       case "thin": return side === "outro" ? "Thin out" : "Fill in";
+      case "drive": return "Drive";
+      case "crush": return "Crush";
+      case "echo": return "Echo";
+      case "speed": return side === "outro" ? "Slow" : "Rush";
       default: return "Fade";
     }
+  }
+
+  /** Per-loop Accent / Ghost placement (see LifePlacement in lines.ts): a deterministic
+      alternative to the sound's own random accent/ghost. Each side picks Off / Every-N
+      (mark every Nth hit) / Ramp (swell across the loop) plus its amount. */
+  private lifeControls(loop: Loop, rerender: () => void): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls transition-controls life-controls";
+    const head = document.createElement("span");
+    head.className = "placement-lbl transition-head";
+    head.textContent = "Accents & Ghosts";
+    wrap.append(head);
+    wrap.append(this.lifeRow(loop, "accent", rerender));
+    wrap.append(this.lifeRow(loop, "ghost", rerender));
+    return wrap;
+  }
+
+  /** One Life side (accent/ghost): mode segment + its parameter rows. */
+  private lifeRow(loop: Loop, kind: "accent" | "ghost", rerender: () => void): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = kind === "accent" ? "Accents" : "Ghosts";
+
+    const spec = loop[kind];
+    const controls = document.createElement("div");
+    controls.className = "fade-controls";
+
+    const cur: "off" | "everyN" | "ramp" = spec ? spec.mode : "off";
+    const seg = document.createElement("div");
+    seg.className = "placement-seg fade-modes";
+    const defAmount = kind === "accent" ? 0.6 : 0.7;
+    const mk = (m: "off" | "everyN" | "ramp", text: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (cur === m ? " on" : "");
+      b.textContent = text;
+      b.onclick = () => {
+        if (m === "off") loop[kind] = undefined;
+        else if (m === "everyN") loop[kind] = { mode: "everyN", every: 2, amount: defAmount };
+        else loop[kind] = { mode: "ramp", curve: 0, dir: "up", amount: defAmount };
+        this.recompile();
+        rerender();
+      };
+      return b;
+    };
+    seg.append(mk("off", "Off"), mk("everyN", "Every-N"), mk("ramp", "Ramp"));
+    controls.append(seg);
+
+    if (spec) {
+      if (spec.mode === "everyN") {
+        controls.append(this.numRow("Every", () => spec.every ?? 2, (n) => {
+          spec.every = Math.max(1, Math.round(n));
+          this.recompile();
+        }, rerender, () => { const e = spec.every ?? 2; return `${e} hit${e === 1 ? "" : "s"}`; }));
+      } else {
+        const dirSeg = document.createElement("div");
+        dirSeg.className = "placement-seg fade-modes";
+        const mkDir = (d: "up" | "down", text: string) => {
+          const b = document.createElement("button");
+          b.className = "seg-btn" + ((spec.dir ?? "up") === d ? " on" : "");
+          b.textContent = text;
+          b.onclick = () => { spec.dir = d; this.recompile(); rerender(); };
+          return b;
+        };
+        dirSeg.append(mkDir("up", "Swell in"), mkDir("down", "Swell out"));
+        controls.append(dirSeg);
+        controls.append(this.numRow("Curve", () => Math.round((spec.curve ?? 0) * 100), (n) => {
+          spec.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
+          this.recompile();
+        }, rerender, () => `${Math.round((spec.curve ?? 0) * 100)}%`));
+      }
+      controls.append(this.numRow("Amount", () => Math.round(spec.amount * 100), (n) => {
+        spec.amount = Math.max(0, Math.min(1, Math.round(n) / 100));
+        this.recompile();
+      }, rerender, () => `${Math.round(spec.amount * 100)}%`));
+    }
+    row.append(lbl, controls);
+    return row;
   }
 
   /** Re-roll / Back for a seeded rule (Chance or Dice): re-roll mints a new seed (pushing

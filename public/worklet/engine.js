@@ -114,6 +114,22 @@ const HUMANIZE_CUTOFF = 0.2;  // ±cutoff jitter (fraction) at Humanize = 1
 const RATCHET_VEL_DECAY = 0.85; // each ratchet sub-hit is a bit quieter
 const CHOKE_RELEASE = 0.02;   // seconds — fast fade when a choke group cuts a sound
 
+// Deterministic accent/ghost weight (0..1) for one hit, from a per-loop LifePlacement
+// (see lines.ts). "everyN" marks every Nth hit at full weight (hits 0, N, 2N… — so the
+// downbeat is hit 0), the rest 0. "ramp" swells the weight across the loop (pos01 0→1),
+// bent from linear (curve 0) toward exponential (curve 1), growing toward the loop's END
+// (dir "up") or its START (dir "down").
+function lifeWeight(spec, hitIndex, pos01) {
+  if (!spec) return 0;
+  if (spec.mode === "everyN") {
+    const n = Math.max(1, spec.every | 0);
+    return (hitIndex % n) === 0 ? 1 : 0;
+  }
+  const exp = Math.pow(4, clamp(spec.curve || 0, 0, 1)); // 1 (linear) .. 4 (exponential)
+  const t = spec.dir === "down" ? 1 - pos01 : pos01;
+  return Math.pow(clamp(t, 0, 1), exp);
+}
+
 // Standard 2-sample polyBLEP residual: the correction to add around a unit step
 // discontinuity at phase 0 (t = distance into/before the edge in cycles, dt = phase
 // increment per sample). Smooths oscillator edges so they don't alias.
@@ -363,13 +379,18 @@ class Voice {
     // Per-hit life: velocity scale + ratchet retrigger schedule.
     this.vel = 1;
     this.ratchetLeft = 0; this.ratchetInterval = 0; this.ratchetCountdown = 0;
+    // Sub-step onset delay (samples): silence before the note begins, so a speed
+    // transition's warped hits land BETWEEN grid steps instead of snapping to them.
+    this.startDelay = 0;
   }
   // `vel` scales the hit (accents/ghosts/humanize); `ratchetCount`/`ratchetInterval`
   // (samples) re-strike the envelope for drum-roll bursts within the step.
   // `beatPos` is the transport position in BEATS at the hit (0 when not sequenced),
-  // used to phase-lock tempo-synced LFOs to the beat grid.
-  start(s, gate, vel, ratchetCount, ratchetInterval, beatPos) {
+  // used to phase-lock tempo-synced LFOs to the beat grid. `startDelay` (samples) holds
+  // the note off for a fraction of a step (speed-transition sub-step timing).
+  start(s, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay) {
     this.vel = vel === undefined ? 1 : vel;
+    this.startDelay = Math.max(0, startDelay | 0);
     this.ratchetLeft = (ratchetCount | 0) > 1 ? (ratchetCount | 0) - 1 : 0;
     this.ratchetInterval = Math.max(1, ratchetInterval | 0);
     this.ratchetCountdown = this.ratchetInterval;
@@ -536,6 +557,9 @@ class Voice {
       this.lfoInc[L] = (beats > 0 ? Math.max(1, tempo || 120) / (60 * beats) : this.lfoRates[L]) / sr;
     }
     for (let i = 0; i < n; i++) {
+      // Sub-step onset delay: stay silent until the warped onset time arrives (the note
+      // is armed but hasn't begun), so speed-transition hits sit off the grid.
+      if (this.startDelay > 0) { this.startDelay--; continue; }
       // Ratchet: re-strike the envelope (and the one-shot transients) on schedule so
       // one step becomes a 2-4 hit burst. Each sub-hit re-arms its own gate and lands
       // slightly quieter than the last.
@@ -814,11 +838,11 @@ class Channel {
   }
   killVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].active = false; }
   chokeVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].choke(); }
-  trigger(snap, gate, vel, ratchetCount, ratchetInterval, beatPos) {
+  trigger(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay) {
     for (let i = 0; i < NUM_VOICES; i++) {
-      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos); return; }
+      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay); return; }
     }
-    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos);
+    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay);
     this.next = (this.next + 1) % NUM_VOICES;
   }
   // Render `n` samples and ADD into the STEREO master at `offset`. `scratch` is
@@ -1056,7 +1080,8 @@ class EngineProcessor extends AudioWorkletProcessor {
   // estimated tail, and start a voice with the (possibly key-pitched) snapshot.
   // `vel` and the ratchet pair come from perHit (accents/ghosts/humanize/rolls);
   // `beatPos` (transport beats at the hit) phase-locks tempo-synced LFOs to the grid.
-  triggerSound(id, baseSnap, voiceSnap, gate, tailSec, vel, ratchetCount, ratchetInterval, beatPos) {
+  // `startDelay` (samples) holds a warped speed-transition hit off the grid.
+  triggerSound(id, baseSnap, voiceSnap, gate, tailSec, vel, ratchetCount, ratchetInterval, beatPos, startDelay) {
     // Choke groups: this hit silences every other sound in its group (fast-release,
     // not a hard cut) — the classic closed-hat-chokes-open-hat relationship.
     const group = Math.round(rd(baseSnap, P.ChokeGroup, 0));
@@ -1071,22 +1096,48 @@ class EngineProcessor extends AudioWorkletProcessor {
     const ch = this.channels[c];
     ch.setParams(baseSnap);
     ch.busyUntil = this.clock + gate + Math.max(0, tailSec || 0) * this.sr;
-    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos);
+    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay);
   }
 
-  // Per-hit Life: given a sound's snapshot and whether this step is the accent (the
-  // first hit of the cycle), roll velocity/ghosting/ratcheting for ONE hit. Returns
-  // null when the hit is dropped entirely, else { vel, human, count, interval }.
-  // Uses Math.random (not the shuffle's seeded RNG) — this is live feel, not design.
-  perHit(s, isAccent) {
+  // Per-hit Life: given a sound's snapshot and the hit CONTEXT, roll velocity/
+  // ghosting/ratcheting for ONE hit. Returns null when the hit is dropped entirely,
+  // else { vel, human, count, interval }. Uses Math.random (not the shuffle's seeded
+  // RNG) — this is live feel, not design.
+  //
+  // `ctx` = { isAccent, hitIndex, pos01, accent?, ghost? }. When the node carries a
+  // per-loop accent/ghost LifePlacement (see lines.ts), placement is DETERMINISTIC —
+  // every Nth hit, or a ramp across the loop — overriding the sound's own random
+  // accent/HitChance for that axis; each axis falls back to the sound's random feel
+  // when its spec is absent. `hitIndex` is the hit's ordinal across the loop and
+  // `pos01` its position 0..1 through the sounding window.
+  perHit(s, ctx) {
+    const isAccent = ctx && ctx.isAccent;
+    const accentSpec = ctx && ctx.accent;
+    const ghostSpec = ctx && ctx.ghost;
     let vel = 1;
-    const accent = clamp(rd(s, P.AccentAmount, 0), 0, 1);
-    if (accent > 0 && !isAccent) vel *= 1 - ACCENT_DUCK * accent;
-    const chance = clamp(rd(s, P.HitChance, 1), 0, 1);
-    if (chance < 1 && Math.random() > chance) {
-      if (Math.random() < GHOST_P) vel *= GHOST_LEVEL;
-      else return null; // dropped hit
+
+    // Accent axis: per-loop placement (deterministic) or the sound's own accent.
+    if (accentSpec) {
+      const w = lifeWeight(accentSpec, ctx.hitIndex, ctx.pos01); // 1 = full, 0 = ducked
+      vel *= 1 - ACCENT_DUCK * accentSpec.amount * (1 - w);
+    } else {
+      const accent = clamp(rd(s, P.AccentAmount, 0), 0, 1);
+      if (accent > 0 && !isAccent) vel *= 1 - ACCENT_DUCK * accent;
     }
+
+    // Ghost axis: per-loop placement designates quiet hits; else the random HitChance
+    // path (a missed hit becomes a ghost or a full drop).
+    if (ghostSpec) {
+      const w = lifeWeight(ghostSpec, ctx.hitIndex, ctx.pos01); // 1 = fully ghosted
+      vel *= 1 - (1 - GHOST_LEVEL) * ghostSpec.amount * w;
+    } else {
+      const chance = clamp(rd(s, P.HitChance, 1), 0, 1);
+      if (chance < 1 && Math.random() > chance) {
+        if (Math.random() < GHOST_P) vel *= GHOST_LEVEL;
+        else return null; // dropped hit
+      }
+    }
+
     const human = clamp(rd(s, P.Humanize, 0), 0, 1);
     if (human > 0) vel *= 1 + (Math.random() * 2 - 1) * HUMANIZE_LEVEL * human;
     let count = 0, interval = 0;
@@ -1118,8 +1169,11 @@ class EngineProcessor extends AudioWorkletProcessor {
   // The "silence end" of a fade transition: a copy of a sound's snapshot pushed to
   // inaudibility the way the chosen style wants — pure level ("fade"), a shut filter
   // ("filter"; up for HP so every type sweeps from its quiet end), drowned far away
-  // in reverb ("wash"), or hits that mostly don't play ("thin" — HitChance 0, so
-  // near the silent end most hits vanish and the survivors are ghosts). Morphing
+  // in reverb ("wash"), hits that mostly don't play ("thin" — HitChance 0, so near
+  // the silent end most hits vanish and the survivors are ghosts), or an FX extreme
+  // the sound emerges from / dissolves into — heavy saturation ("drive"), bit/rate
+  // crush ("crush"), or a wash of delay ("echo") — the same drive/FX palette as the
+  // voice params, each still ducked in level so it reads as the quiet end. Morphing
   // between this and the real snapshot IS the fade.
   silentVariant(snap, mode) {
     const v = snap.slice();
@@ -1135,6 +1189,17 @@ class EngineProcessor extends AudioWorkletProcessor {
     } else if (mode === "thin") {
       v[P.HitChance] = 0;
       v[P.Volume] = vol * 0.5;
+    } else if (mode === "drive") {
+      v[P.Drive] = 1.5;      // hard saturation at the far end, easing to the clean sound
+      v[P.Volume] = vol * 0.35;
+    } else if (mode === "crush") {
+      v[P.Crush] = 4;        // low bit-depth index (see CRUSH_BITS) + coarse sample-rate
+      v[P.Downsample] = 5;   // (see DOWNSAMPLE_FACTOR) for a degraded, lo-fi far end
+      v[P.Volume] = vol * 0.4;
+    } else if (mode === "echo") {
+      v[P.EchoMix] = 0.6;    // drowned in delay at the far end, drying into the sound
+      v[P.EchoFeedback] = Math.max(0.6, rd(v, P.EchoFeedback, 0));
+      v[P.Volume] = vol * 0.3;
     } else {
       v[P.Volume] = 0; // "fade": a pure level ramp
     }
@@ -1160,22 +1225,23 @@ class EngineProcessor extends AudioWorkletProcessor {
   // and `to` are the two ends' sounds (null = silence). `ownId` is the channel the
   // morph/fade sounds on (the node's OWN sound); `fromId`/`toId` name the channels used
   // when both voices play at once (crossfade/alternate/filter). Modes mirror the four
-  // pair blends plus the silence-end fade styles (fade/filter/wash/thin).
-  fireBlend(ownId, fromId, from, toId, to, mode, t, isAccent, gate, beat, fired) {
+  // pair blends plus the silence-end fade styles (fade/filter/wash/thin/drive/crush/echo).
+  // `ctx` is the per-hit Life context (accent/ghost placement) forwarded to perHit.
+  fireBlend(ownId, fromId, from, toId, to, mode, t, ctx, gate, beat, fired) {
     if (!from && !to) return;
     if (!from || !to) {
       // One end is silence: morph the real sound against its derived silent variant.
       const real = to || from;
       const ghost = this.silentVariant(real.snap, mode);
       const snap = to ? this.lerpSnap(ghost, real.snap, t) : this.lerpSnap(real.snap, ghost, t);
-      const hit = this.perHit(snap, isAccent);
+      const hit = this.perHit(snap, ctx);
       if (!hit) return;
       const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
       this.triggerSound(ownId, snap, voiceSnap, gate, real.tail, hit.vel, hit.count, hit.interval, beat);
       fired.push(ownId);
     } else if (mode === "crossfade") {
       // Both sounds play on their own channels, from fading out as to fades in.
-      const hit = this.perHit(from.snap, isAccent);
+      const hit = this.perHit(from.snap, ctx);
       if (!hit) return;
       if (1 - t > 0.02) {
         const vsA = from.snap.slice(); this.jitterSnap(vsA, hit.human);
@@ -1192,14 +1258,14 @@ class EngineProcessor extends AudioWorkletProcessor {
       const pickTo = Math.random() < t;
       const src = pickTo ? to : from;
       const id = pickTo ? toId : fromId;
-      const hit = this.perHit(src.snap, isAccent);
+      const hit = this.perHit(src.snap, ctx);
       if (!hit) return;
       const vs = src.snap.slice(); this.jitterSnap(vs, hit.human);
       this.triggerSound(id, src.snap, vs, gate, src.tail, hit.vel, hit.count, hit.interval, beat);
       fired.push(id);
     } else if (mode === "filter") {
       // Spectral crossfade: both play while from's filter closes and to's opens.
-      const hit = this.perHit(from.snap, isAccent);
+      const hit = this.perHit(from.snap, ctx);
       if (!hit) return;
       if (1 - t > 0.02) {
         const a = this.lerpSnap(from.snap, this.silentVariant(from.snap, "filter"), t);
@@ -1216,11 +1282,34 @@ class EngineProcessor extends AudioWorkletProcessor {
     } else {
       // Morph: one voice with its parameters lerped from→to (the sound mutates).
       const snap = this.lerpSnap(from.snap, to.snap, t);
-      const hit = this.perHit(snap, isAccent);
+      const hit = this.perHit(snap, ctx);
       if (!hit) return;
       const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
       this.triggerSound(ownId, snap, voiceSnap, gate, Math.max(from.tail || 0, to.tail || 0), hit.vel, hit.count, hit.interval, beat);
       fired.push(ownId);
+    }
+  }
+
+  // Fire the re-timed hits of a SPEED transition for the current step. `onsets` are the
+  // span's precomputed warped onset offsets (fractional steps within the sounding window,
+  // see warpOnsets in lines.ts). Those whose integer step equals `activeLocal` fire now,
+  // held off the grid by their fractional part (startDelay samples) so the hits rush /
+  // drag smoothly. The node keeps its own sound — speed warps timing, not tone.
+  fireSpeedStep(nd, snd, onsets, activeLocal, activeLen, gate, beat, fired) {
+    if (!onsets || !onsets.length) return;
+    const spb = this.samplesPerStep();
+    const baseSnap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+    for (let k = 0; k < onsets.length; k++) {
+      const o = onsets[k];
+      if (Math.floor(o) !== activeLocal) continue; // not this step's onset(s)
+      const delay = Math.round((o - activeLocal) * spb);
+      const pos01 = activeLen > 1 ? clamp(o / (activeLen - 1), 0, 1) : 1;
+      const life = { isAccent: k === 0, hitIndex: k, pos01, accent: nd.accent, ghost: nd.ghost };
+      const hit = this.perHit(baseSnap, life);
+      if (!hit) continue;
+      const voiceSnap = baseSnap.slice(); this.jitterSnap(voiceSnap, hit.human);
+      this.triggerSound(nd.soundId, baseSnap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, delay);
+      fired.push(nd.soundId);
     }
   }
 
@@ -1282,8 +1371,34 @@ class EngineProcessor extends AudioWorkletProcessor {
       const activeLocal = nodeLocal - waitSteps;
       states.push({ node: ni, step: vs >= 1 && activeLocal >= 0 ? activeLocal % vs : -1 });
 
-      // Still waiting (lead-in), or a pattern rest (rests ship an empty pattern)?
+      // Still waiting (lead-in)?
       if (activeLocal < 0) continue;
+
+      // Speed transition: within an intro/outro SPEED span the node's hits are RE-TIMED —
+      // a precomputed onset list (fractional steps, off the grid) replaces the pattern's
+      // grid hits. Handled BEFORE the pattern gate below so onsets can land on steps the
+      // grid pattern would skip. Outside the span the node plays its pattern normally.
+      const speedIntro = nd.intro && nd.intro.mode === "speed" && nd.intro.warp;
+      const speedOutro = nd.outro && nd.outro.mode === "speed" && nd.outro.warp;
+      if (speedIntro || speedOutro) {
+        const snd2 = this.sounds.get(nd.soundId);
+        if (snd2) {
+          const aLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
+          const beat2 = this.absStep * 0.25;
+          const iSpan = speedIntro ? Math.min(aLen, Math.max(1, nd.intro.steps | 0)) : 0;
+          const oSpan = speedOutro ? Math.min(aLen, Math.max(1, nd.outro.steps | 0)) : 0;
+          if (iSpan > 0 && activeLocal < iSpan) {
+            this.fireSpeedStep(nd, snd2, nd.intro.warp, activeLocal, aLen, gate, beat2, fired);
+            continue;
+          }
+          if (oSpan > 0 && activeLocal >= aLen - oSpan) {
+            this.fireSpeedStep(nd, snd2, nd.outro.warp, activeLocal, aLen, gate, beat2, fired);
+            continue;
+          }
+        }
+      }
+
+      // A pattern rest (rests ship an empty pattern) — nothing to fire on the grid here.
       if (vs < 1 || !nd.pattern || !nd.pattern[activeLocal % vs]) continue;
 
       // Accent = the first hit of this node's pattern cycle. beat = LFO-sync phase.
@@ -1302,6 +1417,16 @@ class EngineProcessor extends AudioWorkletProcessor {
       const introSteps = nd.intro ? Math.min(activeLen, Math.max(1, nd.intro.steps | 0)) : 0;
       const outroSteps = nd.outro ? Math.min(activeLen, Math.max(1, nd.outro.steps | 0)) : 0;
 
+      // Per-hit Life context for a per-loop accent/ghost layer: the hit's ordinal
+      // across the whole loop (so "every Nth hit" runs continuously past pattern-cycle
+      // boundaries) and its position 0..1 through the sounding window (for ramps).
+      const localStep = activeLocal % vs;
+      let hitsPerCycle = 0, hitPrefix = 0;
+      for (let h = 0; h < vs; h++) if (nd.pattern[h]) { if (h < localStep) hitPrefix++; hitsPerCycle++; }
+      const hitIndex = Math.floor(activeLocal / vs) * hitsPerCycle + hitPrefix;
+      const pos01 = activeLen > 1 ? clamp(activeLocal / (activeLen - 1), 0, 1) : 1;
+      const life = { isAccent, hitIndex, pos01, accent: nd.accent, ghost: nd.ghost };
+
       // Intro: rise from silence (fromId < 0) or morph from a previous sound into this
       // one, over introSteps. t runs 0→1 across the span.
       if (introSteps > 0 && activeLocal < introSteps) {
@@ -1309,7 +1434,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         const from = fromId >= 0 ? this.sounds.get(fromId) : null;
         if (fromId < 0 || from) {
           const t = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
-          this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.mode, t, isAccent, gate, beat, fired);
+          this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.mode, t, life, gate, beat, fired);
           continue;
         }
         // Source sound gone — fall through and play this node plainly.
@@ -1322,7 +1447,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (toId < 0 || to) {
           const local = activeLocal - (activeLen - outroSteps);
           const t = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
-          this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.mode, t, isAccent, gate, beat, fired);
+          this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.mode, t, life, gate, beat, fired);
           continue;
         }
         // Destination sound gone — play plainly.
@@ -1332,7 +1457,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       // (`pitchHz`) — the one re-pitched instrument playing a scale degree — so it plays
       // from a copy of the snapshot with P.Pitch swapped to that note.
       const baseSnap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
-      const hit = this.perHit(baseSnap, isAccent);
+      const hit = this.perHit(baseSnap, life);
       if (!hit) continue; // dropped by HitChance
       const voiceSnap = baseSnap.slice();
       this.jitterSnap(voiceSnap, hit.human);

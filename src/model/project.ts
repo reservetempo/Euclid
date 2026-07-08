@@ -10,7 +10,7 @@
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
-import { IntroEnv, OutroEnv, TransitionMode, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
+import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, DEFAULT_BAR_LIMIT, randomSeed, emptyLoop,
 } from "./track";
@@ -35,8 +35,10 @@ export interface LoopJSON {
   rotation: number;
   split?: number;
   gain?: number;
-  intro?: { reps: number; mode: TransitionMode; fromId: number };
-  outro?: { reps: number; mode: TransitionMode; toId: number };
+  intro?: { reps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number };
+  outro?: { reps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number };
+  accent?: LifePlacement;
+  ghost?: LifePlacement;
   preset?: string;
   ranges?: { lo: number[]; hi: number[] };
   rule: RuleJSON;
@@ -87,8 +89,10 @@ const cloneLoop = (l: Loop): LoopJSON => ({
   soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name,
   pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
   split: l.split, gain: l.gain,
-  intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, fromId: l.intro.fromId } : undefined,
-  outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, toId: l.outro.toId } : undefined,
+  intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve } : undefined,
+  outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve } : undefined,
+  accent: l.accent ? { ...l.accent } : undefined,
+  ghost: l.ghost ? { ...l.ghost } : undefined,
   preset: l.preset,
   ranges: l.ranges ? { lo: l.ranges.lo.slice(), hi: l.ranges.hi.slice() } : undefined,
   rule: {
@@ -130,7 +134,7 @@ export function serialize(
   };
 }
 
-const KNOWN_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter", "fade", "wash", "thin"];
+const KNOWN_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter", "fade", "wash", "thin", "drive", "crush", "echo", "speed"];
 
 function readEnv(ev: unknown, side: "intro"): IntroEnv | undefined;
 function readEnv(ev: unknown, side: "outro"): OutroEnv | undefined;
@@ -143,7 +147,35 @@ function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | un
   const mode: TransitionMode = KNOWN_MODES.includes(e.mode as TransitionMode)
     ? (e.mode as TransitionMode)
     : (id < 0 ? "fade" : "morph");
-  return side === "intro" ? { reps, mode, fromId: id } : { reps, mode, toId: id };
+  // Speed mode carries a far-end rate multiple (clamped ~0.25..4) and a glide curve (0..1).
+  const rate = mode === "speed"
+    ? (typeof e.rate === "number" && isFinite(e.rate) ? Math.max(0.25, Math.min(4, e.rate)) : 2)
+    : undefined;
+  const curve = mode === "speed"
+    ? (typeof e.curve === "number" && isFinite(e.curve) ? Math.max(0, Math.min(1, e.curve)) : 0)
+    : undefined;
+  return side === "intro"
+    ? { reps, mode, fromId: id, rate, curve }
+    : { reps, mode, toId: id, rate, curve };
+}
+
+/** Validate a stored per-loop accent/ghost LifePlacement (see lines.ts); returns
+    undefined for anything malformed so old/absent saves keep the sound's own feel. */
+function readLife(lv: unknown): LifePlacement | undefined {
+  if (!lv || typeof lv !== "object") return undefined;
+  const e = lv as Record<string, unknown>;
+  const mode = e.mode === "ramp" ? "ramp" : e.mode === "everyN" ? "everyN" : undefined;
+  if (!mode) return undefined;
+  const clamp01 = (x: unknown, def: number) =>
+    typeof x === "number" && isFinite(x) ? Math.max(0, Math.min(1, x)) : def;
+  const out: LifePlacement = { mode, amount: clamp01(e.amount, 1) };
+  if (mode === "everyN") {
+    out.every = typeof e.every === "number" && isFinite(e.every) ? Math.max(1, Math.round(e.every)) : 2;
+  } else {
+    out.curve = clamp01(e.curve, 0);
+    out.dir = e.dir === "down" ? "down" : "up";
+  }
+  return out;
 }
 
 function readEvery(ev: unknown): EveryRule {
@@ -191,6 +223,8 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     gain: typeof s.gain === "number" && isFinite(s.gain) ? Math.max(0.2, Math.min(4, s.gain)) : undefined,
     intro: readEnv(s.intro, "intro"),
     outro: readEnv(s.outro, "outro"),
+    accent: readLife(s.accent),
+    ghost: readLife(s.ghost),
     preset: typeof s.preset === "string" ? s.preset : undefined,
     ranges: s.ranges && Array.isArray(s.ranges.lo) && Array.isArray(s.ranges.hi)
       ? { lo: s.ranges.lo.slice(), hi: s.ranges.hi.slice() } : undefined,

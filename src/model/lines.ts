@@ -46,21 +46,43 @@ export const VOICE_COLORS = [
 // Silence↔sound (a fade-in/out, one endpoint id = EMPTY): "fade" = a pure level
 // ramp; "filter" = the sound opens from (or closes into) a shut filter; "wash" =
 // it condenses out of (or dissolves into) a reverb cloud; "thin" = its hits fill
-// in from (or scatter into) near-silence.
+// in from (or scatter into) near-silence; "drive"/"crush"/"echo" = the sound
+// emerges from (or dissolves into) an FX extreme — heavy saturation, bit/rate
+// crush, or a wash of delay — the same drive/FX palette as the voice params. And
+// "speed" is timing, not tone: the hits themselves rush in / drag out (see the
+// warp precompute in linesMessage) rather than the sound morphing.
 export type TransitionMode =
   | "morph" | "crossfade" | "alternate" | "filter"
-  | "fade" | "wash" | "thin";
+  | "fade" | "wash" | "thin" | "drive" | "crush" | "echo" | "speed";
 
 /** All modes a transition can take, by kind (sound↔sound vs silence↔sound). */
 export const PAIR_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter"];
-export const FADE_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin"];
+export const FADE_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo", "speed"];
+
+/** Deterministic accent/ghost placement for a loop — a per-loop LIFE layer that
+    overrides the sound's own random accent/ghost (see engine perHit). `everyN` marks
+    every Nth hit (1-based, running continuously across the loop, not per pattern
+    cycle); `ramp` swells the effect from one end of the loop to the other. `amount`
+    is the strength (accent depth / how ghosted), `curve` bends a ramp from linear
+    (0) toward exponential (1), and `dir` says which way a ramp grows. */
+export interface LifePlacement {
+  mode: "everyN" | "ramp";
+  every?: number;         // everyN: the N (>= 1)
+  amount: number;         // 0..1 strength
+  curve?: number;         // ramp: 0 linear .. 1 exponential
+  dir?: "up" | "down";    // ramp: grow toward the end ("up") or the start ("down")
+}
 
 /** An intro fade folded into a node's start: covers the first `reps` of its window,
-    rising from silence (fromId < 0) or morphing from another sound (fromId = its id). */
-export interface IntroEnv { reps: number; mode: TransitionMode; fromId: number; }
+    rising from silence (fromId < 0) or morphing from another sound (fromId = its id).
+    `rate`/`curve` apply only to the "speed" mode (see warpOnsets): `rate` is the FAR
+    end's hit-rate multiple of the tempo (the near/boundary end always runs at 1×), and
+    `curve` bends the glide from linear (0) toward exponential (1). */
+export interface IntroEnv { reps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number; }
 /** An outro fade folded into a node's end: covers the last `reps` of its window,
-    falling to silence (toId < 0) or morphing into another sound (toId = its id). */
-export interface OutroEnv { reps: number; mode: TransitionMode; toId: number; }
+    falling to silence (toId < 0) or morphing into another sound (toId = its id).
+    `rate`/`curve`: see IntroEnv (the "speed" mode's warp). */
+export interface OutroEnv { reps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number; }
 
 /** Which way an intro blends: in from silence, or morphing from a previous sound. */
 export function introKind(fromId: number): "in" | "pair" { return fromId < 0 ? "in" : "pair"; }
@@ -91,6 +113,10 @@ export interface VoiceNode {
   // its sound throughout — the envelopes only shape how its ends blend.
   intro?: IntroEnv;
   outro?: OutroEnv;
+  // Per-loop LIFE layer: deterministic accent / ghost placement that overrides the
+  // sound's own random rolls in the engine (see perHit). Unset = the sound's own feel.
+  accent?: LifePlacement;
+  ghost?: LifePlacement;
   // A melody note's absolute pitch in Hz (the one re-pitched instrument playing a scale
   // degree). Set only on generated melody nodes; the engine swaps P.Pitch to it. Unset
   // on ordinary loop nodes, which keep their sound's own pitch.
@@ -153,6 +179,62 @@ export function clampEnvelopes(n: VoiceNode, keep: "intro" | "outro" = "outro"):
   }
 }
 
+/** Precompute a SPEED transition's re-timed hit onsets — the heart of the
+    accelerando/ritardando. The node keeps its Euclidean pattern, but time is warped
+    across the `spanSteps`-long span so the effective hit rate glides between the tempo
+    (1×) and a far-end multiple (`rate`). The span is ANCHORED to the grid at the steady
+    boundary (span END for an intro, span START for an outro) so the hand-off is seamless
+    — only the far hits are displaced (rushed/dragged). `curve` bends the glide from
+    linear (0) toward exponential (1).
+
+    Returns the onset TIMES as fractional step offsets within the sounding window (0 = the
+    first sounding step). Done here on the main thread — it's deterministic (pattern + span
+    + rate + curve); only per-hit Life (accent/ghost/humanize) stays random in the engine.
+
+    Method: integrate the instantaneous rate outward from the anchor to build the pattern
+    distance Ψ(s) (pattern-steps between the anchor and a point `s` real-steps away). Each
+    time Ψ crosses an integer `m`, that pattern-step (m before/after the anchor) sounds if
+    the pattern marks it, at real offset `s` from the anchor. The anchor event (m=0) is
+    owned by the steady section for an intro (excluded) but by the span for an outro. */
+function warpOnsets(
+  pattern: number[], vs: number, spanSteps: number, activeLen: number,
+  rate: number, curve: number, side: "intro" | "outro",
+): number[] {
+  const onsets: number[] = [];
+  if (!pattern.length || vs < 1 || spanSteps < 1) return onsets;
+  const mult = rate > 0 ? rate : 1;
+  const c = Math.max(0, Math.min(1, curve));
+  const exp = Math.pow(4, c); // 1 (linear) .. 4 (exponential) glide bend
+  // Rate at real distance `s` from the anchor: 1× at the anchor, `mult` at the far end.
+  const rateAt = (s: number) => {
+    const x = Math.max(0, Math.min(1, s / spanSteps));
+    return 1 + (mult - 1) * Math.pow(x, exp);
+  };
+  const anchorStep = side === "intro" ? spanSteps : activeLen - spanSteps;
+  const bit = (pstep: number) => pattern[((Math.round(pstep) % vs) + vs) % vs];
+  // Outro owns its anchor event (span start); intro's belongs to the steady section.
+  let nextM = 1;
+  if (side === "outro" && bit(anchorStep)) onsets.push(anchorStep);
+  const N = Math.max(64, Math.ceil(spanSteps * 32)); // integration resolution
+  const ds = spanSteps / N;
+  let psi = 0;
+  for (let i = 1; i <= N; i++) {
+    const s0 = (i - 1) * ds, s1 = i * ds;
+    const psiNext = psi + 0.5 * (rateAt(s0) + rateAt(s1)) * ds; // trapezoid
+    while (nextM <= psiNext) {
+      const frac = psiNext > psi ? (nextM - psi) / (psiNext - psi) : 0;
+      const s = s0 + frac * ds;
+      const o = side === "intro" ? spanSteps - s : anchorStep + s;
+      const pstep = side === "intro" ? anchorStep - nextM : anchorStep + nextM;
+      if (bit(pstep)) onsets.push(o);
+      nextM++;
+    }
+    psi = psiNext;
+  }
+  onsets.sort((a, b) => a - b);
+  return onsets;
+}
+
 // One engine LANE: a node chain plus the colour it belongs to. Placement is now
 // procedural (see track.ts): a colour may compile to several lanes (overlapping loops)
 // or one (priority-resolved solo loops). Mute/solo live per COLOUR on the track, not
@@ -173,9 +255,15 @@ export interface LineMessage {
     waitSteps: number; // leading silent steps inside lenSteps (lead-in; hits muted here)
     pattern: number[];
     // Intro/outro fade spans, in STEPS within the sounding window (after any lead-in).
-    intro?: { steps: number; mode: TransitionMode; fromId: number };
-    outro?: { steps: number; mode: TransitionMode; toId: number };
+    // For the "speed" mode, `warp` holds the precomputed re-timed hit onsets (fractional
+    // step offsets within the sounding window) that replace the grid pattern in the span.
+    intro?: { steps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number; warp?: number[] };
+    outro?: { steps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number; warp?: number[] };
     pitchHz?: number; // melody notes only — absolute pitch the engine tunes to
+    // Per-loop deterministic accent / ghost placement (see LifePlacement); the engine
+    // uses these instead of the sound's random accent/ghost when present.
+    accent?: LifePlacement;
+    ghost?: LifePlacement;
   }[];
 }
 
@@ -228,21 +316,39 @@ export class LineArrangement {
       nodes: ln.nodes.map((n) => {
         const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
         const reps = Math.max(1, n.reps | 0);
+        const pattern = n.steps >= 1 && n.soundId !== EMPTY
+          ? voicePattern(n.hits, n.steps, n.rotation, n.split).map((b) => (b ? 1 : 0))
+          : [];
+        const activeLen = Math.max(1, nodeLen(n) - waitLen(n));
+        const iSteps = n.intro ? Math.min(n.intro.reps, reps) * unit : 0;
+        const oSteps = n.outro ? Math.min(n.outro.reps, reps) * unit : 0;
         return {
           soundId: n.soundId,
           steps: n.steps,
           lenSteps: nodeLen(n),
           waitSteps: waitLen(n),
-          pattern: n.steps >= 1 && n.soundId !== EMPTY
-            ? voicePattern(n.hits, n.steps, n.rotation, n.split).map((b) => (b ? 1 : 0))
-            : [],
+          pattern,
           intro: n.intro
-            ? { steps: Math.min(n.intro.reps, reps) * unit, mode: n.intro.mode, fromId: n.intro.fromId }
+            ? {
+                steps: iSteps, mode: n.intro.mode, fromId: n.intro.fromId,
+                ...(n.intro.mode === "speed"
+                  ? { rate: n.intro.rate, curve: n.intro.curve,
+                      warp: warpOnsets(pattern, n.steps, iSteps, activeLen, n.intro.rate ?? 2, n.intro.curve ?? 0, "intro") }
+                  : {}),
+              }
             : undefined,
           outro: n.outro
-            ? { steps: Math.min(n.outro.reps, reps) * unit, mode: n.outro.mode, toId: n.outro.toId }
+            ? {
+                steps: oSteps, mode: n.outro.mode, toId: n.outro.toId,
+                ...(n.outro.mode === "speed"
+                  ? { rate: n.outro.rate, curve: n.outro.curve,
+                      warp: warpOnsets(pattern, n.steps, oSteps, activeLen, n.outro.rate ?? 2, n.outro.curve ?? 0, "outro") }
+                  : {}),
+              }
             : undefined,
           pitchHz: n.pitchHz,
+          accent: n.accent,
+          ghost: n.ghost,
         };
       }),
     }));

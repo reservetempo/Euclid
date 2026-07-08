@@ -19,7 +19,7 @@
 // those lanes exactly as it did on the old 6 voice lines. See lines.ts / project.ts.
 
 import {
-  VoiceNode, IntroEnv, OutroEnv, emptyNode, clampEnvelopes,
+  VoiceNode, IntroEnv, OutroEnv, LifePlacement, emptyNode, clampEnvelopes,
   STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
 import { MelodyNode, emptyMelody, melodyLaneNodes, MELODY_COLOR_INDEX } from "./melody";
@@ -62,6 +62,8 @@ export interface Loop {
   gain?: number;
   intro?: IntroEnv;
   outro?: OutroEnv;
+  accent?: LifePlacement; // per-loop deterministic accent placement (overrides sound's own)
+  ghost?: LifePlacement;  // per-loop deterministic ghost placement (overrides sound's own)
   preset?: string;
   ranges?: { lo: number[]; hi: number[] };
   rule: PlacementRule;
@@ -191,6 +193,8 @@ export function loopToNode(loop: Loop, reps = 1): VoiceNode {
   n.reps = Math.max(1, Math.min(MAX_REPS, reps));
   n.intro = loop.intro ? { ...loop.intro } : undefined;
   n.outro = loop.outro ? { ...loop.outro } : undefined;
+  n.accent = loop.accent ? { ...loop.accent } : undefined;
+  n.ghost = loop.ghost ? { ...loop.ghost } : undefined;
   n.preset = loop.preset;
   n.ranges = loop.ranges ? { lo: loop.ranges.lo.slice(), hi: loop.ranges.hi.slice() } : undefined;
   clampEnvelopes(n);
