@@ -2568,7 +2568,8 @@ export class App {
     v.append(head);
 
     const active = this.track.colors.map((_, i) => i).filter((i) => this.track.colors[i].loops.some((l) => l.soundId >= 0));
-    if (active.length === 0) {
+    const melodySounds = this.track.melodies.map((m) => m.inst).filter((l) => l.soundId >= 0);
+    if (active.length === 0 && melodySounds.length === 0) {
       const hint = document.createElement("p");
       hint.className = "hint";
       hint.textContent = "No loops yet. Add loops to the colours, then mix them here.";
@@ -2578,6 +2579,12 @@ export class App {
     const list = document.createElement("div");
     list.className = "mixer-list";
     active.forEach((c) => list.append(this.mixerStrip(c)));
+    // The melody row is a strip too — its faders move every melody instrument together,
+    // mute/solo via the melody colour (honoured by colorAudible / buildSounds).
+    if (melodySounds.length) {
+      const c = MELODY_COLOR_INDEX;
+      list.append(this.buildMixStrip("Melody", VOICE_COLORS[c], this.track.colors[c], melodySounds));
+    }
     v.append(list);
   }
 
@@ -2585,47 +2592,49 @@ export class App {
   private mixerStrip(c: number): HTMLElement {
     const ct = this.track.colors[c];
     const sounds = ct.loops.filter((l) => l.soundId >= 0);
-    const first = sounds[0];
+    return this.buildMixStrip(`Voice ${c + 1}`, VOICE_COLORS[c], ct, sounds);
+  }
 
+  /** Build a mixer strip: LED + name + mute/solo (on `ct`) + Vol/Verb/Pan faders that move
+      every sound in `sounds` together. Shared by the colour strips and the melody row. */
+  private buildMixStrip(name: string, laneColor: string, ct: { mute?: boolean; solo?: boolean }, sounds: Loop[]): HTMLElement {
     const strip = document.createElement("div");
     strip.className = "mix-strip";
-    strip.style.setProperty("--lane", VOICE_COLORS[c]);
+    strip.style.setProperty("--lane", laneColor);
 
     const hd = document.createElement("div");
     hd.className = "mix-strip-head";
     const led = document.createElement("span");
     led.className = "mix-led";
     for (const l of sounds) this.mixerLeds!.set(l.soundId, led);
-    const name = document.createElement("span");
-    name.className = "mix-name";
-    name.textContent = `Voice ${c + 1}`;
+    const nameEl = document.createElement("span");
+    nameEl.className = "mix-name";
+    nameEl.textContent = name;
 
     const toggles = document.createElement("div");
     toggles.className = "mix-toggles";
     const mute = document.createElement("button");
     mute.className = "mix-toggle mute" + (ct.mute ? " on" : "");
     mute.textContent = "M";
-    mute.title = "Mute this colour";
+    mute.title = "Mute";
     const solo = document.createElement("button");
     solo.className = "mix-toggle solo" + (ct.solo ? " on" : "");
     solo.textContent = "S";
-    solo.title = "Solo this colour";
+    solo.title = "Solo";
     mute.onclick = () => { ct.mute = !ct.mute; mute.classList.toggle("on", !!ct.mute); this.pushSounds(); this.persist(); };
     solo.onclick = () => { ct.solo = !ct.solo; solo.classList.toggle("on", !!ct.solo); this.pushSounds(); this.persist(); };
     toggles.append(mute, solo);
-    hd.append(led, name, toggles);
+    hd.append(led, nameEl, toggles);
     strip.append(hd);
 
-    strip.append(this.mixFader("Vol", c, ParamId.Volume));
-    strip.append(this.mixFader("Verb", c, ParamId.ReverbMix));
-    strip.append(this.mixFader("Pan", c, ParamId.Pan, -1, 1));
-    void first;
+    strip.append(this.mixFader("Vol", sounds, ParamId.Volume));
+    strip.append(this.mixFader("Verb", sounds, ParamId.ReverbMix));
+    strip.append(this.mixFader("Pan", sounds, ParamId.Pan, -1, 1));
     return strip;
   }
 
-  /** A labelled fader bound to one snapshot index of every loop in a colour. */
-  private mixFader(label: string, c: number, id: ParamId, min = 0, max = 1): HTMLElement {
-    const sounds = this.track.colors[c].loops.filter((l) => l.soundId >= 0);
+  /** A labelled fader bound to one snapshot index of every sound in `sounds`. */
+  private mixFader(label: string, sounds: Loop[], id: ParamId, min = 0, max = 1): HTMLElement {
     const first = sounds[0];
     const row = document.createElement("div");
     row.className = "mix-fader";
