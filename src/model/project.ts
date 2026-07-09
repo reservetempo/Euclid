@@ -12,7 +12,8 @@ import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
-  Track, ColorTrack, Loop, PlacementRule, EveryRule, DEFAULT_BAR_LIMIT, randomSeed, emptyLoop,
+  Track, ColorTrack, Loop, PlacementRule, EveryRule, DEFAULT_BAR_LIMIT, randomSeed,
+  MelodyItem, newMelodyItem,
 } from "./track";
 import { MelodyNode, MelodyNote, emptyMelody, melodySeed, MELODY_COLOR_INDEX } from "./melody";
 
@@ -61,8 +62,15 @@ export interface ProjectJSON {
   ranges?: Record<number, { lo: number[]; hi: number[] }>;
   presets?: Record<number, string>;
   soundName?: string;
-  melody?: MelodyJSON;
-  melodyInstrument?: LoopJSON; // the melody's one re-pitched sound
+  melodies?: MelodyItemJSON[];  // the melody row: a list of placeable per-instrument melodies
+  melody?: MelodyJSON;          // legacy single melody (migrated into melodies[0] on load)
+  melodyInstrument?: LoopJSON;  // legacy single instrument
+}
+
+/** One melody in the list: its re-pitched instrument (sound + placement rule) and notes. */
+export interface MelodyItemJSON {
+  inst: LoopJSON;
+  node: MelodyJSON;
 }
 
 // A melody node serialises recursively (a note may carry a branch node).
@@ -129,8 +137,7 @@ export function serialize(
     ranges: drumRanges,
     presets: drumPresets,
     soundName,
-    melody: cloneMelody(track.melody),
-    melodyInstrument: cloneLoop(track.melodyInstrument),
+    melodies: track.melodies.map((m) => ({ inst: cloneLoop(m.inst), node: cloneMelody(m.node) })),
   };
 }
 
@@ -255,6 +262,29 @@ function readMelody(mv: unknown): MelodyNode {
   };
 }
 
+/** The melody list: the new `melodies` array, or a legacy single `melody` + `melodyInstrument`
+    migrated into one item (its stored instrument rule was unused, so give it the melody
+    placement default). Always returns at least one item. */
+function readMelodies(json: ProjectJSON): MelodyItem[] {
+  if (Array.isArray(json.melodies) && json.melodies.length) {
+    return json.melodies.map((mj) => ({
+      inst: readLoop(mj?.inst, MELODY_COLOR_INDEX),
+      node: readMelody(mj?.node),
+    }));
+  }
+  if (json.melody || json.melodyInstrument) {
+    const item = newMelodyItem(); // carries the melody placement default
+    if (json.melodyInstrument) {
+      const li = readLoop(json.melodyInstrument, MELODY_COLOR_INDEX);
+      li.rule = item.inst.rule;   // ignore the legacy (unused) instrument rule
+      item.inst = li;
+    }
+    item.node = readMelody(json.melody);
+    return [item];
+  }
+  return [newMelodyItem()];
+}
+
 /** Apply a loaded project into the live track + kit. Returns the tempo. A v≤10 file
     loads a BLANK track (tempo + kit still restored). */
 export function deserialize(
@@ -265,13 +295,11 @@ export function deserialize(
   track.barLimit = DEFAULT_BAR_LIMIT;
   track.root = 0;
   track.scale = 0;
-  track.melody = emptyMelody();
-  track.melodyInstrument = emptyLoop(MELODY_COLOR_INDEX, -1);
+  track.melodies = [newMelodyItem()];
 
   const v = json && json.version;
   if (json && typeof v === "number" && v === 11) {
-    track.melody = readMelody(json.melody);
-    if (json.melodyInstrument) track.melodyInstrument = readLoop(json.melodyInstrument, MELODY_COLOR_INDEX);
+    track.melodies = readMelodies(json);
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
         if (ci >= NUM_LINES || !cj) return;

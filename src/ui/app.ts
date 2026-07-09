@@ -217,11 +217,14 @@ export class App {
         sounds.push({ id: l.soundId, snap, lo: l.pitch[0], hi: l.pitch[1], tail: estimateLength(snap, this.tempo) });
       }
     });
-    // The melody's one re-pitched instrument (its notes override P.Pitch in the engine).
-    const inst = this.track.melodyInstrument;
-    if (inst.soundId >= 0 && inst.snapshot.length && !seen.has(inst.soundId)) {
+    // Each melody's own re-pitched instrument (its notes override P.Pitch in the engine).
+    const melodyAudible = this.colorAudible(MELODY_COLOR_INDEX);
+    for (const m of this.track.melodies) {
+      const inst = m.inst;
+      if (inst.soundId < 0 || !inst.snapshot.length || seen.has(inst.soundId)) continue;
+      seen.add(inst.soundId);
       const snap = inst.snapshot.slice();
-      if (!this.colorAudible(MELODY_COLOR_INDEX)) snap[ParamId.Volume] = 0;
+      if (!melodyAudible) snap[ParamId.Volume] = 0;
       else if (inst.gain && inst.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * inst.gain;
       sounds.push({ id: inst.soundId, snap, lo: inst.pitch[0], hi: inst.pitch[1], tail: estimateLength(snap, this.tempo) });
     }

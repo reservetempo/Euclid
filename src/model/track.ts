@@ -22,7 +22,7 @@ import {
   VoiceNode, IntroEnv, OutroEnv, LifePlacement, emptyNode, clampEnvelopes,
   STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
-import { MelodyNode, emptyMelody, melodyLaneNodes, MELODY_COLOR_INDEX } from "./melody";
+import { MelodyNode, emptyMelody, melodyNoteNode, generateMelody, EmittedNote, MELODY_COLOR_INDEX } from "./melody";
 
 /** How a loop repeats across the track. */
 export type EveryRule =
@@ -85,17 +85,92 @@ export class Track {
   barLimit = DEFAULT_BAR_LIMIT;
   root = 0;  // 0 = C
   scale = 0; // 0 = Major
-  melody: MelodyNode = emptyMelody();        // the last coloured row's melody (see melody.ts)
-  melodyInstrument: Loop = emptyLoop(MELODY_COLOR_INDEX, -1); // its one re-pitched sound
+  // The last coloured row is now a LIST of melodies (each a placeable phrase with its own
+  // re-pitched instrument + placement rule), mirroring a voice colour's list of loops.
+  melodies: MelodyItem[] = [newMelodyItem()];
 
-  /** Compile to engine lanes (see compile()). The melody adds one lane on the last
-      colour: a chain of single-note nodes tuned to its generated pitches. */
+  // Back-compat accessors for the single-melody call sites (removed once the list UI lands).
+  get melody(): MelodyNode { return this.melodies[0].node; }
+  get melodyInstrument(): Loop { return this.melodies[0].inst; }
+
+  /** Compile to engine lanes (see compile()). Each melody adds its own lane(s) on the last
+      colour: its generated phrase, placed across the track by its instrument's rule. */
   toLanes(): Lane[] {
     const lanes = compile(this.colors, this.barLimit);
-    const mel = melodyLaneNodes(this.melody, this.melodyInstrument, this.barLimit);
-    if (mel) lanes.push({ color: MELODY_COLOR_INDEX, nodes: mel });
+    lanes.push(...melodyLanes(this.melodies, this.barLimit));
     return lanes;
   }
+}
+
+/** One melody in the list: a re-pitched instrument (its `rule` places it + sets its length
+    in bars via forBars; it also carries the sound + fades) and the generative note tree. */
+export interface MelodyItem {
+  inst: Loop;
+  node: MelodyNode;
+}
+
+/** A melody's default placement: an 8-bar phrase tiled to fill the track (like a loop set
+    to "fill"). forBars is the phrase LENGTH; the rule is edited on the Loop-options page. */
+export function melodyRule(): PlacementRule {
+  return { every: { kind: "fill" }, forBars: 8, mode: "solo", seed: randomSeed(), seedHistory: [] };
+}
+
+/** A fresh melody item: an empty re-pitched instrument (sound minted on first edit) with a
+    melody placement rule, and an empty note tree. */
+export function newMelodyItem(): MelodyItem {
+  const inst = emptyLoop(MELODY_COLOR_INDEX, -1);
+  inst.rule = melodyRule();
+  return { inst, node: emptyMelody() };
+}
+
+/** Lay each melody into its own engine lane: generate the item's phrase (its own seeded
+    recurring motif, `forBars` long), then drop a copy at every placement its instrument's
+    rule produces (gaps + the tail padded with rests), tuned to the item's own sound. */
+export function melodyLanes(melodies: MelodyItem[], barLimit: number): Lane[] {
+  const limit = Math.max(1, Math.round(barLimit));
+  const limitSteps = limit * STEPS_PER_BAR;
+  const lanes: Lane[] = [];
+  for (const item of melodies) {
+    const inst = item.inst;
+    if (inst.soundId < 0 || !inst.snapshot.length || item.node.notes.length === 0) continue;
+    const phraseBars = Math.max(1, Math.round(inst.rule.forBars));
+    const phrase = generateMelody(item.node, phraseBars);
+    if (!phrase.length) continue;
+    const intervals = placementsFor(inst, limit).sort((a, b) => a.startBar - b.startBar);
+    const nodes: VoiceNode[] = [];
+    let cursor = 0;
+    for (const iv of intervals) {
+      const start = iv.startBar * STEPS_PER_BAR;
+      if (start < cursor) continue;                                   // overlap guard
+      if (start > cursor) { nodes.push(restOf(start - cursor)); cursor = start; }
+      const budget = Math.min(phraseBars * STEPS_PER_BAR, limitSteps - cursor);
+      if (budget <= 0) break;
+      cursor += emitPhrase(phrase, inst, budget, nodes);
+    }
+    if (cursor < limitSteps) nodes.push(restOf(limitSteps - cursor));
+    lanes.push({ color: MELODY_COLOR_INDEX, nodes: nodes.length ? nodes : [restOf(limitSteps)] });
+  }
+  return lanes;
+}
+
+/** Emit a generated phrase's notes/rests into `out`, consuming up to `budget` steps (the
+    remaining room in the placement / track). Pitches clamp to the instrument's range. */
+function emitPhrase(phrase: EmittedNote[], inst: Loop, budget: number, out: VoiceNode[]): number {
+  const [lo, hi] = inst.pitch;
+  let used = 0;
+  for (const ev of phrase) {
+    if (used >= budget) break;
+    if (ev.restSteps > 0) {
+      const rs = Math.min(ev.restSteps, budget - used);
+      if (rs > 0) { out.push(restOf(rs)); used += rs; }
+      if (used >= budget) break;
+    }
+    const len = Math.min(ev.lengthSteps, budget - used);
+    if (len <= 0) continue;
+    out.push(melodyNoteNode(inst, len, Math.max(lo, Math.min(hi, ev.hz))));
+    used += len;
+  }
+  return used;
 }
 
 /** A fresh placement rule: every 4th bar, 1 bar long, solo. */

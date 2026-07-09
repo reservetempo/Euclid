@@ -168,18 +168,10 @@ export function generateMelody(melody: MelodyNode, barLimit: number): EmittedNot
   return out;
 }
 
-/** A silent window of exactly `steps` 16th-steps (a rest node). */
-function restNode(steps: number): VoiceNode {
-  const n = emptyNode();
-  n.steps = Math.max(1, Math.round(steps));
-  n.hits = 0;
-  n.reps = 1;
-  return n;
-}
-
 /** A single-hit sounding node for one melody note: the instrument's sound, one hit at the
-    node start, its window `lengthSteps` long, tuned to `hz`. */
-function noteNode(inst: Loop, lengthSteps: number, hz: number): VoiceNode {
+    node start, its window `lengthSteps` long, tuned to `hz`. Exported so the track can lay
+    a generated phrase (see melodyLanes) into a lane. */
+export function melodyNoteNode(inst: Loop, lengthSteps: number, hz: number): VoiceNode {
   const n = emptyNode();
   n.soundId = inst.soundId;
   n.snapshot = inst.snapshot.slice();
@@ -194,31 +186,4 @@ function noteNode(inst: Loop, lengthSteps: number, hz: number): VoiceNode {
   n.reps = 1;
   n.pitchHz = hz;
   return n;
-}
-
-/** Compile the melody into one engine lane (a chain of rest + single-note nodes), padded
-    to `barLimit`. Returns null when there's nothing to play (no notes, or no instrument
-    sound yet). Pitches are clamped to the instrument's synth range so they stay audible. */
-export function melodyLaneNodes(melody: MelodyNode, inst: Loop, barLimit: number): VoiceNode[] | null {
-  if (melody.notes.length === 0 || inst.soundId < 0 || !inst.snapshot.length) return null;
-  const limitSteps = Math.max(1, Math.round(barLimit)) * STEPS_PER_BAR;
-  const [lo, hi] = inst.pitch;
-  const clampHz = (hz: number) => Math.max(lo, Math.min(hi, hz));
-  const seq = generateMelody(melody, barLimit);
-  const nodes: VoiceNode[] = [];
-  let cursor = 0;
-  for (const ev of seq) {
-    if (cursor >= limitSteps) break;
-    if (ev.restSteps > 0) {
-      const rs = Math.min(ev.restSteps, limitSteps - cursor);
-      if (rs > 0) { nodes.push(restNode(rs)); cursor += rs; }
-      if (cursor >= limitSteps) break;
-    }
-    const len = Math.min(ev.lengthSteps, limitSteps - cursor);
-    if (len <= 0) continue;
-    nodes.push(noteNode(inst, len, clampHz(ev.hz)));
-    cursor += len;
-  }
-  if (cursor < limitSteps) nodes.push(restNode(limitSteps - cursor));
-  return nodes.length ? nodes : null;
 }
