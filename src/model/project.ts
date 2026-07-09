@@ -282,7 +282,7 @@ function readMelodies(json: ProjectJSON): MelodyItem[] {
     item.node = readMelody(json.melody);
     return [item];
   }
-  return [newMelodyItem()];
+  return []; // no melody data — start on the "add a melody" menu
 }
 
 /** Apply a loaded project into the live track + kit. Returns the tempo. A v≤10 file
@@ -295,7 +295,7 @@ export function deserialize(
   track.barLimit = DEFAULT_BAR_LIMIT;
   track.root = 0;
   track.scale = 0;
-  track.melodies = [newMelodyItem()];
+  track.melodies = [];
 
   const v = json && json.version;
   if (json && typeof v === "number" && v === 11) {

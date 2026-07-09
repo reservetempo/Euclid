@@ -85,13 +85,10 @@ export class Track {
   barLimit = DEFAULT_BAR_LIMIT;
   root = 0;  // 0 = C
   scale = 0; // 0 = Major
-  // The last coloured row is now a LIST of melodies (each a placeable phrase with its own
-  // re-pitched instrument + placement rule), mirroring a voice colour's list of loops.
-  melodies: MelodyItem[] = [newMelodyItem()];
-
-  // Back-compat accessors for the single-melody call sites (removed once the list UI lands).
-  get melody(): MelodyNode { return this.melodies[0].node; }
-  get melodyInstrument(): Loop { return this.melodies[0].inst; }
+  // The last coloured row is a LIST of melodies (each a placeable phrase with its own
+  // re-pitched instrument + placement rule), mirroring a voice colour's list of loops. A
+  // fresh track starts empty — the melody section opens on an "add a melody" menu.
+  melodies: MelodyItem[] = [];
 
   /** Compile to engine lanes (see compile()). Each melody adds its own lane(s) on the last
       colour: its generated phrase, placed across the track by its instrument's rule. */

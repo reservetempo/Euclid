@@ -29,6 +29,7 @@ import {
 } from "../model/lines";
 import {
   Track, Loop, EveryRule, emptyLoop, loopToNode, randomSeed as newSeed,
+  MelodyItem, newMelodyItem,
 } from "../model/track";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
@@ -70,10 +71,12 @@ export class App {
   private lastViewKey = "";             // view identity at the previous render (scroll-preserve guard)
   private openColor = 0;               // which colour panel is open
   private melodyPath: MelodyNote[] = []; // notes descended into (branch drill-down); [] = root
+  private melodyItemIndex = -1;          // which melody in the list is open (-1 = the list/menu)
   private melodyBranchMode = false;      // Add-branch mode: tapping a note square branches it
   private melodyGenCount = 4;            // desired note count for the Generate button
   private melodyNoteEdit: MelodyNote | null = null; // note whose settings popup is open
-  private melodyInstrumentPage = false;  // melody sub-page: the instrument's sound params
+  private melodyInstrumentPage = false;  // melody sub-page: the current item's sound params
+  private melodyOptionsPage = false;     // melody sub-page: the current item's loop options
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
@@ -441,7 +444,9 @@ export class App {
     // the panel re-render below it).
     if (this.view === "color" && this.editLoop) this.openPlacement(this.editLoop);
     // Likewise the melody note-settings popup (re-opens over the rebuilt grid).
-    if (this.view === "melody" && this.melodyNoteEdit) this.buildMelodyNotePopup(this.currentMelodyNode(), this.melodyNoteEdit);
+    if (this.view === "melody" && this.melodyNoteEdit && this.currentMelodyItem()) {
+      this.buildMelodyNotePopup(this.currentMelodyNode(), this.melodyNoteEdit);
+    }
 
     if (sameView) this.viewRoot.scrollTop = savedScroll;
   }
@@ -678,19 +683,44 @@ export class App {
   }
 
   // --- melody view (the last coloured row) ------------------------------
-  /** Open the melody editor at the root, minting its instrument sound on first entry. */
+  /** Open the melody section on its LIST/menu (add a melody, or tap one to edit). */
   private openMelody(): void {
-    if (this.track.melodyInstrument.soundId < 0) this.mintLoopSound(this.track.melodyInstrument, MELODY_COLOR_INDEX);
+    this.melodyItemIndex = -1;
     this.melodyPath = [];
     this.melodyInstrumentPage = false;
+    this.melodyOptionsPage = false;
     this.view = "melody";
     this.render();
   }
 
-  /** The melody context currently being edited: the root, or a branch reached by drilling
-      through `melodyPath` (each entry a note whose branch we descended into). */
+  /** The melody item currently being edited, or null when on the list/menu. */
+  private currentMelodyItem(): MelodyItem | null {
+    return this.melodyItemIndex >= 0 && this.melodyItemIndex < this.track.melodies.length
+      ? this.track.melodies[this.melodyItemIndex]
+      : null;
+  }
+
+  /** Enter one melody item's editor (minting its instrument sound on first entry). */
+  private openMelodyItem(i: number): void {
+    this.melodyItemIndex = i;
+    this.melodyPath = [];
+    this.melodyInstrumentPage = false;
+    this.melodyOptionsPage = false;
+    const item = this.currentMelodyItem();
+    if (item && item.inst.soundId < 0) this.mintLoopSound(item.inst, MELODY_COLOR_INDEX);
+    this.render();
+  }
+
+  /** Add a fresh melody to the list and open it. */
+  private addMelody(): void {
+    this.track.melodies.push(newMelodyItem());
+    this.openMelodyItem(this.track.melodies.length - 1);
+  }
+
+  /** The melody context currently being edited: the item's root node, or a branch reached
+      by drilling through `melodyPath`. Assumes an item is open (guarded by the caller). */
   private currentMelodyNode(): MelodyNode {
-    let node = this.track.melody;
+    let node = this.currentMelodyItem()!.node;
     for (const note of this.melodyPath) node = note.branch ?? node;
     return node;
   }
@@ -701,9 +731,9 @@ export class App {
     this.render();
   }
 
-  /** The last overview row: the melody's generated lane, tapping through to its editor. */
+  /** The last overview row: the melody list summary + generated lane, tapping to its menu. */
   private melodyOverviewRow(): HTMLElement {
-    const m = this.track.melody;
+    const items = this.track.melodies;
     const c = MELODY_COLOR_INDEX;
     const row = document.createElement("button");
     row.className = "track-color-row melody-row";
@@ -717,8 +747,7 @@ export class App {
     name.textContent = "Melody";
     const count = document.createElement("span");
     count.className = "track-color-count";
-    const n = m.notes.length;
-    count.textContent = n === 0 ? "no notes" : `${ALL_SCALES[m.scale]} · ${n} note${n === 1 ? "" : "s"}`;
+    count.textContent = items.length === 0 ? "no melodies" : `${items.length} melod${items.length === 1 ? "y" : "ies"}`;
     head.append(dot, name, count);
     row.append(head);
     if (this.melodyLaneCells().some((x) => x > 0)) row.append(this.melodyStrip(this.segRows));
@@ -727,59 +756,165 @@ export class App {
   }
 
   private renderMelodyPanel(): void {
+    const item = this.currentMelodyItem();
+    if (!item) { this.renderMelodyList(); return; }
+    if (this.melodyInstrumentPage) { this.renderMelodyInstrumentPage(item); return; }
+    if (this.melodyOptionsPage) { this.renderMelodyOptionsPage(item); return; }
+    this.renderMelodyItemParams(item);
+  }
+
+  /** The melody LIST / menu: a whole-row preview + the list of melodies (tap to edit,
+      reorder, remove) + Add melody. */
+  private renderMelodyList(): void {
+    const v = this.viewRoot;
+    const c = MELODY_COLOR_INDEX;
+    const head = document.createElement("div");
+    head.className = "mixer-head";
+    head.style.setProperty("--vc", VOICE_COLORS[c]);
+    const back = document.createElement("button");
+    back.className = "mixer-back";
+    back.textContent = "‹ Track";
+    back.onclick = () => { this.view = "track"; this.render(); };
+    const title = document.createElement("h2");
+    title.className = "mixer-title";
+    title.textContent = "Melody";
+    head.append(back, title);
+    v.append(head);
+
+    const seq = this.melodyLanesPreview();
+    if (seq) v.append(seq);
+
+    const list = document.createElement("div");
+    list.className = "mixer-list melody-list";
+    if (this.track.melodies.length === 0) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "No melodies yet. Add one, generate notes from a scale, then place it across the track like a loop.";
+      list.append(hint);
+    } else {
+      this.track.melodies.forEach((item, i) => list.append(this.melodyListRow(item, i)));
+    }
+    v.append(list);
+
+    const add = document.createElement("button");
+    add.className = "loop-add";
+    add.textContent = "＋ Add melody";
+    add.onclick = () => this.addMelody();
+    v.append(add);
+  }
+
+  /** One row in the melody list: reorder, name + scale/notes/placement summary, remove. */
+  private melodyListRow(item: MelodyItem, i: number): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "loop-row";
+    row.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+
+    const order = document.createElement("div");
+    order.className = "loop-order";
+    const mkMove = (text: string, disabled: boolean, dir: number) => {
+      const b = document.createElement("button");
+      b.className = "loop-move"; b.textContent = text; b.disabled = disabled;
+      b.onclick = (e) => { e.stopPropagation(); this.moveMelody(i, dir); };
+      return b;
+    };
+    order.append(mkMove("▲", i === 0, -1), mkMove("▼", i === this.track.melodies.length - 1, 1));
+
+    const body = document.createElement("button");
+    body.className = "loop-body";
+    const nm = document.createElement("span");
+    nm.className = "loop-name";
+    nm.textContent = `Melody ${i + 1}`;
+    const sum = document.createElement("span");
+    sum.className = "loop-summary";
+    const n = item.node.notes.length;
+    sum.textContent = `${ALL_SCALES[item.node.scale]} · ${n} note${n === 1 ? "" : "s"} · ${this.ruleSummary(item.inst)}`;
+    body.append(nm, sum);
+    body.onclick = () => this.openMelodyItem(i);
+
+    const rm = document.createElement("button");
+    rm.className = "loop-remove";
+    rm.textContent = "×";
+    rm.title = "Remove this melody";
+    rm.onclick = (e) => { e.stopPropagation(); this.track.melodies.splice(i, 1); this.melodyChanged(); };
+
+    row.append(order, body, rm);
+    return row;
+  }
+
+  /** Reorder a melody in the list. */
+  private moveMelody(i: number, dir: number): void {
+    const j = i + dir;
+    const ms = this.track.melodies;
+    if (j < 0 || j >= ms.length) return;
+    [ms[i], ms[j]] = [ms[j], ms[i]];
+    this.melodyChanged();
+  }
+
+  /** One melody item's params page: the scale/notes editor + Length + Instrument-sound and
+      Loop-options buttons. Back returns to the melody list. */
+  private renderMelodyItemParams(item: MelodyItem): void {
     const v = this.viewRoot;
     const c = MELODY_COLOR_INDEX;
     const atRoot = this.melodyPath.length === 0;
     const node = this.currentMelodyNode();
-
-    // The instrument's sound params live on their own sub-page (reached by a button), so
-    // the shuffle menu has full scroll room instead of being buried under the notes.
-    if (atRoot && this.melodyInstrumentPage) { this.renderMelodyInstrumentPage(); return; }
 
     const head = document.createElement("div");
     head.className = "mixer-head";
     head.style.setProperty("--vc", VOICE_COLORS[c]);
     const back = document.createElement("button");
     back.className = "mixer-back";
-    // At the root, Back leaves to the Track; inside a branch, it pops up one level.
-    back.textContent = atRoot ? "‹ Track" : "‹ Back";
+    // At the item root, Back returns to the melody list; inside a branch, up one level.
+    back.textContent = atRoot ? "‹ Melodies" : "‹ Back";
     back.onclick = () => {
-      if (atRoot) { this.view = "track"; this.render(); }
+      if (atRoot) { this.melodyItemIndex = -1; this.render(); }
       else { this.melodyPath.pop(); this.render(); }
     };
     const title = document.createElement("h2");
     title.className = "mixer-title";
-    title.textContent = atRoot ? "Melody" : "Branch";
+    title.textContent = atRoot ? `Melody ${this.melodyItemIndex + 1}` : "Branch";
     head.append(back, title);
     if (atRoot) {
       const tree = document.createElement("button");
       tree.className = "mixer-open melody-tree-btn";
       tree.textContent = "⤢ Tree";
-      tree.title = "Zoomed-out tree of the whole melody";
-      tree.onclick = () => this.openMelodyTree();
+      tree.title = "Zoomed-out tree of this melody";
+      tree.onclick = () => this.openMelodyTree(item);
       head.append(tree);
     }
     v.append(head);
 
-    if (!atRoot) v.append(this.melodyBreadcrumb());
+    if (!atRoot) v.append(this.melodyBreadcrumb(item));
 
-    // Root-only: the whole-melody preview, Generate/Back, and the shared instrument.
     if (atRoot) {
-      const seqView = this.melodySequenceView();
+      const seqView = this.melodySequenceView(node, Math.max(1, Math.round(item.inst.rule.forBars)));
       if (seqView) v.append(seqView);
-      v.append(this.melodyGenerateRow());
-    }
+      v.append(this.melodyGenerateRow(node));
 
-    v.append(this.melodyScaleControls(node));
+      // Length (phrase bars) + Loop options + Instrument sound.
+      const lenBar = document.createElement("div");
+      lenBar.className = "placement-controls melody-genbar";
+      lenBar.style.setProperty("--vc", VOICE_COLORS[c]);
+      lenBar.append(this.stepperRow("Length", Math.max(1, Math.round(item.inst.rule.forBars)), 1, 64,
+        (nn) => { item.inst.rule.forBars = nn; this.melodyChanged(); }, (nn) => `${nn} bar${nn === 1 ? "" : "s"}`));
+      v.append(lenBar);
 
-    if (atRoot) {
+      const btns = document.createElement("div");
+      btns.className = "placement-row melody-genbtns";
+      const optBtn = document.createElement("button");
+      optBtn.className = "seg-btn melody-inst-btn";
+      optBtn.style.setProperty("--vc", VOICE_COLORS[c]);
+      optBtn.textContent = "⚙ Loop options ›";
+      optBtn.onclick = () => { this.melodyOptionsPage = true; this.render(); };
       const instBtn = document.createElement("button");
-      instBtn.className = "loop-add melody-inst-btn";
+      instBtn.className = "seg-btn melody-inst-btn";
       instBtn.style.setProperty("--vc", VOICE_COLORS[c]);
       instBtn.textContent = "🎛 Instrument sound ›";
       instBtn.onclick = () => { this.melodyInstrumentPage = true; this.render(); };
-      v.append(instBtn);
+      btns.append(optBtn, instBtn);
+      v.append(btns);
     }
+
+    v.append(this.melodyScaleControls(node));
 
     const notesHd = document.createElement("div");
     notesHd.className = "placement-row melody-notes-head";
@@ -799,9 +934,28 @@ export class App {
     v.append(add);
   }
 
+  /** One melody item's Loop-options page: the placement rule (Repeat every / length /
+      overlap-solo), reusing the loop placement editor. Back returns to the item. */
+  private renderMelodyOptionsPage(item: MelodyItem): void {
+    const v = this.viewRoot;
+    const head = document.createElement("div");
+    head.className = "mixer-head";
+    head.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const back = document.createElement("button");
+    back.className = "mixer-back";
+    back.textContent = "‹ Melody";
+    back.onclick = () => { this.melodyOptionsPage = false; this.render(); };
+    const title = document.createElement("h2");
+    title.className = "mixer-title";
+    title.textContent = "Loop options";
+    head.append(back, title);
+    v.append(head);
+    v.append(this.placementControls(item.inst, () => this.render()));
+  }
+
   /** The melody instrument's sound-params sub-page: a Back header + the shuffle menu on
       its own scrollable page (so it's always reachable, not buried under the notes). */
-  private renderMelodyInstrumentPage(): void {
+  private renderMelodyInstrumentPage(item: MelodyItem): void {
     const v = this.viewRoot;
     const head = document.createElement("div");
     head.className = "mixer-head";
@@ -818,7 +972,7 @@ export class App {
 
     const instWrap = document.createElement("div");
     instWrap.className = "melody-inst";
-    instWrap.append(this.melodyInstrumentMenu());
+    instWrap.append(this.melodyInstrumentMenu(item.inst));
     v.append(instWrap);
   }
 
@@ -945,7 +1099,7 @@ export class App {
 
   /** The path from the root context down to the branch being edited, each crumb tapping
       back to that level. */
-  private melodyBreadcrumb(): HTMLElement {
+  private melodyBreadcrumb(item: MelodyItem): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "melody-crumbs";
     const crumb = (text: string, depth: number) => {
@@ -955,8 +1109,8 @@ export class App {
       b.onclick = () => { this.melodyPath = this.melodyPath.slice(0, depth); this.render(); };
       return b;
     };
-    wrap.append(crumb("Melody", 0));
-    let node = this.track.melody;
+    wrap.append(crumb(`Melody ${this.melodyItemIndex + 1}`, 0));
+    let node = item.node;
     this.melodyPath.forEach((note, i) => {
       const sep = document.createElement("span");
       sep.className = "melody-crumb-sep";
@@ -976,8 +1130,7 @@ export class App {
   }
 
   /** Generate-again / Back for the melody's seeded note order, plus a note-count read-out. */
-  private melodyGenerateRow(): HTMLElement {
-    const m = this.track.melody;
+  private melodyGenerateRow(node: MelodyNode): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "placement-controls melody-generate";
     wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
@@ -988,15 +1141,14 @@ export class App {
     lbl.textContent = "Order";
     const hint = document.createElement("span");
     hint.className = "melody-gen-hint";
-    hint.textContent = m.notes.length === 0 ? "add notes to generate" : "seeded — same weights, new order";
+    hint.textContent = node.notes.length === 0 ? "add notes to generate" : "seeded — same weights, new order";
     row.append(lbl, hint);
-    wrap.append(row, this.rollRow(m, () => this.render()));
+    wrap.append(row, this.rollRow(node, () => this.render()));
     return wrap;
   }
 
-  /** The melody instrument's shuffle menu (same authoring surface as a loop's sound). */
-  private melodyInstrumentMenu(): HTMLElement {
-    const inst = this.track.melodyInstrument;
+  /** A melody instrument's shuffle menu (same authoring surface as a loop's sound). */
+  private melodyInstrumentMenu(inst: Loop): HTMLElement {
     return buildVoiceShuffleMenu(this.voiceEditorFor(inst), REF_DRUM, {
       onChange: async () => { await this.writeAndNormalizeLoop(inst); this.render(); },
       audition: () => this.auditionLoop(inst),
@@ -1010,7 +1162,7 @@ export class App {
   /** Zoomed-out view of the whole melody as an SVG NODE GRAPH: each context (root +
       branches) is a node box showing its scale + note letters, with connector lines from a
       parent note down to the branch it spawns. Tap a node to jump straight to editing it. */
-  private openMelodyTree(): void {
+  private openMelodyTree(item: MelodyItem): void {
     document.querySelector(".melody-tree-overlay")?.remove();
     const overlay = document.createElement("div");
     overlay.className = "melody-tree-overlay";
@@ -1036,7 +1188,7 @@ export class App {
       const x = kids.length ? kids.reduce((s, k) => s + k.x, 0) / kids.length : leaf++;
       return { node, path, label, depth, x, kids };
     };
-    const rootT = layout(this.track.melody, [], 0, "Melody");
+    const rootT = layout(item.node, [], 0, `Melody ${this.melodyItemIndex + 1}`);
 
     const NS = "http://www.w3.org/2000/svg";
     const NW = 128, NH = 50, GX = 16, GY = 46;
@@ -1172,18 +1324,14 @@ export class App {
     return this.pcColor(12 * Math.log2(hz / 440));
   }
 
-  /** A mini PIANO ROLL of the generated melody: time →, pitch ↑, each note a coloured bar
-      (colour = its pitch class, so the sequence reads at a glance and matches the note
-      squares). Rests are gaps. Returns null when there's nothing generated. */
-  private melodySequenceView(): HTMLElement | null {
-    const seq = generateMelody(this.track.melody, this.track.barLimit);
-    if (!seq.length) return null;
-
-    let total = 0;
-    for (const e of seq) total += Math.max(0, e.restSteps) + Math.max(1, e.lengthSteps);
+  /** A mini PIANO ROLL — time →, pitch ↑, each note a coloured bar (colour = pitch class,
+      matching the note squares). `events` are {start,len,hz} in 16th steps over `total`
+      steps. Returns null when empty. */
+  private pianoRollSvg(events: { start: number; len: number; hz: number }[], total: number): HTMLElement | null {
+    if (!events.length) return null;
     total = Math.max(1, total);
-    const semis = seq.map((e) => Math.round(12 * Math.log2(e.hz / 440)));
-    const minS = Math.min(...semis), maxS = Math.max(...semis);
+    const semis = events.map((e) => Math.round(12 * Math.log2(e.hz / 440)));
+    const maxS = Math.max(...semis), minS = Math.min(...semis);
     const rows = Math.max(1, maxS - minS + 1);
 
     const wrap = document.createElement("div");
@@ -1195,22 +1343,49 @@ export class App {
     svg.setAttribute("viewBox", `0 0 ${total} ${rows}`);
     svg.setAttribute("preserveAspectRatio", "none");
     svg.setAttribute("height", String(Math.min(120, Math.max(46, rows * 11))));
-
-    let cursor = 0;
-    seq.forEach((e, i) => {
-      cursor += Math.max(0, e.restSteps);
-      const len = Math.max(1, e.lengthSteps);
+    events.forEach((e, i) => {
       const r = document.createElementNS(NS, "rect");
-      r.setAttribute("x", String(cursor));
+      r.setAttribute("x", String(e.start));
       r.setAttribute("y", String(maxS - semis[i] + 0.12));
-      r.setAttribute("width", String(Math.max(0.5, len - 0.12)));
+      r.setAttribute("width", String(Math.max(0.5, e.len - 0.12)));
       r.setAttribute("height", "0.76");
       r.setAttribute("fill", this.hzColor(e.hz));
       svg.append(r);
-      cursor += len;
     });
     wrap.append(svg);
     return wrap;
+  }
+
+  /** A piano roll of ONE item's generated phrase (`bars` long). */
+  private melodySequenceView(node: MelodyNode, bars: number): HTMLElement | null {
+    const seq = generateMelody(node, bars);
+    const events: { start: number; len: number; hz: number }[] = [];
+    let cursor = 0;
+    for (const e of seq) {
+      cursor += Math.max(0, e.restSteps);
+      const len = Math.max(1, e.lengthSteps);
+      events.push({ start: cursor, len, hz: e.hz });
+      cursor += len;
+    }
+    return this.pianoRollSvg(events, cursor);
+  }
+
+  /** A piano roll of the WHOLE melody row: every compiled melody lane placed across the
+      track, so the list preview shows all melodies with their real placement. */
+  private melodyLanesPreview(): HTMLElement | null {
+    const total = Math.max(1, this.track.barLimit) * STEPS_PER_BAR;
+    const events: { start: number; len: number; hz: number }[] = [];
+    for (const lane of this.arr.lines) {
+      if (lane.color !== MELODY_COLOR_INDEX) continue;
+      let cursor = 0;
+      for (const nd of lane.nodes) {
+        const unit = nd.steps >= 1 ? nd.steps : STEPS_PER_BAR;
+        const len = Math.max(1, nd.reps | 0) * unit;
+        if (nd.soundId >= 0 && nd.pitchHz && nd.pitchHz > 0) events.push({ start: cursor, len, hz: nd.pitchHz });
+        cursor += len;
+      }
+    }
+    return this.pianoRollSvg(events, total);
   }
 
   /** Bar-resolution coverage of the compiled melody lane: 1 where a note sounds. */
@@ -2134,7 +2309,7 @@ export class App {
   }
 
   private colorOf(loop: Loop): number {
-    if (loop === this.track.melodyInstrument) return MELODY_COLOR_INDEX;
+    if (this.track.melodies.some((m) => m.inst === loop)) return MELODY_COLOR_INDEX;
     for (let c = 0; c < this.track.colors.length; c++) {
       if (this.track.colors[c].loops.includes(loop)) return c;
     }
