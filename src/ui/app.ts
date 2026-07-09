@@ -2163,6 +2163,11 @@ export class App {
         if (m === "off") loop[kind] = undefined;
         else if (m === "everyN") loop[kind] = { mode: "everyN", every: 2, amount: defAmount };
         else loop[kind] = { mode: "ramp", curve: 0, dir: "up", amount: defAmount };
+        // Activating a deterministic placement OVERWRITES the sound's own shuffled
+        // accent/ghost so the placement is the single source of truth (not a random
+        // layer the engine merely masks while the spec is live). Off leaves the sound's
+        // own feel intact, so it can fall back to it.
+        if (m !== "off") this.overwriteShuffledLife(loop, kind);
         this.recompile();
         rerender();
       };
@@ -2201,6 +2206,19 @@ export class App {
     }
     row.append(lbl, controls);
     return row;
+  }
+
+  /** Overwrite a loop's own shuffled accent/ghost with the neutral value, so an active
+      per-loop LifePlacement (see lifeRow) fully replaces it instead of leaving a random
+      layer baked into the snapshot. Accent → AccentAmount 0 (no ducking); ghost →
+      HitChance 1 (no dropped/ghosted hits) — the same neutralisation the sound's own
+      Accent/Ghosts modules use when switched off. Resends the sound table so the engine
+      picks up the changed snapshot (recompile only resends lanes). */
+  private overwriteShuffledLife(loop: Loop, kind: "accent" | "ghost"): void {
+    if (!loop.snapshot.length) return;
+    loop.snapshot[kind === "accent" ? ParamId.AccentAmount : ParamId.HitChance] =
+      kind === "accent" ? 0 : 1;
+    this.pushSounds();
   }
 
   /** Re-roll / Back for a seeded rule (Chance or Dice): re-roll mints a new seed (pushing
