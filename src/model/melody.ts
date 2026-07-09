@@ -48,9 +48,10 @@ export function emptyMelody(): MelodyNode {
   return { scale: ScaleType.Major, root: 0, octave: 0, notes: [], seed: melodySeed(), seedHistory: [] };
 }
 
-/** A default note for a context: the root degree, mid weight, a quarter note, no rest. */
+/** A default note for a context: the root degree, mid weight, a quarter note, and a rest
+    before it of the same length. */
 export function defaultNote(): MelodyNote {
-  return { degree: 0, weight: 3, lengthSteps: 4, restSteps: 0 };
+  return { degree: 0, weight: 3, lengthSteps: 4, restSteps: 4 };
 }
 
 /** Fill a context with `count` freshly RANDOM notes drawn from its scale: all distinct
