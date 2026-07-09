@@ -1122,6 +1122,13 @@ button:active { transform: scale(0.94); }
 .melody-gen-hint { font-size: 12px; color: var(--muted); font-style: italic; }
 .melody-tree-btn { margin-left: auto; }
 
+/* Instrument-sound button: opens the sound-params sub-page (a solid nav button, not the
+   dashed "add" style it borrows its base from). */
+.melody-inst-btn {
+  border-style: solid; border-color: var(--vc); color: var(--vc);
+  font-weight: 600; text-align: center;
+}
+
 /* Compact scale/root/octave — three small fields on one row instead of tall rows. */
 .melody-scale-compact {
   --vc: var(--accent);

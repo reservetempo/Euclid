@@ -67,12 +67,13 @@ export class App {
   private saveTimer = 0;
 
   private view: View = "track";
-  private lastView: View | null = null; // view at the previous render (scroll-preserve guard)
+  private lastViewKey = "";             // view identity at the previous render (scroll-preserve guard)
   private openColor = 0;               // which colour panel is open
   private melodyPath: MelodyNote[] = []; // notes descended into (branch drill-down); [] = root
   private melodyBranchMode = false;      // Add-branch mode: tapping a note square branches it
   private melodyGenCount = 4;            // desired note count for the Generate button
   private melodyNoteEdit: MelodyNote | null = null; // note whose settings popup is open
+  private melodyInstrumentPage = false;  // melody sub-page: the instrument's sound params
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
@@ -402,8 +403,10 @@ export class App {
     // top on every edit. Only restore when the view is unchanged — a genuine navigation
     // should start at the top.
     const savedScroll = this.viewRoot?.scrollTop ?? 0;
-    const sameView = this.lastView === this.view;
-    this.lastView = this.view;
+    // The melody instrument sub-page is a distinct scroll context from the notes page.
+    const viewKey = this.view + (this.view === "melody" && this.melodyInstrumentPage ? ":inst" : "");
+    const sameView = this.lastViewKey === viewKey;
+    this.lastViewKey = viewKey;
     this.root.innerHTML = "";
     this.loopTimeEl = null;
     this.trackPlayheadEl = null;
@@ -676,6 +679,7 @@ export class App {
   private openMelody(): void {
     if (this.track.melodyInstrument.soundId < 0) this.mintLoopSound(this.track.melodyInstrument, MELODY_COLOR_INDEX);
     this.melodyPath = [];
+    this.melodyInstrumentPage = false;
     this.view = "melody";
     this.render();
   }
@@ -725,6 +729,10 @@ export class App {
     const atRoot = this.melodyPath.length === 0;
     const node = this.currentMelodyNode();
 
+    // The instrument's sound params live on their own sub-page (reached by a button), so
+    // the shuffle menu has full scroll room instead of being buried under the notes.
+    if (atRoot && this.melodyInstrumentPage) { this.renderMelodyInstrumentPage(); return; }
+
     const head = document.createElement("div");
     head.className = "mixer-head";
     head.style.setProperty("--vc", VOICE_COLORS[c]);
@@ -762,19 +770,12 @@ export class App {
     v.append(this.melodyScaleControls(node));
 
     if (atRoot) {
-      const instHd = document.createElement("div");
-      instHd.className = "placement-row melody-notes-head";
-      const iLbl = document.createElement("span");
-      iLbl.className = "placement-lbl transition-head";
-      iLbl.textContent = "Instrument";
-      instHd.append(iLbl);
-      v.append(instHd);
-      // Wrap so the shuffle menu (a position:absolute dropdown by default) flows inline
-      // here instead of floating off the bottom of the screen (see .melody-inst CSS).
-      const instWrap = document.createElement("div");
-      instWrap.className = "melody-inst";
-      instWrap.append(this.melodyInstrumentMenu());
-      v.append(instWrap);
+      const instBtn = document.createElement("button");
+      instBtn.className = "loop-add melody-inst-btn";
+      instBtn.style.setProperty("--vc", VOICE_COLORS[c]);
+      instBtn.textContent = "🎛 Instrument sound ›";
+      instBtn.onclick = () => { this.melodyInstrumentPage = true; this.render(); };
+      v.append(instBtn);
     }
 
     const notesHd = document.createElement("div");
@@ -793,6 +794,29 @@ export class App {
     add.textContent = "＋ Add note";
     add.onclick = () => { node.notes.push(defaultNote()); this.melodyChanged(); };
     v.append(add);
+  }
+
+  /** The melody instrument's sound-params sub-page: a Back header + the shuffle menu on
+      its own scrollable page (so it's always reachable, not buried under the notes). */
+  private renderMelodyInstrumentPage(): void {
+    const v = this.viewRoot;
+    const head = document.createElement("div");
+    head.className = "mixer-head";
+    head.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const back = document.createElement("button");
+    back.className = "mixer-back";
+    back.textContent = "‹ Melody";
+    back.onclick = () => { this.melodyInstrumentPage = false; this.render(); };
+    const title = document.createElement("h2");
+    title.className = "mixer-title";
+    title.textContent = "Instrument sound";
+    head.append(back, title);
+    v.append(head);
+
+    const instWrap = document.createElement("div");
+    instWrap.className = "melody-inst";
+    instWrap.append(this.melodyInstrumentMenu());
+    v.append(instWrap);
   }
 
   /** Scale-driven generation controls: how many notes to draw, a Generate button that
