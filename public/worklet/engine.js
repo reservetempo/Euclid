@@ -130,6 +130,27 @@ function lifeWeight(spec, hitIndex, pos01) {
   return Math.pow(clamp(t, 0, 1), exp);
 }
 
+// Bend a transition's blend progress t∈[0,1] (see fireBlend): `curve` 0 (linear) → 1
+// (exponential); `dir` "out" (default) eases slowly out of the near end then rushes to the
+// far end, "in" rushes early then eases into the far end. Both keep the endpoints (0→0,
+// 1→1) so the fade still spans fully. curve 0 / unset = the old linear ramp.
+function bendT(t, curve, dir) {
+  const c = clamp(curve || 0, 0, 1);
+  t = clamp(t, 0, 1);
+  if (c <= 0) return t;
+  const exp = Math.pow(4, c);
+  return dir === "in" ? 1 - Math.pow(1 - t, exp) : Math.pow(t, exp);
+}
+
+// The ONE parameter each silence-end fade sweeps (see silentVariant / nearVariant and the
+// UI's TRANSITION_SWEEP). The far end may also touch secondary params (crush's Downsample,
+// echo's Feedback, wash's Size) — those stay automatic; only this primary one is From→To
+// editable. Modes not listed here (pair morphs) don't sweep a single param.
+const SWEEP_PARAM = {
+  fade: P.Volume, filter: P.FilterCutoff, wash: P.ReverbMix,
+  thin: P.HitChance, drive: P.Drive, crush: P.Crush, echo: P.EchoMix,
+};
+
 // Standard 2-sample polyBLEP residual: the correction to add around a unit step
 // discontinuity at phase 0 (t = distance into/before the edge in cycles, dt = phase
 // increment per sample). Smooths oscillator edges so they don't alias.
@@ -1175,34 +1196,51 @@ class EngineProcessor extends AudioWorkletProcessor {
   // crush ("crush"), or a wash of delay ("echo") — the same drive/FX palette as the
   // voice params, each still ducked in level so it reads as the quiet end. Morphing
   // between this and the real snapshot IS the fade.
-  silentVariant(snap, mode) {
+  // `to`, when given (a per-transition From→To override, see lines.ts TRANSITION_SWEEP),
+  // replaces the built-in far-end value of the mode's PRIMARY swept param; the secondary
+  // params and the volume duck are unchanged.
+  silentVariant(snap, mode, to) {
     const v = snap.slice();
     const vol = rd(v, P.Volume, 0.85);
+    const has = to !== undefined && to !== null;
     if (mode === "filter") {
       const hp = Math.round(rd(v, P.FilterType, 0)) === 1;
-      v[P.FilterCutoff] = hp ? 9000 : 120; // just past the UI's 200..8000 sweep
+      v[P.FilterCutoff] = has ? to : (hp ? 9000 : 120); // just past the UI's 200..8000 sweep
       v[P.Volume] = vol * 0.25;
     } else if (mode === "wash") {
-      v[P.ReverbMix] = 1;
+      v[P.ReverbMix] = has ? to : 1;
       v[P.ReverbSize] = Math.max(0.8, rd(v, P.ReverbSize, 0.5));
       v[P.Volume] = vol * 0.2;
     } else if (mode === "thin") {
-      v[P.HitChance] = 0;
+      v[P.HitChance] = has ? to : 0;
       v[P.Volume] = vol * 0.5;
     } else if (mode === "drive") {
-      v[P.Drive] = 1.5;      // hard saturation at the far end, easing to the clean sound
+      v[P.Drive] = has ? to : 1.5;  // hard saturation at the far end, easing to the clean sound
       v[P.Volume] = vol * 0.35;
     } else if (mode === "crush") {
-      v[P.Crush] = 4;        // low bit-depth index (see CRUSH_BITS) + coarse sample-rate
-      v[P.Downsample] = 5;   // (see DOWNSAMPLE_FACTOR) for a degraded, lo-fi far end
+      v[P.Crush] = has ? to : 4;    // low bit-depth index (see CRUSH_BITS) + coarse sample-rate
+      v[P.Downsample] = 5;          // (see DOWNSAMPLE_FACTOR) for a degraded, lo-fi far end
       v[P.Volume] = vol * 0.4;
     } else if (mode === "echo") {
-      v[P.EchoMix] = 0.6;    // drowned in delay at the far end, drying into the sound
+      v[P.EchoMix] = has ? to : 0.6; // drowned in delay at the far end, drying into the sound
       v[P.EchoFeedback] = Math.max(0.6, rd(v, P.EchoFeedback, 0));
       v[P.Volume] = vol * 0.3;
     } else {
-      v[P.Volume] = 0; // "fade": a pure level ramp
+      v[P.Volume] = has ? to : 0; // "fade": a pure level ramp
     }
+    return v;
+  }
+
+  // The NEAR/steady end of a silence-end fade: the real sound, but with the mode's primary
+  // swept param overridden to `from` when given (else the sound's own value). Paired with
+  // silentVariant (the far end) to run a From→To sweep instead of always starting from the
+  // sound as-is. Identity when `from` is unset — the pre-sweep behaviour.
+  nearVariant(snap, mode, from) {
+    if (from === undefined || from === null) return snap;
+    const id = SWEEP_PARAM[mode];
+    if (id === undefined) return snap;
+    const v = snap.slice();
+    v[id] = from;
     return v;
   }
 
@@ -1227,13 +1265,15 @@ class EngineProcessor extends AudioWorkletProcessor {
   // when both voices play at once (crossfade/alternate/filter). Modes mirror the four
   // pair blends plus the silence-end fade styles (fade/filter/wash/thin/drive/crush/echo).
   // `ctx` is the per-hit Life context (accent/ghost placement) forwarded to perHit.
-  fireBlend(ownId, fromId, from, toId, to, mode, t, ctx, gate, beat, fired) {
+  fireBlend(ownId, fromId, from, toId, to, mode, t, ctx, gate, beat, fired, nearV, farV) {
     if (!from && !to) return;
     if (!from || !to) {
-      // One end is silence: morph the real sound against its derived silent variant.
+      // One end is silence: morph the real sound between its near variant (From) and its
+      // derived silent variant (To). `nearV`/`farV` are the optional From→To overrides.
       const real = to || from;
-      const ghost = this.silentVariant(real.snap, mode);
-      const snap = to ? this.lerpSnap(ghost, real.snap, t) : this.lerpSnap(real.snap, ghost, t);
+      const near = this.nearVariant(real.snap, mode, nearV);
+      const ghost = this.silentVariant(real.snap, mode, farV);
+      const snap = to ? this.lerpSnap(ghost, near, t) : this.lerpSnap(near, ghost, t);
       const hit = this.perHit(snap, ctx);
       if (!hit) return;
       const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
@@ -1433,8 +1473,9 @@ class EngineProcessor extends AudioWorkletProcessor {
         const fromId = nd.intro.fromId;
         const from = fromId >= 0 ? this.sounds.get(fromId) : null;
         if (fromId < 0 || from) {
-          const t = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
-          this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.mode, t, life, gate, beat, fired);
+          const raw = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
+          const t = bendT(raw, nd.intro.curve, nd.intro.dir);
+          this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.mode, t, life, gate, beat, fired, nd.intro.from, nd.intro.to);
           continue;
         }
         // Source sound gone — fall through and play this node plainly.
@@ -1446,8 +1487,9 @@ class EngineProcessor extends AudioWorkletProcessor {
         const to = toId >= 0 ? this.sounds.get(toId) : null;
         if (toId < 0 || to) {
           const local = activeLocal - (activeLen - outroSteps);
-          const t = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
-          this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.mode, t, life, gate, beat, fired);
+          const raw = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
+          const t = bendT(raw, nd.outro.curve, nd.outro.dir);
+          this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.mode, t, life, gate, beat, fired, nd.outro.from, nd.outro.to);
           continue;
         }
         // Destination sound gone — play plainly.

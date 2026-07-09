@@ -25,7 +25,7 @@ import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { addReport, reportCount, exportReports, clearReports, ReportKind } from "../model/soundReports";
 import {
   LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
-  TransitionMode, FADE_MODES,
+  TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape,
 } from "../model/lines";
 import {
   Track, Loop, EveryRule, emptyLoop, loopToNode, randomSeed as newSeed,
@@ -59,6 +59,17 @@ type View = "track" | "color" | "sound" | "mixer" | "melody";
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
 type RhythmField = "hits" | "steps" | "rotation" | "split";
 
+// Bend a transition's blend progress t∈[0,1] for the curve visualization — must match
+// bendT in engine.js: `curve` 0 (linear) → 1 (exponential); `dir` "out" eases slowly then
+// rushes to the end, "in" rushes early then eases in. Endpoints (0→0, 1→1) are preserved.
+function bend(t: number, curve: number, dir: "in" | "out"): number {
+  const c = Math.max(0, Math.min(1, curve || 0));
+  t = Math.max(0, Math.min(1, t));
+  if (c <= 0) return t;
+  const exp = Math.pow(4, c);
+  return dir === "in" ? 1 - Math.pow(1 - t, exp) : Math.pow(t, exp);
+}
+
 export class App {
   private engine = new EngineHost();
   private arr = new LineArrangement();       // COMPILED lanes (engine source of truth)
@@ -78,7 +89,7 @@ export class App {
   private melodyInstrumentPage = false;  // melody sub-page: the current item's sound params
   private melodyOptionsPage = false;     // melody sub-page: the current item's loop options
   private editLoop: Loop | null = null; // loop whose placement popup is open
-  private placementSoundPage = false;   // placement sub-page: the loop's sound params
+  private placementTab: "loop" | "transition" | "sound" = "loop"; // which sub-page of the loop popup
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
   private soundName = "";
@@ -1790,12 +1801,13 @@ export class App {
     this.render();
   }
 
-  /** The placement popup for `loop`: its Repeat-every rule, For-n-bars, overlap/solo,
-      rhythm circles, and the shuffle menu for its sound. Rebuilt in place on any change
-      (it's appended to the root, so it survives a panel re-render). */
+  /** The placement popup for `loop`: a Sound / Loop / Transition tab nav over its sub-pages —
+      Loop = the Repeat-every rule + Accents & Ghosts + rhythm circles; Transition = the
+      intro/outro fades; Sound = the shuffle menu. Rebuilt in place on any change (it's
+      appended to the root, so it survives a panel re-render). */
   private openPlacement(loop: Loop): void {
     document.querySelector(".placement-overlay")?.remove();
-    if (this.editLoop !== loop) this.placementSoundPage = false; // fresh open starts on the main page
+    if (this.editLoop !== loop) this.placementTab = "loop"; // fresh open starts on the Loop tab
     this.editLoop = loop;
     const rerender = () => this.openPlacement(loop);
 
@@ -1806,15 +1818,6 @@ export class App {
     const sheet = document.createElement("div");
     sheet.className = "voice-sheet placement-sheet";
     sheet.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a4e58");
-
-    // The sound params live on their own sub-page (reached by a button) so the shuffle menu
-    // has full scroll room instead of being cut off under the loop/transition controls.
-    if (this.placementSoundPage) {
-      this.buildPlacementSoundPage(loop, sheet, rerender);
-      overlay.append(sheet);
-      this.root.append(overlay);
-      return;
-    }
 
     const head = document.createElement("div");
     head.className = "voice-sheet-head";
@@ -1828,47 +1831,41 @@ export class App {
     head.append(back, title);
     sheet.append(head);
 
-    sheet.append(this.placementControls(loop, rerender));
-    sheet.append(this.transitionControls(loop, rerender));
-    sheet.append(this.lifeControls(loop, rerender));
+    // Tab nav across the three sub-pages.
+    const nav = document.createElement("div");
+    nav.className = "placement-seg placement-nav";
+    const mkTab = (tab: "sound" | "loop" | "transition", text: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (this.placementTab === tab ? " on" : "");
+      b.textContent = text;
+      b.onclick = () => { if (this.placementTab !== tab) { this.placementTab = tab; rerender(); } };
+      return b;
+    };
+    nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transition"));
+    sheet.append(nav);
 
-    // Rhythm circles (Hits/Steps/Start/Split).
-    const detail = document.createElement("div");
-    detail.className = "euclid-detail";
-    detail.append(this.rhythmCircles(loop, rerender));
-    sheet.append(detail);
-
-    const soundBtn = document.createElement("button");
-    soundBtn.className = "loop-add placement-sound-btn";
-    soundBtn.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a4e58");
-    soundBtn.textContent = "🎛 Sound ›";
-    soundBtn.onclick = () => { this.placementSoundPage = true; rerender(); };
-    sheet.append(soundBtn);
+    if (this.placementTab === "sound") {
+      this.appendSoundTab(loop, sheet);
+    } else if (this.placementTab === "transition") {
+      sheet.append(this.transitionControls(loop, rerender));
+    } else {
+      sheet.append(this.placementControls(loop, rerender));
+      sheet.append(this.lifeControls(loop, rerender));
+      const detail = document.createElement("div");
+      detail.className = "euclid-detail";
+      detail.append(this.rhythmCircles(loop, rerender));
+      sheet.append(detail);
+    }
 
     overlay.append(sheet);
     this.root.append(overlay);
   }
 
-  /** The loop's sound-params sub-page: a Back header + the shuffle menu on its own
-      scrollable sheet (so it's always reachable, not cut off under the loop controls). */
-  private buildPlacementSoundPage(loop: Loop, sheet: HTMLElement, rerender: () => void): void {
-    const head = document.createElement("div");
-    head.className = "voice-sheet-head";
-    const back = document.createElement("button");
-    back.className = "mixer-back";
-    back.textContent = `‹ ${loop.name || "Loop"}`;
-    back.onclick = () => { this.placementSoundPage = false; rerender(); };
-    const title = document.createElement("h2");
-    title.className = "voice-sheet-title";
-    title.textContent = "Sound";
-    head.append(back, title);
-    sheet.append(head);
-
+  /** The Sound tab: the loop's shuffle menu (its sound params), appended under the shared
+      tab nav so it has full scroll room. */
+  private appendSoundTab(loop: Loop, sheet: HTMLElement): void {
     const menu = buildVoiceShuffleMenu(this.voiceEditorFor(loop), REF_DRUM, {
-      onChange: async () => {
-        await this.writeAndNormalizeLoop(loop);
-        title.textContent = "Sound";
-      },
+      onChange: async () => { await this.writeAndNormalizeLoop(loop); },
       audition: () => this.auditionLoop(loop),
       onFullParams: () => {
         this.soundLoop = loop;
@@ -2094,20 +2091,118 @@ export class App {
         this.recompile();
       }, rerender, () => `${env.reps} rep${env.reps === 1 ? "" : "s"}`));
 
-      // Speed mode: the far end's hit rate (× tempo) and the linear→exponential glide.
       if (env.mode === "speed") {
+        // Speed is timing, not a swept param: the far end's hit rate (× tempo).
         controls.append(this.numRow("Rate", () => Math.round((env.rate ?? 2) * 100), (n) => {
           env.rate = Math.max(0.25, Math.min(4, Math.round(n) / 100));
           this.recompile();
         }, rerender, () => `${(env.rate ?? 2).toFixed(2)}×`));
-        controls.append(this.numRow("Curve", () => Math.round((env.curve ?? 0) * 100), (n) => {
-          env.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
-          this.recompile();
-        }, rerender, () => `${Math.round((env.curve ?? 0) * 100)}%`));
+      } else {
+        // Every other style sweeps ONE parameter From → To (see TRANSITION_SWEEP). From
+        // defaults to the sound's own value, To to the style's built-in extreme.
+        const spec = TRANSITION_SWEEP[env.mode];
+        if (spec) {
+          controls.append(this.sweepRow(loop, env, "from", rerender));
+          controls.append(this.sweepRow(loop, env, "to", rerender));
+        }
       }
+
+      // Curve (all styles) + its ease direction (snapshot styles only — Speed's glide is
+      // oriented by the intro/outro side itself).
+      controls.append(this.numRow("Curve", () => Math.round((env.curve ?? 0) * 100), (n) => {
+        env.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
+        this.recompile();
+      }, rerender, () => `${Math.round((env.curve ?? 0) * 100)}%`));
+      if (env.mode !== "speed") {
+        const dirSeg = document.createElement("div");
+        dirSeg.className = "placement-seg fade-modes";
+        const mkDir = (d: "out" | "in", text: string) => {
+          const b = document.createElement("button");
+          b.className = "seg-btn" + ((env.dir ?? "out") === d ? " on" : "");
+          b.textContent = text;
+          b.onclick = () => { env.dir = d; this.recompile(); rerender(); };
+          return b;
+        };
+        dirSeg.append(mkDir("out", "Ease out"), mkDir("in", "Ease in"));
+        controls.append(dirSeg);
+      }
+      controls.append(this.curveViz(loop, env, side));
     }
     row.append(lbl, controls);
     return row;
+  }
+
+  /** One From/To endpoint row for a transition's swept parameter. Percent-style params
+      (range ≤ 2) scrub as a percentage; wider ranges (filter Hz) scrub in native units at
+      the spec's step so the drag stays usable, and the numpad still takes exact values. */
+  private sweepRow(loop: Loop, env: TransitionShape & { mode: TransitionMode }, key: "from" | "to", rerender: () => void): HTMLElement {
+    const spec = TRANSITION_SWEEP[env.mode]!;
+    const snap = loop.snapshot;
+    const def = key === "from" ? (snap[spec.paramId] ?? 0) : spec.farDefault(snap);
+    const val = () => env[key] ?? def;
+    const set = (native: number) => { env[key] = Math.max(spec.min, Math.min(spec.max, native)); this.recompile(); };
+    const label = key === "from" ? "From" : "To";
+    const show = () => spec.format(val());
+    if (spec.max <= 2) {
+      return this.numRow(label, () => Math.round(val() * 100), (n) => set(n / 100), rerender, show);
+    }
+    return this.numRow(label, () => Math.round(val()), (n) => set(Math.round(n)), rerender, show, spec.step);
+  }
+
+  /** A little graph of a transition's blend curve: the swept value's path across the span,
+      bent by Curve/dir (mirrors bendT in engine.js), labelled with its start/end values. */
+  private curveViz(loop: Loop, env: TransitionShape & { mode: TransitionMode }, side: "intro" | "outro"): HTMLElement {
+    const W = 200, H = 56;
+    const spec = TRANSITION_SWEEP[env.mode];
+    // Start/end labels for the span (left = span start, right = span end). An intro rises
+    // from the far end into the near sound; an outro leaves the near sound for the far end.
+    let startLabel: string, endLabel: string;
+    if (env.mode === "speed") {
+      const rate = (env.rate ?? 2).toFixed(2) + "×";
+      [startLabel, endLabel] = side === "intro" ? [rate, "1×"] : ["1×", rate];
+    } else if (spec) {
+      const snap = loop.snapshot;
+      const from = spec.format(env.from ?? (snap[spec.paramId] ?? 0));
+      const to = spec.format(env.to ?? spec.farDefault(snap));
+      [startLabel, endLabel] = side === "intro" ? [to, from] : [from, to];
+    } else {
+      [startLabel, endLabel] = ["", ""];
+    }
+
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "curve-viz");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    // The eased blend progress, sampled across the span (y up = toward the end value).
+    const curve = env.curve ?? 0, dir = env.dir ?? "out";
+    let d = "";
+    const N = 32;
+    for (let i = 0; i <= N; i++) {
+      const x = i / N;
+      const y = bend(x, curve, dir);
+      const px = x * W, py = H - 3 - y * (H - 6);
+      d += (i === 0 ? "M" : "L") + px.toFixed(1) + " " + py.toFixed(1) + " ";
+    }
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d.trim());
+    path.setAttribute("class", "curve-viz-line");
+    svg.append(path);
+    const mkText = (x: number, anchor: string, text: string) => {
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("x", String(x));
+      t.setAttribute("y", String(H - 4));
+      t.setAttribute("text-anchor", anchor);
+      t.setAttribute("class", "curve-viz-lbl");
+      t.textContent = text;
+      svg.append(t);
+    };
+    if (startLabel) mkText(4, "start", startLabel);
+    if (endLabel) mkText(W - 4, "end", endLabel);
+
+    const box = document.createElement("div");
+    box.className = "curve-viz-box";
+    box.append(svg);
+    return box;
   }
 
   /** User-facing name for a silence-fade style (a couple depend on the direction). */
@@ -2251,8 +2346,9 @@ export class App {
     return rollRow;
   }
 
-  /** A labelled scrub/numpad row inside the placement popup. */
-  private numRow(label: string, read: () => number, write: (n: number) => void, commit: () => void, show: () => string): HTMLElement {
+  /** A labelled scrub/numpad row inside the placement popup. `step` (native units per scrub
+      tick) lets a wide range like filter Hz scrub coarsely while still typing exact values. */
+  private numRow(label: string, read: () => number, write: (n: number) => void, commit: () => void, show: () => string, step = 1): HTMLElement {
     const row = document.createElement("div");
     row.className = "placement-row";
     const lbl = document.createElement("span");
@@ -2263,7 +2359,7 @@ export class App {
     inp.readOnly = true;
     inp.inputMode = "none";
     inp.value = show();
-    this.attachScrub(inp, { label, read, write, show, commit });
+    this.attachScrub(inp, { label, read, write, show, commit, step });
     row.append(lbl, inp);
     return row;
   }
@@ -2476,8 +2572,10 @@ export class App {
     write: (n: number) => void;
     show?: () => string;
     commit?: () => void;
+    step?: number; // native units moved per scrub tick (default 1)
   }): void {
     const PX_PER_STEP = 7;
+    const step = opts.step ?? 1;
     let startY = 0, startVal = 0, dragging = false, moved = false;
     const show = () => { input.value = opts.show ? opts.show() : String(opts.read()); };
     const commit = opts.commit ?? (() => this.render());
@@ -2496,7 +2594,7 @@ export class App {
       if (delta === 0 && !moved) return;
       if (!moved) { moved = true; input.blur(); }
       e.preventDefault();
-      opts.write(startVal + delta);
+      opts.write(startVal + delta * step);
       show();
     });
     const end = (e: PointerEvent) => {

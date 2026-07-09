@@ -36,8 +36,8 @@ export interface LoopJSON {
   rotation: number;
   split?: number;
   gain?: number;
-  intro?: { reps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number };
-  outro?: { reps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number };
+  intro?: { reps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
+  outro?: { reps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
   accent?: LifePlacement;
   ghost?: LifePlacement;
   preset?: string;
@@ -97,8 +97,8 @@ const cloneLoop = (l: Loop): LoopJSON => ({
   soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name,
   pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
   split: l.split, gain: l.gain,
-  intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve } : undefined,
-  outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve } : undefined,
+  intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir } : undefined,
+  outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir } : undefined,
   accent: l.accent ? { ...l.accent } : undefined,
   ghost: l.ghost ? { ...l.ghost } : undefined,
   preset: l.preset,
@@ -154,16 +154,21 @@ function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | un
   const mode: TransitionMode = KNOWN_MODES.includes(e.mode as TransitionMode)
     ? (e.mode as TransitionMode)
     : (id < 0 ? "fade" : "morph");
-  // Speed mode carries a far-end rate multiple (clamped ~0.25..4) and a glide curve (0..1).
+  // Speed mode carries a far-end rate multiple (clamped ~0.25..4). The glide curve (0..1)
+  // and its direction apply to EVERY mode now (speed bends its timing, the rest their
+  // snapshot morph); the From→To sweep endpoints are raw param values (native units,
+  // undefined = use the sound's own value / the mode's built-in extreme).
   const rate = mode === "speed"
     ? (typeof e.rate === "number" && isFinite(e.rate) ? Math.max(0.25, Math.min(4, e.rate)) : 2)
     : undefined;
-  const curve = mode === "speed"
-    ? (typeof e.curve === "number" && isFinite(e.curve) ? Math.max(0, Math.min(1, e.curve)) : 0)
-    : undefined;
+  const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : undefined);
+  const curve = typeof e.curve === "number" && isFinite(e.curve) ? Math.max(0, Math.min(1, e.curve)) : undefined;
+  const dir = e.dir === "in" || e.dir === "out" ? e.dir : undefined;
+  const from = num(e.from);
+  const to = num(e.to);
   return side === "intro"
-    ? { reps, mode, fromId: id, rate, curve }
-    : { reps, mode, toId: id, rate, curve };
+    ? { reps, mode, fromId: id, rate, curve, from, to, dir }
+    : { reps, mode, toId: id, rate, curve, from, to, dir };
 }
 
 /** Validate a stored per-loop accent/ghost LifePlacement (see lines.ts); returns

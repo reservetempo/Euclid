@@ -1243,6 +1243,19 @@ button:active { transform: scale(0.94); }
 .fade-modes { justify-content: flex-end; }
 .fade-toggle { min-width: 52px; }
 
+/* Loop popup tab nav (Sound / Loop / Transition), under the sheet header. */
+.placement-nav { justify-content: stretch; gap: 8px; margin: 4px 0 12px; }
+.placement-nav .seg-btn { flex: 1 1 0; text-align: center; padding: 9px 8px; font-size: 13px; }
+
+/* Transition curve visualization: the eased blend path with its start/end value labels. */
+.curve-viz-box {
+  width: 100%; margin-top: 2px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+}
+.curve-viz { display: block; width: 100%; height: auto; }
+.curve-viz-line { fill: none; stroke: var(--vc); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.curve-viz-lbl { fill: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* Wrapped overview lines: pad cells, active-line highlight, and the line badge. */
 .color-preview-cell.pad { visibility: hidden; }
 .track-line-indicator {

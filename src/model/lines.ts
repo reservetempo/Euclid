@@ -26,6 +26,7 @@
 // to switch grids together); see project.ts for the migration of old saves.
 
 import { EUCLID_VOICES, voicePattern, VOICE_DEFAULT } from "./euclid";
+import { ParamId } from "./params";
 
 export const NUM_LINES = EUCLID_VOICES; // one line per voice ring / logo letter
 export const STEPS_PER_BAR = 16;        // 4/4 at 16th-note steps
@@ -73,16 +74,56 @@ export interface LifePlacement {
   dir?: "up" | "down";    // ramp: grow toward the end ("up") or the start ("down")
 }
 
+/** The editable sweep endpoints + blend shape shared by both fade sides (see
+    TRANSITION_SWEEP for the swept parameter per mode):
+    - `from` = the swept quantity's value at the near/steady end (undefined = the sound's
+      own value, so the fade behaves as before until edited).
+    - `to` = its value at the far/silent end (undefined = the mode's built-in extreme).
+    - `curve` bends the blend from linear (0) toward exponential (1). For the "speed" mode
+      it bends the timing glide (see warpOnsets); for every other mode it bends the
+      snapshot morph (see bendT in engine.js).
+    - `dir` shapes that curve — "out" eases toward the far end, "in" toward the near end.
+    - `rate` (speed only) is the FAR end's hit-rate multiple of the tempo (near end = 1×). */
+export interface TransitionShape { rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; }
+
 /** An intro fade folded into a node's start: covers the first `reps` of its window,
-    rising from silence (fromId < 0) or morphing from another sound (fromId = its id).
-    `rate`/`curve` apply only to the "speed" mode (see warpOnsets): `rate` is the FAR
-    end's hit-rate multiple of the tempo (the near/boundary end always runs at 1×), and
-    `curve` bends the glide from linear (0) toward exponential (1). */
-export interface IntroEnv { reps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number; }
+    rising from silence (fromId < 0) or morphing from another sound (fromId = its id). */
+export interface IntroEnv extends TransitionShape { reps: number; mode: TransitionMode; fromId: number; }
 /** An outro fade folded into a node's end: covers the last `reps` of its window,
-    falling to silence (toId < 0) or morphing into another sound (toId = its id).
-    `rate`/`curve`: see IntroEnv (the "speed" mode's warp). */
-export interface OutroEnv { reps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number; }
+    falling to silence (toId < 0) or morphing into another sound (toId = its id). */
+export interface OutroEnv extends TransitionShape { reps: number; mode: TransitionMode; toId: number; }
+
+/** Per-fade-mode description of the ONE parameter each silence-end fade sweeps, and the
+    UI range/format for its From→To endpoints. The `farDefault` mirrors the engine's
+    built-in "silent variant" extreme (see silentVariant in engine.js) so the UI shows the
+    same target the engine falls back to when `to` is unset. Secondary linked params
+    (crush's Downsample, echo's Feedback, wash's Size) stay automatic in the engine — the
+    UI edits the primary swept value only. "speed" is timing, not a swept param, so it has
+    no entry (its Rate/Curve are edited directly). */
+export interface SweepSpec {
+  paramId: ParamId;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  /** The engine's hard-coded far-end value (may depend on the sound, e.g. filter LP vs HP). */
+  farDefault: (snap: number[]) => number;
+  /** Display a swept value (native units). */
+  format: (v: number) => string;
+}
+
+const hz = (v: number) => `${Math.round(v)} Hz`;
+const pct = (v: number) => `${Math.round(v * 100)}%`;
+export const TRANSITION_SWEEP: Partial<Record<TransitionMode, SweepSpec>> = {
+  fade:   { paramId: ParamId.Volume,      label: "Level",  min: 0,   max: 1,    step: 0.01, farDefault: () => 0,   format: pct },
+  filter: { paramId: ParamId.FilterCutoff, label: "Cutoff", min: 60,  max: 12000, step: 10,
+            farDefault: (s) => (Math.round(s[ParamId.FilterType] ?? 0) === 1 ? 9000 : 120), format: hz },
+  wash:   { paramId: ParamId.ReverbMix,   label: "Reverb", min: 0,   max: 1,    step: 0.01, farDefault: () => 1,   format: pct },
+  thin:   { paramId: ParamId.HitChance,   label: "Hits",   min: 0,   max: 1,    step: 0.01, farDefault: () => 0,   format: pct },
+  drive:  { paramId: ParamId.Drive,       label: "Drive",  min: 0,   max: 2,    step: 0.01, farDefault: () => 1.5, format: (v) => v.toFixed(2) },
+  crush:  { paramId: ParamId.Crush,       label: "Crush",  min: 0,   max: 8,    step: 1,    farDefault: () => 4,   format: (v) => String(Math.round(v)) },
+  echo:   { paramId: ParamId.EchoMix,     label: "Echo",   min: 0,   max: 1,    step: 0.01, farDefault: () => 0.6, format: pct },
+};
 
 /** Which way an intro blends: in from silence, or morphing from a previous sound. */
 export function introKind(fromId: number): "in" | "pair" { return fromId < 0 ? "in" : "pair"; }
@@ -257,8 +298,8 @@ export interface LineMessage {
     // Intro/outro fade spans, in STEPS within the sounding window (after any lead-in).
     // For the "speed" mode, `warp` holds the precomputed re-timed hit onsets (fractional
     // step offsets within the sounding window) that replace the grid pattern in the span.
-    intro?: { steps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number; warp?: number[] };
-    outro?: { steps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number; warp?: number[] };
+    intro?: { steps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; warp?: number[] };
+    outro?: { steps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; warp?: number[] };
     pitchHz?: number; // melody notes only — absolute pitch the engine tunes to
     // Per-loop deterministic accent / ghost placement (see LifePlacement); the engine
     // uses these instead of the sound's random accent/ghost when present.
@@ -331,8 +372,9 @@ export class LineArrangement {
           intro: n.intro
             ? {
                 steps: iSteps, mode: n.intro.mode, fromId: n.intro.fromId,
+                curve: n.intro.curve, from: n.intro.from, to: n.intro.to, dir: n.intro.dir,
                 ...(n.intro.mode === "speed"
-                  ? { rate: n.intro.rate, curve: n.intro.curve,
+                  ? { rate: n.intro.rate,
                       warp: warpOnsets(pattern, n.steps, iSteps, activeLen, n.intro.rate ?? 2, n.intro.curve ?? 0, "intro") }
                   : {}),
               }
@@ -340,8 +382,9 @@ export class LineArrangement {
           outro: n.outro
             ? {
                 steps: oSteps, mode: n.outro.mode, toId: n.outro.toId,
+                curve: n.outro.curve, from: n.outro.from, to: n.outro.to, dir: n.outro.dir,
                 ...(n.outro.mode === "speed"
-                  ? { rate: n.outro.rate, curve: n.outro.curve,
+                  ? { rate: n.outro.rate,
                       warp: warpOnsets(pattern, n.steps, oSteps, activeLen, n.outro.rate ?? 2, n.outro.curve ?? 0, "outro") }
                   : {}),
               }
