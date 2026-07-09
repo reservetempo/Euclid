@@ -78,6 +78,7 @@ export class App {
   private melodyInstrumentPage = false;  // melody sub-page: the current item's sound params
   private melodyOptionsPage = false;     // melody sub-page: the current item's loop options
   private editLoop: Loop | null = null; // loop whose placement popup is open
+  private placementSoundPage = false;   // placement sub-page: the loop's sound params
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
   private soundName = "";
@@ -1794,6 +1795,7 @@ export class App {
       (it's appended to the root, so it survives a panel re-render). */
   private openPlacement(loop: Loop): void {
     document.querySelector(".placement-overlay")?.remove();
+    if (this.editLoop !== loop) this.placementSoundPage = false; // fresh open starts on the main page
     this.editLoop = loop;
     const rerender = () => this.openPlacement(loop);
 
@@ -1804,6 +1806,15 @@ export class App {
     const sheet = document.createElement("div");
     sheet.className = "voice-sheet placement-sheet";
     sheet.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a4e58");
+
+    // The sound params live on their own sub-page (reached by a button) so the shuffle menu
+    // has full scroll room instead of being cut off under the loop/transition controls.
+    if (this.placementSoundPage) {
+      this.buildPlacementSoundPage(loop, sheet, rerender);
+      overlay.append(sheet);
+      this.root.append(overlay);
+      return;
+    }
 
     const head = document.createElement("div");
     head.className = "voice-sheet-head";
@@ -1821,16 +1832,42 @@ export class App {
     sheet.append(this.transitionControls(loop, rerender));
     sheet.append(this.lifeControls(loop, rerender));
 
-    // Rhythm circles (Hits/Steps/Start/Split) + the shuffle menu for the sound.
+    // Rhythm circles (Hits/Steps/Start/Split).
     const detail = document.createElement("div");
     detail.className = "euclid-detail";
     detail.append(this.rhythmCircles(loop, rerender));
     sheet.append(detail);
 
+    const soundBtn = document.createElement("button");
+    soundBtn.className = "loop-add placement-sound-btn";
+    soundBtn.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a4e58");
+    soundBtn.textContent = "🎛 Sound ›";
+    soundBtn.onclick = () => { this.placementSoundPage = true; rerender(); };
+    sheet.append(soundBtn);
+
+    overlay.append(sheet);
+    this.root.append(overlay);
+  }
+
+  /** The loop's sound-params sub-page: a Back header + the shuffle menu on its own
+      scrollable sheet (so it's always reachable, not cut off under the loop controls). */
+  private buildPlacementSoundPage(loop: Loop, sheet: HTMLElement, rerender: () => void): void {
+    const head = document.createElement("div");
+    head.className = "voice-sheet-head";
+    const back = document.createElement("button");
+    back.className = "mixer-back";
+    back.textContent = `‹ ${loop.name || "Loop"}`;
+    back.onclick = () => { this.placementSoundPage = false; rerender(); };
+    const title = document.createElement("h2");
+    title.className = "voice-sheet-title";
+    title.textContent = "Sound";
+    head.append(back, title);
+    sheet.append(head);
+
     const menu = buildVoiceShuffleMenu(this.voiceEditorFor(loop), REF_DRUM, {
       onChange: async () => {
         await this.writeAndNormalizeLoop(loop);
-        title.textContent = loop.name || "Loop";
+        title.textContent = "Sound";
       },
       audition: () => this.auditionLoop(loop),
       onFullParams: () => {
@@ -1845,9 +1882,6 @@ export class App {
       report: (kind) => this.reportLoopSound(loop, kind),
     });
     sheet.append(menu);
-
-    overlay.append(sheet);
-    this.root.append(overlay);
   }
 
   /** The rule editor block: Repeat-every (three-way), For-n-bars, overlap/solo. */
