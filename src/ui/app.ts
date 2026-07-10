@@ -888,15 +888,12 @@ export class App {
     const title = document.createElement("h2");
     title.className = "mixer-title";
     title.textContent = atRoot ? `Melody ${this.melodyItemIndex + 1}` : "Branch";
-    head.append(back, title);
-    if (atRoot) {
-      const tree = document.createElement("button");
-      tree.className = "mixer-open melody-tree-btn";
-      tree.textContent = "⤢ Tree";
-      tree.title = "Zoomed-out tree of this melody";
-      tree.onclick = () => this.openMelodyTree(item);
-      head.append(tree);
-    }
+    const tree = document.createElement("button");
+    tree.className = "mixer-open melody-tree-btn";
+    tree.textContent = "⤢ Tree";
+    tree.title = "Zoomed-out tree of this melody";
+    tree.onclick = () => this.openMelodyTree(item);
+    head.append(back, title, tree);
     v.append(head);
 
     if (!atRoot) v.append(this.melodyBreadcrumb(item));
@@ -1177,10 +1174,14 @@ export class App {
     });
   }
 
-  /** Zoomed-out view of the whole melody as an SVG NODE GRAPH: each context (root +
-      branches) is a node box showing its scale + note letters, with connector lines from a
-      parent note down to the branch it spawns. Tap a node to jump straight to editing it. */
-  private openMelodyTree(item: MelodyItem): void {
+  /** Zoomed-out view of the whole melody as a NODE TREE: a pulsing CLOCK node at the top
+      feeds every first-level note; a note that spawns a branch fans out into that
+      sub-phrase's notes, and so on down. Notes are pitch-coloured circles (matching the
+      grid squares), wires blend parent → child colour, and contexts other than the one
+      being edited sit dimmed. Tap a note to jump to its settings, tap the clock for the
+      root context, or tap a ⊕ port to grow a branch off a leaf note right here.
+      `focusNote` centres the viewport on that note (used after adding a branch). */
+  private openMelodyTree(item: MelodyItem, focusNote?: MelodyNote): void {
     document.querySelector(".melody-tree-overlay")?.remove();
     const overlay = document.createElement("div");
     overlay.className = "melody-tree-overlay";
@@ -1188,92 +1189,175 @@ export class App {
     const card = document.createElement("div");
     card.className = "melody-tree-card";
     card.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+
+    const head = document.createElement("div");
+    head.className = "melody-tree-head";
     const title = document.createElement("h3");
     title.className = "tr-title";
-    title.textContent = "Melody tree";
-    card.append(title);
+    title.textContent = `Melody ${this.melodyItemIndex + 1}`;
+    const sub = document.createElement("p");
+    sub.className = "melody-tree-sub";
+    const total = countNotes(item.node);
+    sub.textContent = `${ALL_ROOTS[item.node.root]} ${ALL_SCALES[item.node.scale]} · ${total} note${total === 1 ? "" : "s"}`;
+    head.append(title, sub);
+    card.append(head);
 
-    // Tidy-tree layout: leaves get sequential x slots; a parent centres over its children;
-    // y = depth. Positions are in leaf/row units, scaled to pixels below.
-    interface TNode { node: MelodyNode; path: MelodyNote[]; label: string; depth: number; x: number; kids: TNode[]; }
+    // Tidy-tree layout over individual NOTES: the clock is the root, and a note's
+    // children are its branch's notes. Leaves take sequential x slots; a parent centres
+    // over its children; y = depth. Positions are in slot/row units, scaled below.
+    interface TN {
+      ctx: MelodyNode;         // the context that owns `note` (for the clock: the root context)
+      note: MelodyNote | null; // null = the clock
+      ctxPath: MelodyNote[];   // melodyPath that reaches `ctx`
+      color: string; label: string; depth: number; x: number; kids: TN[];
+    }
     let leaf = 0, maxDepth = 0;
-    const layout = (node: MelodyNode, path: MelodyNote[], depth: number, label: string): TNode => {
+    const layNote = (ctx: MelodyNode, ctxPath: MelodyNote[], note: MelodyNote, depth: number): TN => {
       maxDepth = Math.max(maxDepth, depth);
-      const kids: TNode[] = [];
-      for (const note of node.notes) {
-        if (note.branch) kids.push(layout(note.branch, [...path, note], depth + 1, this.noteLabelFor(node, note)));
-      }
+      const kids = note.branch ? note.branch.notes.map((k) => layNote(note.branch!, [...ctxPath, note], k, depth + 1)) : [];
       const x = kids.length ? kids.reduce((s, k) => s + k.x, 0) / kids.length : leaf++;
-      return { node, path, label, depth, x, kids };
+      return { ctx, note, ctxPath, color: this.noteColor(ctx, note), label: this.noteLabelFor(ctx, note), depth, x, kids };
     };
-    const rootT = layout(item.node, [], 0, `Melody ${this.melodyItemIndex + 1}`);
+    const kids = item.node.notes.map((n) => layNote(item.node, [], n, 1));
+    const rootT: TN = {
+      ctx: item.node, note: null, ctxPath: [], color: VOICE_COLORS[MELODY_COLOR_INDEX], label: "",
+      depth: 0, x: kids.length ? kids.reduce((s, k) => s + k.x, 0) / kids.length : leaf++, kids,
+    };
 
     const NS = "http://www.w3.org/2000/svg";
-    const NW = 128, NH = 50, GX = 16, GY = 46;
-    const cx = (t: TNode) => t.x * (NW + GX) + NW / 2;
-    const cy = (t: TNode) => t.depth * (NH + GY);
-    const width = Math.max(1, leaf) * (NW + GX);
-    const height = maxDepth * (NH + GY) + NH;
-    const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
-    const here = (t: TNode) => t.path.length === this.melodyPath.length && t.path.every((p, k) => p === this.melodyPath[k]);
+    const R = 16, CR = 19, SLOT = 56, ROW = 82, PAD = 18;
+    const cx = (t: TN) => PAD + t.x * SLOT + SLOT / 2;
+    const cy = (t: TN) => PAD + CR + t.depth * ROW;
+    const width = leaf * SLOT + PAD * 2;
+    const height = PAD + CR + maxDepth * ROW + R + 30 + PAD; // extra room for the last row's ⊕ ports
+    const cur = this.currentMelodyNode();
 
     const svg = document.createElementNS(NS, "svg");
     svg.setAttribute("class", "melody-tree-svg");
-    svg.setAttribute("viewBox", `-8 -6 ${width + 16} ${height + 12}`);
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("width", String(width));
     svg.setAttribute("height", String(height));
+    const defs = document.createElementNS(NS, "defs");
+    svg.append(defs);
+    const el = (name: string, attrs: Record<string, string | number>, parent: Element): SVGElement => {
+      const e = document.createElementNS(NS, name);
+      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+      parent.append(e);
+      return e;
+    };
 
-    // Connectors first (drawn under the nodes): a vertical S-curve parent → child.
-    const link = (t: TNode) => {
+    // Wires first (under the nodes): an S-curve per parent → child, stroked with a
+    // gradient blending the two nodes' colours.
+    let gradN = 0;
+    const link = (t: TN) => {
       for (const k of t.kids) {
-        const x1 = cx(t), y1 = cy(t) + NH, x2 = cx(k), y2 = cy(k), my = (y1 + y2) / 2;
-        const p = document.createElementNS(NS, "path");
-        p.setAttribute("d", `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`);
-        p.setAttribute("class", "melody-tree-link");
-        svg.append(p);
+        const x1 = cx(t), y1 = cy(t) + (t.note ? R : CR), x2 = cx(k), y2 = cy(k) - R, my = (y1 + y2) / 2;
+        const id = `mt-grad-${gradN++}`;
+        const grad = el("linearGradient", { id, gradientUnits: "userSpaceOnUse", x1, y1, x2, y2 }, defs);
+        el("stop", { offset: 0, "stop-color": t.color }, grad);
+        el("stop", { offset: 1, "stop-color": k.color }, grad);
+        el("path", {
+          d: `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`,
+          class: "melody-tree-link" + (k.ctx === cur ? "" : " dim"),
+          stroke: `url(#${id})`,
+        }, svg);
         link(k);
       }
     };
     link(rootT);
 
-    // Node boxes.
-    const draw = (t: TNode) => {
-      const x = cx(t) - NW / 2, y = cy(t);
-      const g = document.createElementNS(NS, "g");
-      g.setAttribute("class", "melody-tree-gnode" + (here(t) ? " here" : ""));
-      g.onclick = () => { this.melodyPath = t.path; overlay.remove(); this.view = "melody"; this.render(); };
-      const rect = document.createElementNS(NS, "rect");
-      rect.setAttribute("x", String(x)); rect.setAttribute("y", String(y));
-      rect.setAttribute("width", String(NW)); rect.setAttribute("height", String(NH));
-      rect.setAttribute("rx", "11");
-      g.append(rect);
-      const t1 = document.createElementNS(NS, "text");
-      t1.setAttribute("x", String(x + 11)); t1.setAttribute("y", String(y + 20));
-      t1.setAttribute("class", "melody-tree-t1");
-      t1.textContent = trunc(`${t.label} · ${ALL_SCALES[t.node.scale]} ${ALL_ROOTS[t.node.root]}`, 17);
-      g.append(t1);
-      const t2 = document.createElementNS(NS, "text");
-      t2.setAttribute("x", String(x + 11)); t2.setAttribute("y", String(y + 38));
-      t2.setAttribute("class", "melody-tree-t2");
-      t2.textContent = trunc(t.node.notes.length ? t.node.notes.map((n) => this.noteLabelFor(t.node, n)).join(" ") : "no notes", 18);
-      g.append(t2);
-      svg.append(g);
-      t.kids.forEach(draw);
+    // Leave the tree for an editor: land on `path`'s context, optionally with a note's
+    // settings popup open (render() rebuilds the popup from melodyNoteEdit).
+    const jump = (path: MelodyNote[], note: MelodyNote | null) => {
+      overlay.remove();
+      this.view = "melody";
+      this.melodyPath = path;
+      this.melodyNoteEdit = note;
+      this.render();
     };
-    draw(rootT);
+
+    const drawNote = (t: TN) => {
+      const note = t.note!;
+      const x = cx(t), y = cy(t);
+      const g = document.createElementNS(NS, "g");
+      g.setAttribute("class", "melody-tree-node" + (t.ctx === cur ? "" : " dim"));
+      g.style.setProperty("--nc", t.color);
+      el("circle", { cx: x, cy: y, r: R + 5, class: "nd-halo" }, g);
+      el("circle", { cx: x, cy: y, r: R, class: "nd-body" }, g);
+      const lbl = el("text", { x, y, dy: "0.36em", class: "melody-tree-lbl" + (t.label.length > 2 ? " small" : "") }, g);
+      lbl.textContent = t.label;
+      g.onclick = () => jump(t.ctxPath, note);
+      svg.append(g);
+
+      if (!note.branch) {
+        // ⊕ port: grow a branch (sub-phrase) off this note, straight from the tree.
+        const py = y + R + 16;
+        const add = document.createElementNS(NS, "g");
+        add.setAttribute("class", "melody-tree-add");
+        add.style.setProperty("--nc", t.color);
+        el("line", { x1: x, y1: y + R + 2, x2: x, y2: py - 9, class: "add-stub" }, add);
+        el("circle", { cx: x, cy: py, r: 13, class: "add-hit" }, add);
+        el("circle", { cx: x, cy: py, r: 8, class: "add-ring" }, add);
+        el("line", { x1: x - 3.5, y1: py, x2: x + 3.5, y2: py, class: "add-plus" }, add);
+        el("line", { x1: x, y1: py - 3.5, x2: x, y2: py + 3.5, class: "add-plus" }, add);
+        el("title", {}, add).textContent = "Branch a sub-phrase off this note";
+        add.onclick = (e) => {
+          e.stopPropagation();
+          note.branch = newBranch(t.ctx);
+          this.melodyChanged();            // recompile + re-render the page underneath
+          this.openMelodyTree(item, note); // rebuild the tree, centred on this note
+        };
+        svg.append(add);
+      }
+      t.kids.forEach(drawNote);
+    };
+
+    // The clock: the pulse source every first-level note hangs off. Always bright.
+    {
+      const x = cx(rootT), y = cy(rootT);
+      const g = document.createElementNS(NS, "g");
+      g.setAttribute("class", "melody-tree-clock");
+      el("circle", { cx: x, cy: y, r: CR, class: "clk-pulse" }, g);
+      el("circle", { cx: x, cy: y, r: CR, class: "clk-pulse p2" }, g);
+      el("circle", { cx: x, cy: y, r: CR, class: "clk-body" }, g);
+      el("path", {
+        d: `M ${x - 9} ${y} H ${x - 4} L ${x - 2} ${y - 6} L ${x + 2} ${y + 6} L ${x + 4} ${y} H ${x + 9}`,
+        class: "clk-wave",
+      }, g);
+      el("title", {}, g).textContent = "Clock — the melody starts here";
+      g.onclick = () => jump([], null);
+      svg.append(g);
+    }
+    rootT.kids.forEach(drawNote);
 
     const scroll = document.createElement("div");
     scroll.className = "melody-tree-scroll";
     scroll.append(svg);
     card.append(scroll);
 
+    const foot = document.createElement("div");
+    foot.className = "melody-tree-foot";
+    const hint = document.createElement("p");
+    hint.className = "melody-tree-hint";
+    hint.textContent = item.node.notes.length === 0
+      ? "No notes yet — add or generate some first."
+      : "Tap a note to edit it · ⊕ grows a branch off it";
     const close = document.createElement("button");
     close.className = "tr-cancel";
     close.textContent = "Close";
     close.onclick = () => overlay.remove();
-    card.append(close);
+    foot.append(hint, close);
+    card.append(foot);
     overlay.append(card);
     this.root.append(overlay);
+
+    // Centre the viewport on the focused note (after a branch add) or on the clock.
+    const find = (t: TN): TN | null =>
+      t.note === focusNote ? t : t.kids.reduce<TN | null>((f, k) => f ?? find(k), null);
+    const hit = focusNote ? find(rootT) : null;
+    const fx = hit ? cx(hit) : cx(rootT), fy = hit ? cy(hit) : 0;
+    scroll.scrollLeft = Math.max(0, fx - scroll.clientWidth / 2);
+    scroll.scrollTop = Math.max(0, fy - scroll.clientHeight / 2);
   }
 
   /** Scale / root / octave pickers for a melody context, laid out as one COMPACT row

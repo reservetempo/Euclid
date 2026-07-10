@@ -918,20 +918,82 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 }
 .tr-title { margin: 0; font-size: 16px; font-weight: 700; }
 .tr-cancel { flex: none; background: var(--panel); color: var(--muted); }
-/* SVG node-graph tree: scrolls in both axes if the diagram is large. */
-.melody-tree-scroll { overflow: auto; overscroll-behavior: contain; max-height: 64vh; }
-.melody-tree-svg { display: block; }
-.melody-tree-link { fill: none; stroke: var(--line); stroke-width: 2; }
-.melody-tree-gnode { cursor: pointer; }
-.melody-tree-gnode rect {
-  fill: var(--panel); stroke: var(--line); stroke-width: 1;
-  transition: stroke 0.1s ease;
+.melody-tree-head { display: flex; flex-direction: column; gap: 2px; }
+.melody-tree-sub { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* Node canvas: a dotted node-editor backdrop; scrolls both axes when the tree is big. */
+.melody-tree-scroll {
+  overflow: auto; overscroll-behavior: contain; max-height: 62vh;
+  border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  background:
+    radial-gradient(circle, rgba(154, 168, 204, 0.14) 1px, transparent 1.6px) 0 0 / 22px 22px,
+    radial-gradient(120% 90% at 50% 0%, rgba(28, 34, 52, 0.6), rgba(7, 10, 16, 0.75));
+  box-shadow: inset 0 2px 14px rgba(0, 0, 0, 0.4);
 }
-.melody-tree-gnode:hover rect { stroke: var(--vc); }
-.melody-tree-gnode.here rect { fill: var(--field); stroke: var(--vc); stroke-width: 2; }
-.melody-tree-t1 { fill: var(--text); font-size: 12px; font-weight: 700; }
-.melody-tree-gnode.here .melody-tree-t1 { fill: var(--vc); }
-.melody-tree-t2 { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.melody-tree-svg { display: block; margin: 0 auto; }
+
+/* Wires: S-curves stroked with a parent → child colour gradient (set inline). */
+.melody-tree-link { fill: none; stroke-width: 1.75; stroke-linecap: round; opacity: 0.9; }
+.melody-tree-link.dim { opacity: 0.35; }
+
+/* Note nodes: pitch-coloured neon circles; contexts not being edited sit dimmed. */
+.melody-tree-node { cursor: pointer; }
+.melody-tree-node .nd-halo { fill: var(--nc); opacity: 0.13; }
+.melody-tree-node .nd-body {
+  fill: color-mix(in srgb, var(--nc) 22%, rgba(9, 12, 19, 0.94));
+  stroke: var(--nc); stroke-width: 1.5;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--nc) 60%, transparent));
+  transition: stroke-width 0.12s ease;
+}
+.melody-tree-node.dim { opacity: 0.5; }
+.melody-tree-node.dim .nd-body { filter: none; }
+.melody-tree-node:active .nd-body { stroke-width: 3; }
+@media (hover: hover) { .melody-tree-node:hover .nd-body { stroke-width: 3; } }
+.melody-tree-lbl {
+  fill: var(--text); font-size: 11.5px; font-weight: 700;
+  text-anchor: middle; pointer-events: none; user-select: none;
+}
+.melody-tree-lbl.small { font-size: 9.5px; }
+
+/* The clock node: the pulse source feeding every first-level note. */
+.melody-tree-clock { cursor: pointer; }
+.melody-tree-clock .clk-body {
+  fill: rgba(9, 12, 19, 0.94); stroke: var(--vc); stroke-width: 1.75;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vc) 55%, transparent));
+  transition: stroke-width 0.12s ease;
+}
+.melody-tree-clock .clk-wave {
+  fill: none; stroke: var(--vc); stroke-width: 1.75;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.melody-tree-clock .clk-pulse {
+  fill: none; stroke: var(--vc); stroke-width: 1.5; opacity: 0;
+  transform-box: fill-box; transform-origin: center;
+  animation: melody-clk-pulse 2.6s ease-out infinite;
+}
+.melody-tree-clock .clk-pulse.p2 { animation-delay: 1.3s; }
+@keyframes melody-clk-pulse {
+  0% { transform: scale(1); opacity: 0.5; }
+  70%, 100% { transform: scale(1.9); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .melody-tree-clock .clk-pulse { animation: none; } }
+@media (hover: hover) { .melody-tree-clock:hover .clk-body { stroke-width: 3; } }
+
+/* ⊕ ports under leaf notes: tap to grow a branch there. */
+.melody-tree-add { cursor: pointer; opacity: 0.45; transition: opacity 0.15s ease; }
+.melody-tree-add .add-hit { fill: transparent; pointer-events: all; }
+.melody-tree-add .add-stub { stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 2 3; }
+.melody-tree-add .add-ring { fill: rgba(9, 12, 19, 0.7); stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 3 3.4; }
+.melody-tree-add .add-plus { stroke: var(--text); stroke-width: 1.5; stroke-linecap: round; }
+.melody-tree-add:active { opacity: 1; }
+.melody-tree-add:active .add-ring, .melody-tree-add:active .add-plus { stroke: var(--nc); }
+@media (hover: hover) {
+  .melody-tree-add:hover { opacity: 1; }
+  .melody-tree-add:hover .add-ring, .melody-tree-add:hover .add-plus { stroke: var(--nc); }
+}
+
+.melody-tree-foot { display: flex; align-items: center; gap: 10px; }
+.melody-tree-hint { flex: 1; margin: 0; font-size: 12px; color: var(--muted); }
 
 /* The melody instrument page's wrapper card. */
 .melody-inst {
