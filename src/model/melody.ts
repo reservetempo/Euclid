@@ -12,7 +12,10 @@
 
 import { ScaleType, degreeHz, degreesPerOctave } from "./melodyScale";
 import { VoiceNode, emptyNode, STEPS_PER_BAR } from "./lines";
+import { rng01, randomSeed as melodySeed } from "./rng";
 import type { Loop } from "./track";
+
+export { melodySeed }; // re-export: project.ts mints seeds when reading old saves
 
 /** The last coloured row (voice 6) is the melody lane. */
 export const MELODY_COLOR_INDEX = 5;
@@ -36,11 +39,6 @@ export interface MelodyNode {
   notes: MelodyNote[];
   seed: number;          // generation seed (re-roll mints a new one)
   seedHistory: number[]; // previous seeds, for a Back button
-}
-
-/** A 32-bit seed. */
-export function melodySeed(): number {
-  return (Math.random() * 0xffffffff) >>> 0;
 }
 
 /** A fresh, empty melody: C Major, no notes yet. */
@@ -96,17 +94,6 @@ export function countNotes(node: MelodyNode): number {
 // to fill the track. Deterministic per seed, so "Generate again" = mint a new seed. A
 // note's rest+length advances the timeline; a branch (sequential sub-phrase) is played
 // out in full after its parent note, then the walk returns to the parent context.
-
-// xorshift32 → [0,1), matching track.ts / engine.js so rolls read the same everywhere.
-function rng01(seed: number): () => number {
-  let s = (seed >>> 0) || 0x9e3779b9;
-  return function () {
-    s ^= s << 13; s >>>= 0;
-    s ^= s >> 17;
-    s ^= s << 5; s >>>= 0;
-    return s / 4294967296;
-  };
-}
 
 /** One emitted note on the flattened timeline: its absolute pitch degree (in ITS context's
     scale/root/octave) plus its length and the rest before it, all in 16th steps. */

@@ -1,11 +1,30 @@
+/* ============================================================================
+   Euclid — dark glass + neon. One shared visual language: dots and lines, six
+   voice colours, glass panels floating over a slowly drifting aurora.
+   Sections: tokens/base · controls · topbar · views · track · colour · sheets ·
+   numpad · melody · mixer · sound editor · toast/confetti · motion · a11y.
+   ========================================================================== */
+
 :root {
-  --bg: #15161a;
-  --panel: #1e2026;
-  --panel2: #262932;
-  --line: #2c2f37;
-  --text: #e8e8ea;
-  --muted: #9aa0aa;
+  --bg: #0a0c12;
+  --panel: #141826;            /* solid card */
+  --panel-glass: rgba(21, 26, 40, 0.72);
+  --panel2: #1b2132;           /* raised card / key */
+  --panel2-glass: rgba(28, 34, 52, 0.82);
+  --field: #0d1019;            /* inset wells (displays, timelines) */
+  --line: rgba(154, 168, 204, 0.16);
+  --line-soft: rgba(154, 168, 204, 0.09);
+  --text: #eef1f8;
+  --muted: #97a0b6;
   --accent: #ffd60a;
+  --brand-a: #7c5cff;
+  --brand-b: #00ffc8;
+  --brand: linear-gradient(135deg, var(--brand-a), var(--brand-b));
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px rgba(0, 0, 0, 0.35);
+  --pop-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
   color-scheme: dark;
 }
 
@@ -16,13 +35,47 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif;
   -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
   /* The BODY never scrolls — .viewroot scrolls inside instead. A scrolled body is what
      desyncs tap targets from position:fixed overlays on iOS (worst as a home-screen app
      with a translucent status bar: taps land ~a status bar too high on the sheet/numpad). */
   overflow: hidden;
+}
+
+/* Aurora: four voice-coloured glows behind everything. It DRIFTS only on the
+   start screen (its marquee moment) — inside the app the huge layer holds still,
+   so an idle session isn't repainting the whole screen forever. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -45%;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 30% at 24% 30%, rgba(124, 92, 255, 0.16), transparent 70%),
+    radial-gradient(30% 26% at 78% 18%, rgba(0, 255, 200, 0.08), transparent 70%),
+    radial-gradient(36% 30% at 72% 80%, rgba(77, 171, 247, 0.10), transparent 70%),
+    radial-gradient(26% 22% at 22% 82%, rgba(255, 107, 107, 0.06), transparent 70%);
+}
+body:has(.start-screen)::before {
+  animation: aurora-drift 26s ease-in-out infinite alternate;
+}
+@keyframes aurora-drift {
+  from { transform: rotate(0deg) scale(1); }
+  to { transform: rotate(10deg) scale(1.15); }
+}
+/* Fine film grain so the glass has something to catch. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 #app {
@@ -33,34 +86,121 @@ html, body {
     env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
+::selection { background: color-mix(in srgb, var(--brand-a) 45%, transparent); }
+
+/* Slim scrollbars that match the glass. */
+* { scrollbar-width: thin; scrollbar-color: rgba(154, 168, 204, 0.25) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgba(154, 168, 204, 0.22); border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(154, 168, 204, 0.4); }
+*::-webkit-scrollbar-track { background: transparent; }
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand-b) 70%, #fff);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* --- controls base ------------------------------------------------------- */
 button {
   font: inherit;
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   padding: 10px 14px;
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   /* Springy press feel everywhere: transform snaps in, glow eases out. */
-  transition: transform 0.09s ease, border-color 0.18s ease, box-shadow 0.25s ease;
+  transition: transform 0.09s ease, border-color 0.18s ease, box-shadow 0.25s ease,
+    background-color 0.18s ease, color 0.18s ease;
 }
 button:active { transform: scale(0.94); }
-.hint { color: var(--muted); font-size: 13px; margin: 0; text-align: center; }
+button:disabled { opacity: 0.38; cursor: default; transform: none; }
+@media (hover: hover) {
+  button:not(:disabled):hover { border-color: rgba(180, 192, 224, 0.32); }
+}
 
-/* --- start screen --- */
+.hint { color: var(--muted); font-size: 13px; margin: 0; text-align: center; line-height: 1.5; }
+
+/* Every range input is a dot on a line (the sequencer language). --slider tints it. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 28px;
+  margin: 0;
+  min-width: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--slider, #fff) 55%, transparent),
+    color-mix(in srgb, var(--slider, #fff) 16%, transparent));
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6.5px;
+  border: none;
+  border-radius: 50%;
+  background: var(--slider, #fff);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--slider, #fff) 55%, transparent),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+  transition: transform 0.12s ease;
+}
+input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.25); }
+input[type="range"]::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--slider, #fff) 55%, transparent),
+    color-mix(in srgb, var(--slider, #fff) 16%, transparent));
+}
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--slider, #fff);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--slider, #fff) 55%, transparent),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+
+/* Selects: dark glass fields with a drawn chevron. */
+select {
+  font: inherit;
+  color: var(--text);
+  background-color: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 8px 30px 8px 10px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2397a0b6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55%, var(--line)); }
+
+/* --- start screen ---------------------------------------------------------- */
 .start-screen {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 26px;
+  gap: 34px;
 }
 /* Logo: one letter per voice colour, drawn from the sequencer's dots + lines
    (ui/logo.ts), bouncing in then gently bobbing forever. */
-.logo { margin: 0; display: flex; align-items: flex-end; gap: 8px; }
+.logo { margin: 0; display: flex; align-items: flex-end; gap: 8px; filter: drop-shadow(0 6px 24px rgba(124, 92, 255, 0.25)); }
 .logo-svg { display: block; }
 .logo-letter {
   display: inline-block;
@@ -77,37 +217,66 @@ button:active { transform: scale(0.94); }
   50% { transform: translateY(-5px); }
 }
 #start {
-  font-size: 18px; font-weight: 800; color: #0b0c0f;
-  width: 120px; height: 120px; padding: 0; border: none; border-radius: 50%;
+  position: relative;
+  font-size: 18px; font-weight: 800; color: #0b0d12;
+  width: 124px; height: 124px; padding: 0; border: none; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #6c5cff, #00ffc8);
+  background: var(--brand);
   background-size: 180% 180%;
-  box-shadow: 0 4px 18px rgba(108, 92, 255, 0.45);
+  box-shadow: 0 8px 34px rgba(124, 92, 255, 0.5), 0 2px 10px rgba(0, 255, 200, 0.3);
   animation: shuffle-glow 2.6s ease-in-out infinite;
 }
+#start::before {
+  content: "";
+  position: absolute; inset: -5px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--brand-b) 55%, transparent);
+  animation: ring-pulse 2.6s ease-out infinite;
+  pointer-events: none;
+}
+@keyframes ring-pulse {
+  0% { transform: scale(0.92); opacity: 0.9; }
+  70%, 100% { transform: scale(1.4); opacity: 0; }
+}
 
-/* --- top bar --- */
+/* --- top bar ---------------------------------------------------------------- */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
+  /* The max() clamps the bar's content to the same centred column as the views. */
+  padding: 10px max(14px, calc((100% - 760px) / 2));
   position: sticky;
   top: 0;
-  background: var(--bg);
   z-index: 5;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+  border-bottom: 1px solid var(--line-soft);
 }
+/* A faint brand hairline under the bar. */
+.topbar::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(124, 92, 255, 0.35), rgba(0, 255, 200, 0.25), transparent);
+  pointer-events: none;
+}
+
 /* Round, colour-coded control buttons: every toolbar button is a circle with its
    own hue (a dot in the app's dots-and-lines language). --bc sets the hue. */
 .play-btn, .menu-btn, .loop-view-btn, .mixer-open-btn {
   width: 42px; height: 42px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%;
-  border: 1.5px solid var(--bc, var(--line));
+  border: 1.5px solid color-mix(in srgb, var(--bc, #fff) 60%, transparent);
   color: var(--bc, var(--text));
-  background: var(--panel);
+  background: color-mix(in srgb, var(--bc, #fff) 8%, var(--panel));
+}
+@media (hover: hover) {
+  .play-btn:hover, .menu-btn:hover, .loop-view-btn:hover, .mixer-open-btn:hover {
+    border-color: var(--bc, #fff);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--bc, #fff) 35%, transparent);
+  }
 }
 
 /* --- menu --- */
@@ -119,487 +288,801 @@ button:active { transform: scale(0.94); }
   top: 48px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  background: var(--panel2);
+  gap: 2px;
+  background: var(--panel2-glass);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 6px;
   z-index: 20;
-  min-width: 160px;
+  min-width: 190px;
+  box-shadow: var(--pop-shadow);
 }
 .menu-panel.hidden { display: none; }
-.menu-panel button { text-align: left; background: transparent; border: none; padding: 10px 12px; }
-.menu-panel button:active { background: var(--panel); }
-.menu-panel button:disabled { opacity: 0.38; cursor: default; }
+.menu-panel button {
+  text-align: left; background: transparent; border: none; box-shadow: none;
+  padding: 10px 12px; border-radius: 8px;
+}
+.menu-panel button:active { background: rgba(255, 255, 255, 0.07); }
+@media (hover: hover) { .menu-panel button:not(:disabled):hover { background: rgba(255, 255, 255, 0.06); } }
 
 .transport { display: flex; align-items: center; gap: 10px; }
 .play-btn { --bc: #69db7c; font-size: 15px; }
-/* BPM slider: a white dot on a thin white line (the sequencer language again). */
-.tempo {
-  width: 110px; height: 24px; margin: 0;
-  -webkit-appearance: none; appearance: none; background: transparent;
+/* The BPM button: a pill that opens the numpad. */
+.tempo-btn {
+  height: 42px; padding: 0 16px; border-radius: 21px;
+  font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: #fff; background: transparent;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
 }
-.tempo::-webkit-slider-runnable-track {
-  height: 2px; border-radius: 1px; background: rgba(255, 255, 255, 0.35);
+@media (hover: hover) {
+  .tempo-btn:hover { border-color: #fff; box-shadow: 0 0 14px rgba(255, 255, 255, 0.18); }
 }
-.tempo::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none;
-  width: 14px; height: 14px; margin-top: -6px;
-  border: none; border-radius: 50%; background: #ffffff;
-}
-.tempo::-moz-range-track {
-  height: 2px; border-radius: 1px; background: rgba(255, 255, 255, 0.35);
-}
-.tempo::-moz-range-thumb {
-  width: 14px; height: 14px; border: none; border-radius: 50%; background: #ffffff;
-}
-/* The BPM value: a white circle to match the slider's white dot. */
-.tempo-label {
-  width: 42px; height: 42px; flex: none; box-sizing: border-box;
-  font: inherit; font-size: 13px; text-align: center;
-  color: #ffffff; background: transparent;
-  border: 1.5px solid rgba(255, 255, 255, 0.55); border-radius: 50%; padding: 0;
-  -moz-appearance: textfield; appearance: textfield;
-}
-/* Hide the number spinners so it reads as a compact BPM box. */
-.tempo-label::-webkit-inner-spin-button,
-.tempo-label::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
-/* --- main views --- */
+/* --- main views -------------------------------------------------------------- */
 /* The app's one scroller (the body is overflow:hidden — see html,body above). min-height:0
-   lets it shrink inside the flex column instead of pushing the shell taller. */
+   lets it shrink inside the flex column instead of pushing the shell taller. Children are
+   clamped to a centred column so desktop widths don't stretch the mobile layout. */
 .viewroot {
-  flex: 1; display: flex; flex-direction: column; padding: 12px; gap: 12px;
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  padding: 14px; gap: 12px;
   min-height: 0; overflow-y: auto; overscroll-behavior: contain;
 }
+.viewroot > * { width: min(100%, 740px); flex: none; }
 
-/* Loop button — line-with-three-dots, top-left of the bar (42px, matches play/menu).
-   In the loop view it doubles as the play-scope toggle: lit (.on) = the whole loop,
-   green = constrained to the 8 bars on screen. */
+/* Entrance choreography — only when the VIEW changes (app.ts adds .view-enter),
+   so in-place edits re-render without replaying it. */
+.view-enter > * { animation: rise-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+.view-enter > :nth-child(2) { animation-delay: 40ms; }
+.view-enter > :nth-child(3) { animation-delay: 80ms; }
+.view-enter > :nth-child(4) { animation-delay: 120ms; }
+.view-enter > :nth-child(5) { animation-delay: 160ms; }
+.view-enter > :nth-child(6) { animation-delay: 200ms; }
+.view-enter > :nth-child(n+7) { animation-delay: 240ms; }
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Top-left button: back-to-track chain icon, or (on the track view) the loop
+   length in seconds as a pill. */
 .loop-view-btn { --bc: var(--accent); line-height: 1; }
-.loop-view-btn.on { background: var(--panel2); }
-.loop-view-btn.scope-toggle:not(.on) { --bc: #69db7c; background: var(--panel2); }
+.loop-view-btn.on { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
 .loop-view-btn svg { display: block; }
-
-/* Loop-view top-left button: the loop length in seconds (doubles as the play-scope
-   toggle). A pill instead of the round icon button so the seconds fit. */
 .loop-time-btn {
-  width: auto; min-width: 42px; padding: 0 12px; border-radius: 21px;
+  width: auto; min-width: 42px; padding: 0 14px; border-radius: 21px;
   font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
 }
 .loop-time-btn-val { line-height: 1; }
 
-/* --- loop view: the arrangement as a bar grid (rows = voices, x = bars) --- */
-/* Pager: step the visible 8-bar window backward / forward (wide ‹ / › buttons — the only
-   way to page now that the swipe gesture is gone). */
-.bar-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0; }
-.bar-pager-btn {
-  width: 72px; height: 34px; flex: none; padding: 0; font-size: 20px; font-weight: 700;
-  line-height: 1; border-radius: 17px;
-  display: inline-flex; align-items: center; justify-content: center;
+/* Rings visualizer (the sequencer's canvas, centred) with the Mixer button at its
+   top-right corner, floating on a soft glow. */
+.loop-rings { position: relative; display: flex; justify-content: center; max-width: 232px; margin: 0 auto; }
+.loop-rings::before {
+  content: "";
+  position: absolute; inset: -14%;
+  background: radial-gradient(50% 50% at 50% 50%, rgba(124, 92, 255, 0.12), transparent 70%);
+  pointer-events: none;
 }
-.bar-pager-btn:disabled { opacity: 0.32; cursor: default; }
-.bar-pager-label { font-size: 13px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 84px; text-align: center; }
-/* Zoom toggle (whole loop ↔ 8-bar pages). Zoomed IN it rides at the visualiser's top-left
-   corner (see .loop-rings .bar-zoom-btn); zoomed OUT the rings are gone so it sits in the
-   pager, compact — never as wide as the ‹ / › arrows. */
-.bar-zoom-btn { width: 40px; margin: 0; font-size: 16px; color: var(--muted); }
-
-/* pan-y so horizontal press-drags (sketch / move / resize a voice) reach the JS while a
-   vertical drag still scrolls the page. Two of these stack in the zoomed-out view. */
-.bar-grid { display: flex; flex-direction: column; gap: 8px; touch-action: pan-y; }
-.bar-row { display: flex; align-items: stretch; gap: 8px; }
-/* One voice's track; the repeating gradients draw a divider at each bar (100%/--bars,
-   set on .bar-grid — 8 normally, the whole loop zoomed out) and a brighter one every
-   8 bars (invisible at the 8-bar view, a section marker when zoomed out). */
-.bar-track {
-  position: relative; flex: 1 1 auto; height: 48px; border-radius: 8px;
-  background-color: var(--panel);
-  background-image:
-    repeating-linear-gradient(to right, #3a3e49 0 1px, transparent 1px calc(800% / var(--bars, 8))),
-    repeating-linear-gradient(to right, var(--line) 0 1px, transparent 1px calc(100% / var(--bars, 8)));
-  overflow: hidden;
-  touch-action: pan-y; /* horizontal press-drags sketch/resize; vertical still scrolls */
-}
-/* Playhead: a glowing line sweeping every track at --ph (set on .bar-grid each 16th
-   step while playing; ph-live hides it whenever the playhead is off this page). */
-.bar-track::after {
-  content: ""; position: absolute; top: 0; bottom: 0; z-index: 6;
-  left: var(--ph, 0%); width: 2px; margin-left: -1px; border-radius: 1px;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent), 0 0 2px var(--accent);
-  opacity: 0; pointer-events: none;
-  transition: left 0.11s linear, opacity 0.2s ease;
-}
-.bar-grid.ph-live .bar-track::after { opacity: 0.85; }
-/* A node block: width = its length in bars (as % of the 8-bar window), placed by `left`. */
-.bar-node {
-  position: absolute; top: 4px; bottom: 4px; padding: 0 4px; margin: 0; border: none;
-  display: flex; align-items: center; justify-content: center; overflow: hidden;
-  border-radius: 6px; font-weight: 700; font-size: 13px;
-  background: var(--panel2); color: var(--vc); box-shadow: inset 0 0 0 1.5px var(--vc);
-}
-.bar-node.has-sound { background: var(--vc); color: #15161a; box-shadow: none; }
-/* A sound carrying an intro/outro fade paints a gradient inside the one block (set
-   inline); a small ↗ / ↘ marker flags the faded end. */
-.bar-node.has-in::before,
-.bar-node.has-out::after {
-  position: absolute; top: 2px; z-index: 2; pointer-events: none;
-  font-size: 10px; font-weight: 700; color: #15161a; opacity: 0.75;
-}
-.bar-node.has-in::before { content: "↗"; left: 3px; }
-.bar-node.has-out::after { content: "↘"; right: 3px; }
-/* A rest reads as a faint dashed placeholder inviting a sound. */
-.bar-node.rest { background: transparent; color: var(--muted); box-shadow: none; border: 1.5px dashed var(--muted); }
-.bar-node.editing { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--vc); z-index: 3; }
-.bar-node.playing { outline: 2px solid var(--accent); animation: slot-breathe 0.9s ease-in-out infinite; z-index: 4; }
-/* No press-scale on grid blocks/tabs: a grip drag holds :active and the springy
-   transform would fight the live width preview. */
-.bar-node:active, .bar-edge-grip:active { transform: none; }
-/* The label (the sound's generated name) truncates with an ellipsis on narrow blocks. */
-.bar-node-label {
-  position: relative; z-index: 2; pointer-events: none;
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* Right-edge grip: press-drag to resize the node (its end snaps to its own unit).
-   Capped at 40% of the block so tiny slivers stay tappable for the sheet. */
-.bar-node-grip {
-  position: absolute; right: 0; top: 0; bottom: 0; z-index: 3;
-  width: 14px; max-width: 40%;
-  cursor: ew-resize; touch-action: none;
-}
-.bar-node-grip::after {
-  content: ""; position: absolute; right: 4px; top: 25%; bottom: 25%; width: 3px;
-  border-radius: 2px; background: rgba(0, 0, 0, 0.35);
-}
-.bar-node.rest .bar-node-grip::after,
-.bar-node.transition .bar-node-grip::after { background: rgba(255, 255, 255, 0.3); }
-/* Page-edge grab-tab: the voice ends on an earlier page — drag right to extend it
-   into the viewed bars. */
-.bar-edge-grip {
-  position: absolute; left: 0; top: 6px; bottom: 6px; z-index: 5;
-  width: 18px; padding: 0; border: none; border-radius: 0 8px 8px 0;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--vc); color: #15161a; font-size: 13px; font-weight: 800;
-  opacity: 0.85; cursor: ew-resize; touch-action: none;
-  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.35);
-}
-/* Press-drag sketch of a new sound's span (whole-bar snapped), while the finger's down. */
-.bar-drag-ghost {
-  position: absolute; top: 4px; bottom: 4px; z-index: 4; pointer-events: none;
-  border: 1.5px dashed var(--vc); border-radius: 6px;
-  background: color-mix(in srgb, var(--vc) 22%, transparent);
-}
-/* The rings visualizer above the grid (the sequencer's canvas, centred), shown only in
-   the 8-bar view — zoomed out it's dropped so the grid gets the whole height. */
-.loop-rings { position: relative; display: flex; justify-content: center; max-width: 232px; margin: 0 auto; width: 100%; }
-/* Mixer opener tucked into the visualiser's top-right corner (clear of the rings). */
 .loop-rings .mixer-open-btn { position: absolute; top: 0; right: 0; z-index: 2; }
-/* Zoom toggle mirrors it at the TOP-LEFT corner (a round accent button). Zoomed out the
-   rings are gone, so the toggle falls back into the pager instead. */
-.loop-rings .bar-zoom-btn {
-  position: absolute; top: 0; left: 0; z-index: 2; margin: 0;
-  width: 42px; height: 42px; border-radius: 50%;
-  border: 1.5px solid var(--accent); color: var(--accent);
-  background: var(--panel); font-size: 18px;
+.euclid-canvas { display: inline-block; max-width: 380px; position: relative; }
+
+/* --- shared view headers ------------------------------------------------------ */
+.mixer-head { display: flex; align-items: center; gap: 12px; }
+.mixer-back {
+  background: transparent; border: none; box-shadow: none;
+  color: var(--muted); padding: 6px 4px; font-size: 15px; font-weight: 600;
+}
+.mixer-back:active { color: var(--text); }
+@media (hover: hover) { .mixer-back:hover { color: var(--text); border-color: transparent; } }
+.mixer-title { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.melody-tree-btn {
+  margin-left: auto; padding: 8px 12px; font-size: 13px; font-weight: 600;
+  border-radius: 17px; color: var(--muted);
 }
 
-/* Add underlay over empty track (the tail past the content + every lead-in gap):
-   press-drag sketches a sound, tap drops the default, hold opens the copy / paste menu. */
-.bar-add {
-  position: absolute; top: 0; bottom: 0; z-index: 0; padding: 0; border: none;
-  background: transparent; cursor: copy; touch-action: pan-y;
+/* --- track view (bar limit + colour overview) --------------------------------- */
+.track-barlimit {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px;
+  background: var(--panel-glass);
+  border: 1px solid var(--line-soft); border-radius: var(--r-md);
+  box-shadow: var(--card-shadow);
+  font-size: 14px; font-weight: 600;
+}
+.track-barlimit input {
+  width: 92px; text-align: center; padding: 9px 6px;
+  background: var(--field); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text); font: inherit; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: ns-resize; touch-action: none;
+}
+
+/* Whole-track overview: a bar ruler + per-colour lane timelines. */
+.track-overview { position: relative; display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.bar-ruler { display: flex; gap: 2px; padding: 0 14px 0 18px; }
+.bar-ruler-tick { flex: 1; min-width: 0; font-size: 9px; line-height: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.track-color-row {
+  --vc: var(--accent);
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%;
+  padding: 13px 14px; text-align: left;
+  color: var(--text);
+  background:
+    linear-gradient(120deg, color-mix(in srgb, var(--vc) 9%, transparent), transparent 42%),
+    var(--panel-glass);
+  border: 1px solid var(--line-soft);
+  border-left: 4px solid var(--vc);
+  border-radius: var(--r-md);
+  box-shadow: var(--card-shadow);
+}
+.track-color-row:active { background-color: var(--panel2); }
+@media (hover: hover) {
+  .track-color-row:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--vc) 35%, var(--line));
+    border-left-color: var(--vc);
+    box-shadow: var(--card-shadow), 0 6px 22px color-mix(in srgb, var(--vc) 14%, transparent);
+  }
+}
+.track-color-head { display: flex; align-items: center; gap: 10px; }
+.track-color-dot {
+  width: 14px; height: 14px; border-radius: 50%; background: var(--vc); flex: none;
+  box-shadow: 0 0 10px var(--vc), inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+.track-color-name { font-size: 15px; font-weight: 700; flex: 1; }
+.track-color-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.track-color-lanes { display: flex; flex-direction: column; gap: 3px; }
+.melody-row .track-color-count { font-style: italic; }
+
+/* Overview playback line: sweeps to the playing bar, looping at each wrap. */
+.track-playhead {
+  position: absolute; top: 0; bottom: 0; width: 2px; z-index: 5;
+  left: calc(18px + var(--ph, 0) * (100% - 32px));
+  background: linear-gradient(to bottom, transparent, #fff 12%, #fff 88%, transparent);
+  box-shadow: 0 0 8px #fff, 0 0 2px #fff;
+  pointer-events: none;
+  opacity: 0; transition: opacity 0.15s;
+}
+.track-playhead.live { opacity: 0.9; }
+/* "Line n / N" badge — which wrapped line is playing. */
+.track-line-indicator {
+  align-self: flex-end; font-size: 11px; font-weight: 600; color: var(--muted);
+  font-variant-numeric: tabular-nums; padding: 0 14px 2px 0;
+}
+.track-overview.playing .color-preview-lane { opacity: 0.35; transition: opacity 0.12s; }
+.track-overview.playing .color-preview-lane.seg-live { opacity: 1; }
+
+/* Timeline cells (shared by the overview and the colour panel preview). */
+.color-preview {
+  --vc: var(--accent);
+  display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 10px;
+  background: var(--field);
+  border: 1px solid var(--line-soft); border-radius: var(--r-md);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.track-color-row .color-preview,
+.track-color-row .track-color-lanes { margin-top: 0; }
+.track-overview .color-preview-lane,
+.color-preview-lane { display: flex; gap: 2px; }
+.color-preview-cell {
+  flex: 1; height: 13px; border-radius: 3px;
+  background: rgba(154, 168, 204, 0.08);
   display: flex; align-items: center; justify-content: center;
-  color: var(--muted); opacity: 0.55; font-size: 20px; font-weight: 700;
+  font-size: 9px; font-weight: 700; line-height: 1; color: var(--bg);
+  font-variant-numeric: tabular-nums; overflow: hidden;
 }
-.bar-add:hover, .bar-add:active { background: rgba(255, 255, 255, 0.045); color: var(--accent); opacity: 1; }
-.bar-add:active { transform: none; } /* the press-drag sketch must not shift the zone */
-.bar-add-plus { pointer-events: none; }
+.color-preview-cell.on {
+  background: var(--vc);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--vc) 65%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.color-preview-cell.pad { visibility: hidden; }
+/* The overview lanes sit inside the row cards, so no extra well around them. */
+.track-color-lanes .color-preview-lane { gap: 2px; }
 
-/* Add-transition button inside a voice's editing sheet (near the top): a dashed accent
-   pill echoing the ✛ transition affordance. */
-.sheet-add-transition {
-  align-self: center; width: auto; padding: 8px 16px;
-  font-weight: 600; font-size: 13px; border-radius: 20px; border-style: dashed;
-  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
-  background: var(--panel);
+/* --- colour view (loop list) --------------------------------------------------- */
+.loop-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.loop-row {
+  --vc: var(--accent);
+  display: flex; align-items: stretch; gap: 8px;
+  background:
+    linear-gradient(120deg, color-mix(in srgb, var(--vc) 8%, transparent), transparent 45%),
+    var(--panel-glass);
+  border: 1px solid var(--line-soft);
+  border-left: 4px solid var(--vc);
+  border-radius: var(--r-md); overflow: hidden;
+  box-shadow: var(--card-shadow);
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
 }
-.sheet-add-transition:active { background: var(--panel2); }
+@media (hover: hover) {
+  .loop-row:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--vc) 35%, var(--line));
+    border-left-color: var(--vc);
+  }
+}
+.loop-order { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding-left: 6px; }
+.loop-move {
+  width: 26px; height: 20px; padding: 0; line-height: 1;
+  background: transparent; border: none; box-shadow: none;
+  color: var(--muted); font-size: 10px;
+}
+.loop-move:disabled { opacity: 0.25; }
+.loop-move:active:not(:disabled) { color: var(--text); }
+.loop-body {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 12px 8px;
+  text-align: left; background: transparent; border: none; box-shadow: none; color: var(--text);
+}
+.loop-name { font-size: 14px; font-weight: 700; color: var(--vc); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.loop-summary { font-size: 12px; color: var(--muted); }
+.loop-remove {
+  width: 40px; flex: none; background: transparent; border: none; box-shadow: none;
+  border-left: 1px solid var(--line-soft); border-radius: 0; color: var(--muted); font-size: 20px;
+}
+.loop-remove:active { color: #ff453a; background: rgba(255, 69, 58, 0.08); }
+@media (hover: hover) { .loop-remove:hover { color: #ff6b6b; } }
+.loop-body.hit-flash { animation: mix-flash 0.4s ease-out; }
 
-/* A row per existing fade in the voice sheet: label · style toggle · Remove. */
-.sheet-env {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 6px 2px;
+.loop-add {
+  width: 100%; margin-top: 12px; padding: 13px;
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: var(--r-md); color: var(--accent); font-size: 14px; font-weight: 600;
 }
-.sheet-env-label { font-weight: 600; font-size: 13px; color: var(--vc); }
-.sheet-env .tr-modes { flex: 1 1 auto; }
-.sheet-env-remove {
-  margin-left: auto; padding: 4px 10px; font-size: 12px; font-weight: 600;
-  border-radius: 14px; border: 1px solid var(--line); color: var(--muted); background: var(--panel);
+.loop-add:active { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+@media (hover: hover) {
+  .loop-add:hover {
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+    border-color: var(--accent);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
 }
-.sheet-env-remove:active { background: var(--panel2); }
 
-/* Voice sheet: a modal card over the whole app when a grid voice is tapped. The card
-   margin:auto-centres when it fits and pins to the (safe-area-padded) top when taller
-   than the screen — a plain centered flex child would clip its top unreachably. */
+/* --- sheets (placement popup / melody note popup) ------------------------------- */
+/* A modal glass card over the whole app. The card margin:auto-centres when it fits
+   and pins to the (safe-area-padded) top when taller than the screen. */
 .voice-sheet-overlay {
   position: fixed; inset: 0; z-index: 200;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(5, 7, 12, 0.6);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   display: flex; align-items: flex-start; justify-content: center;
   padding: calc(12px + env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom));
 }
 .voice-sheet {
   width: 100%; max-width: 560px; margin: auto;
   max-height: 100%; overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 12px; padding: 14px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  display: flex; flex-direction: column; gap: 12px; padding: 16px;
+  background: var(--panel-glass);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--pop-shadow);
+}
+/* Entrance only on a FRESH open (app.ts adds .sheet-enter) — in-place rebuilds
+   after each edit stay still. */
+.sheet-enter { animation: fade-in 0.2s ease-out; }
+.sheet-enter .voice-sheet { animation: sheet-up 0.34s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sheet-up {
+  from { opacity: 0; transform: translateY(22px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }
 .voice-sheet-head { display: flex; align-items: center; gap: 10px; }
 .voice-sheet-title {
   margin: 0; font-size: 16px; font-weight: 700; color: var(--vc, var(--text));
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* Inside the sheet the shuffle menu flows inline instead of floating over a row. */
-.voice-sheet .voice-shuffle,
-.melody-inst .voice-shuffle {
-  position: static; max-height: none; box-shadow: none;
-  border: none; padding: 0; background: transparent;
-}
-/* A transition pill in the sequencer row uses its inline from→to gradient. */
-.euclid-sound.transition { font-weight: 700; }
 
-/* Transition dialogs (the sheet's Transitions menu + the mode/length options).
-   Above the voice sheet (200) so they stack over it; under the numpad (210). */
-.tr-overlay {
-  position: fixed; inset: 0; z-index: 205; padding: 16px;
+/* Loop popup tab nav (Sound / Loop / Transition): a segmented glass control. */
+.placement-nav {
+  justify-content: stretch; gap: 4px; margin: 2px 0 10px;
+  background: var(--field); border: 1px solid var(--line-soft);
+  border-radius: 12px; padding: 4px;
+}
+.placement-nav .seg-btn {
+  flex: 1 1 0; text-align: center; padding: 9px 8px; font-size: 13px;
+  background: transparent; border-color: transparent; box-shadow: none;
+}
+.placement-nav .seg-btn.on {
+  background: color-mix(in srgb, var(--vc) 16%, var(--panel2));
+  border-color: color-mix(in srgb, var(--vc) 40%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--vc) 22%, transparent);
+}
+
+/* Rule editor rows. */
+.placement-sheet { --vc: var(--accent); }
+.placement-controls { display: flex; flex-direction: column; gap: 10px; }
+.placement-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.placement-lbl { font-size: 13px; color: var(--muted); flex: none; }
+.placement-row input {
+  width: 78px; text-align: center; padding: 9px 6px;
+  background: var(--field); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text); font: inherit; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: ns-resize; touch-action: none;
+}
+.placement-seg { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.seg-btn {
+  padding: 8px 11px; font-size: 12px; font-weight: 600;
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--line); border-radius: 9px;
+}
+.seg-btn.on {
+  border-color: var(--vc); color: var(--vc);
+  background: color-mix(in srgb, var(--vc) 12%, var(--panel2));
+  box-shadow: inset 0 0 0 1px var(--vc), 0 0 10px color-mix(in srgb, var(--vc) 20%, transparent);
+}
+.placement-roll { justify-content: flex-end; gap: 8px; }
+.roll-btn {
+  padding: 8px 14px; font-size: 13px; font-weight: 600;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.roll-btn:disabled { opacity: 0.35; }
+.roll-btn:active:not(:disabled) { background: var(--panel); border-color: var(--vc); color: var(--vc); }
+.placement-hint { text-align: left; margin: 2px 0 0; }
+
+/* Manual "At bars" list field. */
+.placement-atbars input {
+  flex: 1; min-width: 0; width: auto; text-align: left; padding: 9px 10px;
+  cursor: text;
+}
+
+/* Dice-face weight picker: six faces, the active one lit in the voice colour. */
+.dice-faces { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.dice-face {
+  width: 40px; height: 40px; padding: 0; font-size: 26px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
+  color: var(--muted); background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-sm);
 }
-.tr-dialog {
-  width: 100%; max-width: 340px;
-  display: flex; flex-direction: column; gap: 14px; padding: 16px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
-  animation: pop-in 0.18s ease-out;
-}
-.tr-title { margin: 0; font-size: 16px; font-weight: 700; }
-/* Placement choices (At the start / At the end): stacked rows, main line + small note. */
-.tr-place {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
-  text-align: left; padding: 10px 12px;
-  background: var(--panel); border-radius: 10px; font-weight: 600; font-size: 14px;
-}
-.tr-place small { color: var(--muted); font-size: 11px; font-weight: 400; }
-.tr-place:disabled { opacity: 0.45; cursor: default; }
-.tr-modes { display: flex; gap: 8px; flex-wrap: wrap; }
-.tr-modes.inline { order: 10; flex: 1 1 100%; margin-top: 2px; }
-/* Four styles per set: 40% flex-basis wraps them into a tidy 2×2. */
-.tr-mode {
-  flex: 1 1 40%; padding: 9px 0; font-weight: 600; font-size: 13px;
-  background: var(--panel); color: var(--muted); border-radius: 9px;
-}
-.tr-mode.on { border-color: var(--accent); color: var(--accent); background: var(--panel2); }
-.tr-len { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
-.tr-len-val { flex: 1; text-align: center; color: var(--text); font-variant-numeric: tabular-nums; }
-.tr-step {
-  width: 36px; height: 36px; flex: none; padding: 0; font-size: 18px; line-height: 1;
-  border-radius: 50%; display: flex; align-items: center; justify-content: center;
-}
-.tr-btns { display: flex; gap: 8px; }
-.tr-cancel { flex: 1; background: var(--panel); color: var(--muted); }
-.tr-add {
-  flex: 2; font-weight: 700; color: #0b0c0f; border: none;
-  background: linear-gradient(135deg, #6c5cff, #00ffc8);
+.dice-face.on {
+  color: var(--vc); border-color: var(--vc);
+  background: color-mix(in srgb, var(--vc) 12%, var(--panel2));
+  box-shadow: inset 0 0 0 1px var(--vc), 0 0 12px color-mix(in srgb, var(--vc) 25%, transparent);
 }
 
-/* --- custom number pad (fixed overlay; the page behind stays put) --- */
+/* Transitions / Accents & Ghosts sections. */
+.transition-controls { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.transition-head {
+  font-weight: 700; color: var(--text); text-transform: uppercase;
+  letter-spacing: 0.07em; font-size: 11px;
+}
+.fade-row { align-items: flex-start; }
+.fade-controls { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; flex: 1 1 auto; min-width: 0; }
+.fade-controls .placement-row { width: 100%; }
+.fade-modes { justify-content: flex-end; }
+.fade-toggle { min-width: 52px; }
+
+/* Transition curve visualization: the eased blend path + start/end value labels. */
+.curve-viz-box {
+  width: 100%; margin-top: 2px; padding: 6px;
+  background: var(--field); border: 1px solid var(--line-soft); border-radius: 9px;
+}
+.curve-viz { display: block; width: 100%; height: auto; }
+.curve-viz-line {
+  fill: none; stroke: var(--vc); stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--vc) 65%, transparent));
+}
+.curve-viz-lbl { fill: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Rhythm circles: the four values as a flattened ring — voice-coloured circles on a
+   connecting line (--vc per sheet; dim grey when the slot is empty). */
+.euclid-detail {
+  display: flex; align-items: flex-end; justify-content: center; gap: 6px;
+}
+.euclid-vals { flex: 0 0 auto; display: flex; gap: 8px; position: relative; }
+.euclid-vals::before {
+  content: ""; position: absolute; left: 23px; right: 23px; bottom: 22px;
+  height: 2px; border-radius: 1px;
+  background: linear-gradient(90deg, transparent, var(--vc, var(--line)), transparent);
+  opacity: 0.6;
+}
+.euclid-num {
+  flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; align-items: center;
+  font-size: 10px; color: var(--muted); position: relative; z-index: 1;
+}
+/* Big, tappable number circles (tap = numpad, drag = scrub). Opaque background so
+   the connecting line passes behind, not through. */
+.euclid-num input {
+  width: 46px; height: 46px; box-sizing: border-box; text-align: center;
+  font: inherit; font-size: 17px; font-weight: 600;
+  color: var(--vc, var(--text)); background: var(--field);
+  border: 1.5px solid color-mix(in srgb, var(--vc, #fff) 65%, transparent);
+  border-radius: 50%; padding: 0;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--vc, #000) 14%, transparent);
+  -moz-appearance: textfield; appearance: textfield;
+  cursor: ns-resize; touch-action: none;
+}
+.euclid-num input::-webkit-inner-spin-button,
+.euclid-num input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.euclid-num input:disabled { opacity: 0.35; }
+
+/* --- custom number pad (fixed overlay; the page behind stays put) ----------------- */
 .numpad-overlay {
   /* Above the voice sheet (z-index 200) so a tapped value circle's pad shows on top. */
   position: fixed; inset: 0; z-index: 210; padding: 16px;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(5, 7, 12, 0.6);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  animation: fade-in 0.16s ease-out;
 }
 .numpad {
   --vc: var(--accent);
-  width: 100%; max-width: 260px;
+  width: 100%; max-width: 270px;
   display: flex; flex-direction: column; gap: 12px; padding: 16px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 18px;
-  animation: pop-in 0.16s ease-out;
+  background: var(--panel2-glass);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--pop-shadow);
+  animation: sheet-up 0.26s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .numpad-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .numpad-title {
-  font-size: 13px; font-weight: 700; color: var(--vc);
-  text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 12px; font-weight: 700; color: var(--vc);
+  text-transform: uppercase; letter-spacing: 0.07em;
 }
 .numpad-hint { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .numpad-display {
   height: 56px; display: flex; align-items: center; justify-content: center;
   font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text);
-  background: var(--bg); border: 1.5px solid var(--vc); border-radius: 12px;
+  background: var(--field);
+  border: 1.5px solid color-mix(in srgb, var(--vc) 60%, transparent);
+  border-radius: 12px;
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.4), 0 0 16px color-mix(in srgb, var(--vc) 12%, transparent);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--vc) 40%, transparent);
 }
-.numpad-display.empty { color: var(--muted); } /* showing the old value as a placeholder */
+.numpad-display.empty { color: var(--muted); text-shadow: none; } /* old value as placeholder */
+/* A comma list can be long — let it wrap and shrink instead of overflowing. */
+.numpad-display.list { font-size: 20px; line-height: 1.2; padding: 0 10px; text-align: center; word-break: break-word; }
 .numpad-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .numpad-key {
   height: 52px; padding: 0; font-size: 20px; font-weight: 600;
   display: flex; align-items: center; justify-content: center;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
 }
-.numpad-key:active { background: var(--panel2); transform: translateY(1px); }
+.numpad-key:active { background: var(--panel2); transform: translateY(1px) scale(0.97); }
+@media (hover: hover) { .numpad-key:hover { background: var(--panel2); } }
 .numpad-key.back { color: var(--muted); font-size: 22px; }
 .numpad-key.clear { color: var(--muted); font-weight: 800; }
 .numpad-key.comma { font-size: 24px; font-weight: 800; }
-.numpad-key.enter { color: #0b0c0f; border: none; font-weight: 800; background: var(--vc); }
+.numpad-key.enter {
+  color: #0b0d12; border: none; font-weight: 800;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--vc) 80%, #fff), var(--vc));
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--vc) 35%, transparent);
+}
 .numpad-key.wide2 { grid-column: span 2; }
 .numpad-key.wide3 { grid-column: span 3; }
-/* A comma list can be long — let it wrap and shrink instead of overflowing. */
-.numpad-display.list { font-size: 20px; line-height: 1.2; padding: 0 10px; text-align: center; word-break: break-word; }
 
-/* Press-and-hold menu over an empty grid zone (copy this voice here / new sound). The
-   transparent overlay only catches the outside tap; the card is anchored at the press. */
-.grid-menu-overlay { position: fixed; inset: 0; z-index: 210; background: transparent; }
-.grid-menu {
+/* --- melody ---------------------------------------------------------------------- */
+/* Compact scale/root/octave — three small labelled fields on one row. */
+.melody-scale-compact {
   --vc: var(--accent);
-  position: fixed; transform: translateX(-50%);
-  min-width: 196px; max-width: 264px;
-  display: flex; flex-direction: column; gap: 3px; padding: 6px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
-  animation: grid-menu-in 0.14s ease-out;
+  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 4px;
 }
-/* Like pop-in, but keeps the translateX(-50%) that centres the card on the press. */
-@keyframes grid-menu-in {
-  from { opacity: 0; transform: translateX(-50%) scale(0.95); }
-  to   { opacity: 1; transform: translateX(-50%) scale(1); }
+.melody-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 0 0 auto; }
+.melody-field.grow { flex: 1 1 90px; }
+.melody-field-lbl {
+  font-size: 10px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.07em;
 }
-.grid-menu-item {
-  display: flex; align-items: center; gap: 11px; text-align: left;
-  padding: 9px 10px; border: none; border-radius: 9px;
-  background: transparent; color: var(--text);
+.melody-select {
+  flex: 0 1 auto; max-width: 60%; padding: 8px 30px 8px 10px; font-size: 14px;
+  background-color: var(--panel);
 }
-.grid-menu-item:active { background: var(--panel); }
-.grid-menu-item:disabled { opacity: 0.42; }
-.grid-menu-glyph {
-  flex: none; width: 27px; height: 27px; border-radius: 7px;
-  display: flex; align-items: center; justify-content: center; font-size: 15px;
-  color: var(--vc); background: color-mix(in srgb, var(--vc) 24%, transparent);
-}
-.grid-menu-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.grid-menu-main { font-size: 14px; font-weight: 600; }
-.grid-menu-text small { font-size: 11px; color: var(--muted); }
+.melody-select:focus { border-color: var(--vc); }
+.melody-select.compact { max-width: none; width: 100%; padding: 7px 28px 7px 8px; font-size: 13px; }
 
-/* --- sound view --- */
+.stepper { display: flex; align-items: center; gap: 10px; }
+.stepper-val { min-width: 52px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+.stepper.compact { gap: 6px; }
+.stepper.compact .stepper-val { min-width: 34px; }
+.tr-step {
+  width: 36px; height: 36px; flex: none; padding: 0; font-size: 18px; line-height: 1;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+}
+
+.melody-notes-head { margin-top: 4px; }
+.melody-genbar { --vc: var(--accent); margin-bottom: 8px; }
+.melody-genbtns { display: flex; gap: 8px; }
+.melody-genbtns .seg-btn { flex: 1 1 0; }
+.melody-gen-btn.seg-btn { color: var(--vc); border-color: var(--vc); }
+.melody-branch-toggle.on {
+  color: var(--vc); border-color: var(--vc);
+  background: color-mix(in srgb, var(--vc) 12%, var(--panel2));
+  box-shadow: inset 0 0 0 1px var(--vc);
+}
+.melody-gen-hint { font-size: 12px; color: var(--muted); font-style: italic; }
+
+/* Sound-params nav buttons (Loop options / Instrument sound): solid nav pills. */
+.melody-inst-btn {
+  border-style: solid; border-color: color-mix(in srgb, var(--vc) 55%, transparent);
+  color: var(--vc); font-weight: 600; text-align: center;
+}
+
+/* Compact square note grid — a note = a small tile (letter + weight); wraps on phones. */
+.melody-grid {
+  --vc: var(--accent);
+  display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
+}
+.melody-sq {
+  --nc: var(--vc);
+  position: relative; width: 54px; height: 54px; padding: 6px 0 4px; flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  color: var(--text); background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--nc) 50%, transparent);
+  border-radius: 13px;
+  cursor: pointer;
+  transition: transform 0.09s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+/* Each note carries its own pitch colour: a glowing top stripe + coloured letter. */
+.melody-sq::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 4px;
+  background: var(--nc); border-radius: 12px 12px 0 0;
+  box-shadow: 0 1px 8px color-mix(in srgb, var(--nc) 60%, transparent);
+}
+.melody-sq:active { transform: scale(0.94); }
+@media (hover: hover) {
+  .melody-sq:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--nc) 24%, transparent);
+    border-color: var(--nc);
+  }
+}
+.melody-sq-letter { font-size: 17px; font-weight: 700; line-height: 1; color: var(--nc); }
+.melody-sq-weight { font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.melody-sq.has-branch { box-shadow: inset 0 0 0 1px var(--vc); }
+/* Add-branch mode: note tiles glow to invite a tap; already-branched ones dim. */
+.melody-sq.arm { border-color: var(--vc); box-shadow: 0 0 0 1px var(--vc), 0 0 14px color-mix(in srgb, var(--vc) 30%, transparent); }
+.melody-sq.arm.has-branch { opacity: 0.55; box-shadow: none; }
+/* Branch tile (B1, B2…): filled in the melody colour — a "go deeper" chip. */
+.melody-sq.branch {
+  color: #0b0d12;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--vc) 85%, #fff), var(--vc));
+  border-color: var(--vc);
+  box-shadow: 0 3px 14px color-mix(in srgb, var(--vc) 35%, transparent);
+}
+.melody-sq.branch::before { display: none; } /* no pitch stripe — it's a branch, not a note */
+.melody-sq.branch .melody-sq-letter { color: #0b0d12; }
+.melody-sq.branch .melody-sq-weight { color: rgba(0, 0, 0, 0.6); }
+
+/* One note's settings card (in its popup). */
+.melody-note {
+  --vc: var(--accent);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; background: var(--panel); border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--vc); border-radius: var(--r-md);
+}
+.melody-note-head { display: flex; align-items: center; gap: 8px; }
+.melody-note-head .placement-row { flex: 1 1 auto; }
+.melody-note .placement-row input { max-width: 150px; }
+/* The popup reuses the voice-sheet card; the note card fills it flush. */
+.melody-note-sheet { max-width: 420px; }
+.melody-note-sheet .melody-note { border: none; border-left: none; padding: 0; background: transparent; }
+
+/* Branch row inside a note card. */
+.melody-branch-row { border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 2px; }
+.melody-branch-btns { display: flex; align-items: center; gap: 6px; }
+.melody-branch-open.on { border-color: var(--vc); color: var(--vc); }
+.melody-branch-del { flex: none; }
+
+/* Small × remove circle (notes, loops-in-cards). */
+.loop-remove.melody-branch-del,
+.melody-note .loop-remove {
+  width: 26px; height: 26px; padding: 0; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1; color: #ff6b6b;
+  background: var(--panel);
+  border: 1.5px solid color-mix(in srgb, #ff6b6b 45%, var(--panel));
+  border-radius: 50%;
+}
+
+/* Breadcrumb trail when editing a branch. */
+.melody-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 10px; }
+.melody-crumb {
+  padding: 4px 9px; font-size: 12px; font-weight: 600; border-radius: 8px;
+  color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+}
+.melody-crumb.here { color: var(--vc); border-color: var(--vc); }
+.melody-crumb-sep { color: var(--muted); font-size: 12px; }
+
+/* Mini piano roll (time →, pitch ↑, colour = pitch class). */
+.melody-seq {
+  --vc: var(--accent);
+  padding: 6px; background: var(--field); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.melody-seq-svg { display: block; width: 100%; }
+
+/* Zoomed-out tree overlay. */
+.melody-tree-overlay {
+  position: fixed; inset: 0; z-index: 220; padding: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 7, 12, 0.65);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  animation: fade-in 0.16s ease-out;
+}
+.melody-tree-card {
+  --vc: var(--accent);
+  width: 100%; max-width: 90vw; max-height: 80vh; overflow: hidden;
+  display: flex; flex-direction: column; gap: 10px; padding: 16px;
+  background: var(--panel2-glass);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--pop-shadow);
+  animation: sheet-up 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.tr-title { margin: 0; font-size: 16px; font-weight: 700; }
+.tr-cancel { flex: none; background: var(--panel); color: var(--muted); }
+/* SVG node-graph tree: scrolls in both axes if the diagram is large. */
+.melody-tree-scroll { overflow: auto; overscroll-behavior: contain; max-height: 64vh; }
+.melody-tree-svg { display: block; }
+.melody-tree-link { fill: none; stroke: var(--line); stroke-width: 2; }
+.melody-tree-gnode { cursor: pointer; }
+.melody-tree-gnode rect {
+  fill: var(--panel); stroke: var(--line); stroke-width: 1;
+  transition: stroke 0.1s ease;
+}
+.melody-tree-gnode:hover rect { stroke: var(--vc); }
+.melody-tree-gnode.here rect { fill: var(--field); stroke: var(--vc); stroke-width: 2; }
+.melody-tree-t1 { fill: var(--text); font-size: 12px; font-weight: 700; }
+.melody-tree-gnode.here .melody-tree-t1 { fill: var(--vc); }
+.melody-tree-t2 { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* The melody instrument page's wrapper card. */
+.melody-inst {
+  background: var(--panel-glass); border: 1px solid var(--line-soft);
+  border-radius: var(--r-md); padding: 14px;
+  box-shadow: var(--card-shadow);
+}
+
+/* --- mixer -------------------------------------------------------------------- */
+.mixer-open-btn { --bc: #4dabf7; font-size: 18px; }
+.mixer-list { display: flex; flex-direction: column; gap: 10px; }
+.mix-strip {
+  background:
+    linear-gradient(120deg, color-mix(in srgb, var(--lane) 8%, transparent), transparent 45%),
+    var(--panel-glass);
+  border: 1px solid var(--line-soft);
+  border-left: 4px solid var(--lane);
+  border-radius: var(--r-md);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: var(--card-shadow);
+  --slider: var(--lane);
+}
+.mix-strip-head { display: flex; align-items: center; gap: 10px; }
+.mix-led {
+  width: 14px; height: 14px; flex: none; border-radius: 50%;
+  background: var(--lane); opacity: 0.26;
+  box-shadow: 0 0 0 0 var(--lane), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+.mix-led.flash { animation: mix-flash 0.4s ease-out; }
+@keyframes mix-flash {
+  0% { opacity: 1; box-shadow: 0 0 12px 3px var(--lane); }
+  100% { opacity: 0.26; box-shadow: 0 0 0 0 var(--lane); }
+}
+.mix-name {
+  flex: 1; min-width: 0; font-weight: 700; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mix-toggles { display: flex; gap: 6px; flex: none; }
+.mix-toggle {
+  width: 34px; padding: 6px 0; text-align: center; font-weight: 700; font-size: 13px;
+  background: var(--panel2); color: var(--muted);
+}
+.mix-toggle.mute.on {
+  background: linear-gradient(160deg, #ff5f52, #e03a2f); color: #fff; border-color: transparent;
+  box-shadow: 0 0 12px rgba(255, 69, 58, 0.5);
+}
+.mix-toggle.solo.on {
+  background: linear-gradient(160deg, #ffe14d, var(--accent)); color: #141826; border-color: transparent;
+  box-shadow: 0 0 12px rgba(255, 214, 10, 0.5);
+}
+.mix-fader { display: flex; align-items: center; gap: 10px; }
+.mix-fader-lbl { width: 34px; flex: none; font-size: 12px; color: var(--muted); }
+.mix-fader input[type="range"] { flex: 1; min-width: 0; }
+.mix-fader-val {
+  width: 30px; flex: none; text-align: right; font-size: 12px;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+
+/* --- sound editor (deep view + per-loop shuffle panel) --------------------------- */
 .soundview { display: flex; flex-direction: column; gap: 14px; }
-.sound-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.sound-title { margin: 0; font-size: 18px; font-weight: 600; }
-.sound-title-input {
-  min-width: 0; flex: 1; font: inherit; font-size: 18px; font-weight: 600;
-  color: var(--text); background: transparent;
-  border: 1px solid transparent; border-radius: 8px; padding: 4px 6px;
+.cat {
+  background: var(--panel-glass); border: 1px solid var(--line-soft);
+  border-radius: var(--r-md); padding: 12px 14px;
+  box-shadow: var(--card-shadow);
 }
-.sound-title-input:focus { border-color: var(--line); background: var(--panel); outline: none; }
-.sound-lib { position: relative; display: flex; align-items: center; gap: 8px; }
-.sound-lib select { max-width: 130px; }
-/* The preset button shares the Back/Reset row; cap it so a long preset name
-   ellipsis-truncates instead of blowing the row out. */
-.sound-lib .preset-name-btn { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.preset-current {
-  font-size: 12px; color: var(--muted);
-  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.cat-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.cat-name {
+  font-weight: 700; font-size: 12px; margin-right: auto;
+  text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted);
+}
+.cat-btn { padding: 6px 12px; font-size: 13px; background: var(--panel2); border-radius: 9px; }
+.cat-btn:disabled { opacity: 0.4; }
+
+/* The per-loop shuffle panel (flows inline inside the sheet / instrument page). */
+.voice-shuffle { display: flex; flex-direction: column; gap: 10px; }
+.voice-preset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.voice-shuffle .preset-name-btn { max-width: none; width: 100%; text-align: center; }
+.full-params-btn {
+  width: 100%; font-weight: 600;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent);
+}
+@media (hover: hover) {
+  .full-params-btn:hover { box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 22%, transparent); }
+}
+.breed-btn { width: 100%; }
+
+/* The star of the show: the brand-gradient Shuffle button with a passing sheen. */
+.shuffle-big {
+  position: relative; overflow: hidden;
+  width: 100%; color: #0b0d12; font-weight: 800; font-size: 18px; letter-spacing: 0.3px;
+  padding: 13px 18px; border: none; border-radius: 13px; cursor: pointer;
+  background: var(--brand);
+  background-size: 180% 180%;
+  box-shadow: 0 6px 22px rgba(124, 92, 255, 0.4);
+  animation: shuffle-glow 2.6s ease-in-out infinite;
+}
+.shuffle-big::after {
+  content: ""; position: absolute; top: -20%; bottom: -20%; left: -60%; width: 36%;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  transform: skewX(-18deg);
+  animation: sheen 3.4s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes sheen {
+  0%, 55% { left: -60%; }
+  90%, 100% { left: 135%; }
+}
+.shuffle-big:active { transform: scale(0.97); }
+@keyframes shuffle-glow {
+  0%, 100% { background-position: 0% 50%; box-shadow: 0 5px 18px rgba(124, 92, 255, 0.38); }
+  50% { background-position: 100% 50%; box-shadow: 0 6px 26px rgba(0, 255, 200, 0.5); }
 }
 
-/* preset grid overlay */
+.shuffle-section { display: flex; flex-direction: column; gap: 12px; }
+.preset-name-btn { font-weight: 700; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Back / Reset / Preset row; anchors the preset grid overlay. */
+.sound-lib { position: relative; display: flex; align-items: center; gap: 8px; }
+.sound-lib .preset-name-btn { max-width: 140px; }
+
+/* Preset grid overlay (anchored to the row above). */
 .preset-grid {
   position: absolute; right: 0; top: 42px; z-index: 20;
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
-  background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 10px; padding: 8px; min-width: 240px; max-width: 320px;
+  background: var(--panel2-glass);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md); padding: 8px; min-width: 250px; max-width: 330px;
   max-height: 60vh; overflow-y: auto;
+  box-shadow: var(--pop-shadow);
 }
 .preset-tile {
-  padding: 10px 6px; font-size: 12px; text-align: center;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 6px; font-size: 12px; font-weight: 600; text-align: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
 }
-.preset-tile:active { background: var(--panel2); }
-.preset-grid-sep {
-  grid-column: 1 / -1; font-size: 11px; color: var(--muted);
-  padding: 6px 2px 0; border-top: 1px solid var(--line); margin-top: 2px;
+.preset-tile:active { transform: scale(0.95); }
+@media (hover: hover) {
+  .preset-tile:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
 }
 
-/* save-as colour picker */
-.save-colors {
-  position: absolute; right: 0; top: 42px; z-index: 20;
-  background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 10px; padding: 10px; min-width: 200px;
-}
-.save-colors-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
-.save-name-input {
-  width: 100%; box-sizing: border-box; margin-bottom: 10px;
-  font: inherit; font-size: 14px; color: var(--text); background: var(--panel);
-  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
-}
-.save-name-input:focus { outline: none; border-color: var(--accent); }
-.save-colors-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
-.save-swatch {
-  aspect-ratio: 1; border: 2px solid transparent; border-radius: 8px; padding: 0;
-}
-.save-swatch:active { border-color: var(--text); }
-
-/* saved-sounds list (load / delete) */
-.saved-list {
-  position: absolute; right: 0; top: 42px; z-index: 20;
-  display: flex; flex-direction: column; gap: 4px;
-  background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 10px; padding: 6px; min-width: 220px; max-width: 300px;
-  max-height: 60vh; overflow-y: auto;
-}
-.saved-item { display: flex; align-items: center; gap: 4px; }
-.saved-load {
-  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
-  text-align: left; background: transparent; border: none; padding: 9px 10px;
-}
-.saved-load:active { background: var(--panel); }
-.saved-del {
-  flex: none; width: 34px; font-size: 18px; line-height: 1;
-  background: var(--panel); border: 1px solid var(--line); color: var(--muted);
-}
-.saved-del:active { color: var(--text); }
-.saved-list .hint { padding: 8px 10px; }
-.saved-folder-head {
-  display: flex; align-items: center; gap: 6px;
-  text-align: left; background: var(--panel); border: 1px solid var(--line);
-  color: var(--text); border-radius: 8px; padding: 7px 10px;
-  font-size: 12px; font-weight: 600; margin-top: 2px;
-}
-.saved-folder-head:active { background: var(--panel2); }
-.folder-toggle {
-  flex: 1; min-width: 0; text-align: left; padding: 0;
-  background: transparent; border: none; color: inherit;
-  font: inherit; font-weight: 600; font-size: 12px;
-}
-.folder-color {
-  flex: none; width: 18px; height: 18px; padding: 0; border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.45);
-}
-.folder-colors { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; padding: 6px 2px; }
-.saved-item.in-folder { margin-left: 10px; }
-.saved-move {
-  flex: none; max-width: 92px; font: inherit; font-size: 11px;
-  color: var(--muted); background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; padding: 6px 4px;
-}
-.save-folder-select { width: 100%; box-sizing: border-box; margin-bottom: 10px; }
-
-.cat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
-.cat-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.cat-name { font-weight: 600; font-size: 14px; margin-right: auto; }
-.cat-btn { padding: 6px 10px; font-size: 13px; background: var(--panel2); }
-.cat-btn:disabled { opacity: 0.4; }
-.rnd { display: flex; align-items: center; gap: 6px; width: 100%; }
+/* Randomness + labelled select/seed rows. */
+.rnd { display: flex; align-items: center; gap: 6px; width: 100%; --slider: #b197fc; }
 .rnd input { flex: 1; }
-.rnd-lbl { color: var(--muted); font-size: 12px; width: 38px; text-align: right; }
+.rnd-lbl { color: var(--muted); font-size: 12px; width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
 .precision { display: flex; align-items: center; gap: 8px; width: 100%; }
 .precision-lbl { color: var(--muted); font-size: 12px; }
 .precision select { flex: 1; }
+.precision .seed-input { flex: 1; width: auto; text-align: left; }
+
+/* Recap of the current sound (▶ + generated name). */
 .shuffle-summary {
   width: 100%;
   display: flex;
@@ -607,24 +1090,22 @@ button:active { transform: scale(0.94); }
   gap: 8px;
   color: var(--muted);
   font-size: 12px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   letter-spacing: 0.02em;
   word-break: break-word;
 }
 .summary-play {
   flex: none;
-  width: 26px;
-  height: 26px;
-  padding: 0;
+  width: 28px; height: 28px; padding: 0;
   border-radius: 50%;
-  font-size: 11px;
-  line-height: 1;
+  font-size: 11px; line-height: 1;
+  color: var(--brand-b);
+  border-color: color-mix(in srgb, var(--brand-b) 40%, transparent);
 }
 
-/* Swipe-to-report: the recap row files the current sound as too screechy (swipe
-   RIGHT) or too quiet (swipe LEFT). pan-y keeps the sheet scrolling vertically;
-   the row follows the finger and tints once the drag would commit; releasing
-   short of the commit distance just snaps back. The ⇄ hints at the gesture. */
+/* Swipe-to-report: the recap row files the sound as too screechy (swipe RIGHT) or
+   too quiet (swipe LEFT). pan-y keeps the sheet scrolling vertically; the row
+   follows the finger and tints once the drag would commit. The ⇄ hints at it. */
 .shuffle-summary.swipe-report {
   position: relative; touch-action: pan-y; user-select: none; -webkit-user-select: none;
   border-radius: 8px; padding: 4px 20px 4px 4px;
@@ -639,23 +1120,9 @@ button:active { transform: scale(0.94); }
 .shuffle-summary.swipe-high { background: rgba(255, 107, 107, 0.16); box-shadow: inset 0 0 0 1.5px rgba(255, 107, 107, 0.55); }
 .shuffle-summary.swipe-low { background: rgba(77, 171, 247, 0.16); box-shadow: inset 0 0 0 1.5px rgba(77, 171, 247, 0.55); }
 
-/* Transient confirmation pill (report logged, etc). */
-.toast {
-  position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom));
-  transform: translateX(-50%); z-index: 300; pointer-events: none;
-  padding: 9px 16px; border-radius: 18px; font-size: 13px; font-weight: 600;
-  background: var(--panel2); border: 1px solid var(--line); color: var(--text);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  animation: toast-in-out 1.7s ease forwards;
-}
-@keyframes toast-in-out {
-  0% { opacity: 0; transform: translateX(-50%) translateY(8px); }
-  12%, 82% { opacity: 1; transform: translateX(-50%) translateY(0); }
-  100% { opacity: 0; transform: translateX(-50%) translateY(6px); }
-}
-@media (prefers-reduced-motion: reduce) { .toast { animation-duration: 0.01s; animation-delay: 1.6s; } }
-
+/* Parameter boxes. */
 .cat-params { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+@media (min-width: 560px) { .cat-params { grid-template-columns: repeat(3, 1fr); } }
 .vbox { display: flex; flex-direction: column; gap: 5px; }
 .vbox-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
 .vbox-name { font-size: 12px; color: var(--muted); }
@@ -665,224 +1132,88 @@ button:active { transform: scale(0.94); }
 .vbox-ctl input[type="range"] { flex: 1; min-width: 0; }
 .vbox-num {
   width: 58px; flex: none; font: inherit; font-size: 12px; text-align: right;
-  color: var(--text); background: var(--panel2);
-  border: 1px solid var(--line); border-radius: 6px; padding: 4px 5px;
+  color: var(--text); background: var(--field);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px;
+  -moz-appearance: textfield; appearance: textfield;
 }
-.vbox-select {
-  font: inherit; color: var(--text); background: var(--panel2);
-  border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px;
-}
+.vbox-num::-webkit-inner-spin-button,
+.vbox-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.vbox-num:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55%, var(--line)); }
+.vbox-select { font-size: 13px; padding: 7px 28px 7px 8px; }
 
-/* global shuffle bar + split LFO sections */
-.global-ctl .cat-name { font-size: 14px; }
-
-/* the star of the show: a big, lively Shuffle button */
-.shuffle-btn {
-  color: #0b0c0f; font-weight: 800; font-size: 14px; letter-spacing: 0.2px;
-  padding: 9px 18px; border: none; border-radius: 10px;
-  background: linear-gradient(135deg, #6c5cff, #00ffc8);
-  background-size: 180% 180%;
-  box-shadow: 0 3px 14px rgba(108, 92, 255, 0.45);
-  animation: shuffle-glow 2.6s ease-in-out infinite;
-}
-.shuffle-btn:active { transform: scale(0.95); }
-@keyframes shuffle-glow {
-  0%, 100% { background-position: 0% 50%; box-shadow: 0 3px 12px rgba(108, 92, 255, 0.4); }
-  50% { background-position: 100% 50%; box-shadow: 0 4px 20px rgba(0, 255, 200, 0.6); }
-}
-@media (prefers-reduced-motion: reduce) { .shuffle-btn { animation: none; } }
-
-/* redesigned Sounds landing: shuffle section, JSON box, "Get in the weeds" toggle */
-.shuffle-section { display: flex; flex-direction: column; gap: 12px; }
-/* the primary Shuffle button on top — prominent but compact */
-.shuffle-big {
-  width: 100%; color: #0b0c0f; font-weight: 800; font-size: 18px; letter-spacing: 0.3px;
-  padding: 13px 18px; border: none; border-radius: 12px; cursor: pointer;
-  background: linear-gradient(135deg, #6c5cff, #00ffc8);
-  background-size: 180% 180%;
-  box-shadow: 0 4px 18px rgba(108, 92, 255, 0.45);
-  animation: shuffle-glow 2.6s ease-in-out infinite;
-}
-.shuffle-big:active { transform: scale(0.97); }
-@media (prefers-reduced-motion: reduce) { .shuffle-big { animation: none; } }
-.preset-name-btn { font-weight: 700; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.weeds-btn { width: 100%; padding: 11px; font-size: 14px; font-weight: 600; }
+/* Sound JSON box. */
 .json-box .cat-head { margin-bottom: 8px; }
 .json-copy { padding: 4px 10px; font-size: 12px; }
 .json-pre {
   margin: 0; max-height: 220px; overflow: auto;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
-  padding: 10px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--field); border: 1px solid var(--line-soft); border-radius: 8px;
+  padding: 10px; font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   font-size: 11px; line-height: 1.45; color: var(--text);
   white-space: pre; user-select: text; -webkit-user-select: text;
 }
+
+/* LFO sub-sections. */
 .lfo-sections { display: flex; flex-direction: column; gap: 10px; }
-.lfo-block { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
-.lfo-head { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
-
-@media (min-width: 560px) {
-  .cat-params { grid-template-columns: repeat(3, 1fr); }
+.lfo-block { border: 1px solid var(--line-soft); border-radius: var(--r-sm); padding: 8px 10px; background: rgba(0, 0, 0, 0.12); }
+.lfo-head {
+  font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 8px;
+  text-transform: uppercase; letter-spacing: 0.07em;
 }
 
-/* --- mixer --- */
-.mixer-open-btn { --bc: #4dabf7; font-size: 18px; }
-
-/* Sequencer: circle viz (with the Mixer button at its top-right) + the 6 line rows. */
-.euclid-wrap { position: relative; display: block; text-align: center; }
-.euclid-wrap .mixer-open-btn { position: absolute; top: 0; right: 0; z-index: 2; }
-.euclid-canvas { display: inline-block; max-width: 380px; }
-.euclid-menu { display: flex; flex-direction: column; gap: 6px; }
-/* Row layout: title + node navigation on the first line; the expanded detail
-   (value circles + ×) wraps onto its own full-width line below (order: 10). */
-.euclid-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.euclid-row.open { padding-bottom: 4px; border-bottom: 1px solid var(--line); }
-/* Compact sound-name button so the number values can take centre stage. */
-.euclid-sound {
-  flex: 1 1 56px; min-width: 0; display: flex; align-items: center; gap: 5px;
-  justify-content: center; padding: 8px 9px; font-size: 11px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
-  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+/* --- toast + confetti -------------------------------------------------------------- */
+.toast {
+  position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom));
+  transform: translateX(-50%); z-index: 300; pointer-events: none;
+  padding: 10px 18px; border-radius: 19px; font-size: 13px; font-weight: 600;
+  background: var(--panel2-glass);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  color: var(--text);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  animation: toast-in-out 1.7s ease forwards;
 }
-.euclid-sound.has-sound { justify-content: flex-start; }
-/* Node position within the chain (shown once the chain has >1 node). */
-.node-pos { margin-left: auto; font-size: 10px; font-weight: 700; opacity: 0.75; }
-/* Node navigation slots flank the voice: •— previous on the left, —• next-or-new
-   on the right. A fixed-width slot keeps rows aligned when a side is empty. */
-.node-nav { flex: none; width: 40px; display: flex; align-items: center; justify-content: center; }
-.node-nav-btn {
-  width: 38px; height: 30px; padding: 0; flex: none;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 15px;
-  background: var(--panel); border: 1px solid var(--line);
-  color: var(--vc, var(--muted));
-}
-.node-nav-btn svg { display: block; }
-/* Expanded detail: the value circles + the × on their own row. */
-.euclid-detail {
-  order: 10; flex: 1 1 100%;
-  display: flex; align-items: flex-end; justify-content: center; gap: 6px;
-}
-/* The four values as a flattened ring: voice-coloured circles on a connecting
-   line (--vc = the voice colour, set per row; dim grey when the slot is empty). */
-.euclid-vals { flex: 0 0 auto; display: flex; gap: 6px; position: relative; }
-.euclid-vals::before {
-  content: ""; position: absolute; left: 23px; right: 23px; bottom: 22px;
-  height: 2px; border-radius: 1px; background: var(--vc, var(--line)); opacity: 0.5;
-}
-.euclid-num {
-  flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px; align-items: center;
-  font-size: 10px; color: var(--muted); position: relative; z-index: 1;
-}
-/* Big, tappable number circles (one tap selects the value — see app.ts mkNum).
-   Opaque background so the connecting line passes behind, not through. */
-.euclid-num input {
-  width: 46px; height: 46px; box-sizing: border-box; text-align: center;
-  font: inherit; font-size: 17px; font-weight: 600;
-  color: var(--vc, var(--text)); background: var(--bg);
-  border: 1.5px solid var(--vc, var(--line));
-  border-radius: 50%; padding: 0;
-  -moz-appearance: textfield; appearance: textfield;
-}
-.euclid-num input::-webkit-inner-spin-button,
-.euclid-num input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-.euclid-num input:disabled { opacity: 0.35; }
-/* Small × remove circle, centred on the value dots' line. */
-.euclid-remove {
-  flex: 0 0 auto; align-self: flex-end; margin-bottom: 10px;
-  width: 26px; height: 26px; padding: 0;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px; line-height: 1; color: #ff6b6b;
-  background: var(--panel);
-  border: 1.5px solid color-mix(in srgb, #ff6b6b 45%, var(--panel));
-  border-radius: 50%;
-}
-.euclid-remove:hover, .euclid-remove:active { color: #ff6b6b; border-color: #ff6b6b; }
-
-/* Number boxes scrub on click-hold + vertical drag; hint that with the cursor and
-   stop touch-drag from scrolling the page mid-scrub. */
-.euclid-num input { cursor: ns-resize; touch-action: none; }
-
-/* Per-voice inline shuffle menu, opened by tapping a voice row. */
-.euclid-row { position: relative; }
-.voice-shuffle {
-  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
-  display: flex; flex-direction: column; gap: 10px;
-  background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 12px; padding: 12px;
-  max-height: 62vh; overflow-y: auto;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-}
-.voice-preset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-/* Preset button in the voice menu shows the active preset name/colour full-width. */
-.voice-shuffle .preset-name-btn { max-width: none; width: 100%; text-align: center; }
-/* Full Parameters opens the deep editor; make it stand out as the last action. */
-.full-params-btn { width: 100%; font-weight: 600; border-color: var(--accent); }
-
-.mixer-head { display: flex; align-items: center; gap: 12px; }
-.mixer-back { background: transparent; border: none; color: var(--muted); padding: 6px 4px; font-size: 15px; }
-.mixer-back:active { color: var(--text); }
-.mixer-title { margin: 0; font-size: 18px; font-weight: 600; }
-
-.mixer-list { display: flex; flex-direction: column; gap: 10px; }
-.mix-strip {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
-  border-left: 4px solid var(--lane);
-}
-.mix-strip-head { display: flex; align-items: center; gap: 10px; }
-.mix-led {
-  width: 14px; height: 14px; flex: none; border-radius: 50%;
-  background: var(--lane); opacity: 0.28;
-  box-shadow: 0 0 0 0 var(--lane);
-}
-.mix-led.flash { animation: mix-flash 0.4s ease-out; }
-@keyframes mix-flash {
-  0% { opacity: 1; box-shadow: 0 0 10px 2px var(--lane); }
-  100% { opacity: 0.28; box-shadow: 0 0 0 0 var(--lane); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .mix-led.flash { animation: none; }
-}
-.mix-name {
-  flex: 1; min-width: 0; font-weight: 600; font-size: 14px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.mix-toggles { display: flex; gap: 6px; flex: none; }
-.mix-toggle {
-  width: 34px; padding: 6px 0; text-align: center; font-weight: 700; font-size: 13px;
-  background: var(--panel2); color: var(--muted);
-}
-.mix-toggle.mute.on { background: #ff453a; color: #fff; border-color: #ff453a; }
-.mix-toggle.solo.on { background: var(--accent); color: #15161a; border-color: var(--accent); }
-
-.mix-fader { display: flex; align-items: center; gap: 10px; }
-.mix-fader-lbl { width: 34px; flex: none; font-size: 12px; color: var(--muted); }
-.mix-fader input[type="range"] { flex: 1; min-width: 0; }
-.mix-fader-val {
-  width: 30px; flex: none; text-align: right; font-size: 12px;
-  color: var(--text); font-variant-numeric: tabular-nums;
+@keyframes toast-in-out {
+  0% { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  12%, 82% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(6px); }
 }
 
-/* ================= fun pass: motion & micro-delights =================
-   Everything here is decorative juice (compositor-friendly transforms/opacity
-   only) and is switched off wholesale under prefers-reduced-motion below. */
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 9999; overflow: hidden; }
+.confetti-piece {
+  position: absolute; left: 50%; top: 45%;
+  width: 9px; height: 9px; border-radius: 2px;
+  will-change: transform, opacity;
+  animation: confetti-fly 1.5s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+@keyframes confetti-fly {
+  0% { transform: translate(-50%, -50%) rotate(0); opacity: 1; }
+  100% {
+    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy) + 260px)) rotate(var(--rot));
+    opacity: 0;
+  }
+}
+
+/* ================= motion pass: micro-delights =================
+   Decorative juice only (compositor-friendly transforms/opacity), switched off
+   wholesale under prefers-reduced-motion at the bottom. */
 
 /* Play button beats at the tempo while playing (--beat set from the BPM). */
 .play-btn.playing {
-  color: #0b0c0f;
+  color: #0b0d12;
   background: var(--accent);
   border-color: var(--accent);
   animation: beat var(--beat, 0.5s) ease-out infinite;
 }
 @keyframes beat {
-  0% { transform: scale(1.08); box-shadow: 0 0 16px rgba(255, 214, 10, 0.55); }
+  0% { transform: scale(1.08); box-shadow: 0 0 18px rgba(255, 214, 10, 0.55); }
   40% { transform: scale(1); box-shadow: 0 0 0 rgba(255, 214, 10, 0); }
   100% { transform: scale(1); box-shadow: 0 0 0 rgba(255, 214, 10, 0); }
 }
 
 /* Dice: idle wiggle to invite a roll; a full tumble right after each shuffle. */
 .dice { display: inline-block; }
-.euclid-sound .dice, .shuffle-big .dice { animation: dice-idle 3.4s ease-in-out infinite; }
+.shuffle-big .dice { animation: dice-idle 3.4s ease-in-out infinite; }
 .dice.rolled { animation: dice-roll 0.55s cubic-bezier(0.2, 1.4, 0.4, 1); }
 @keyframes dice-idle {
   0%, 86%, 100% { transform: rotate(0); }
@@ -904,14 +1235,14 @@ button:active { transform: scale(0.94); }
   to { opacity: 1; transform: translateX(0); }
 }
 
-/* Voice rows flash their own colour when their sound fires (--vc set per row). */
-.euclid-sound.hit-flash { animation: hit-flash 0.3s ease-out; }
+/* Rows flash their own colour when their sound fires (--vc / mix-flash reuse). */
+.hit-flash { animation: hit-flash 0.3s ease-out; }
 @keyframes hit-flash {
-  0% { box-shadow: 0 0 14px 2px var(--vc, #fff); transform: scale(1.03); filter: brightness(1.25); }
-  100% { box-shadow: 0 0 0 0 transparent; transform: scale(1); filter: brightness(1); }
+  0% { box-shadow: 0 0 14px 2px var(--vc, #fff); filter: brightness(1.25); }
+  100% { box-shadow: 0 0 0 0 transparent; filter: brightness(1); }
 }
 
-/* Preset / breed / picker tiles pop in with a little stagger (--i set in JS). */
+/* Preset / breed tiles pop in with a little stagger (--i set in JS). */
 .preset-tile {
   animation: tile-in 0.24s cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
   animation-delay: calc(var(--i, 0) * 20ms);
@@ -922,345 +1253,29 @@ button:active { transform: scale(0.94); }
 }
 
 /* Popups land with a soft drop. */
-.voice-shuffle, .menu-panel, .preset-grid {
-  animation: pop-in 0.18s ease-out;
-}
+.menu-panel, .preset-grid { animation: pop-in 0.18s ease-out; }
 @keyframes pop-in {
   from { opacity: 0; transform: translateY(-6px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* The playing node breathes instead of sitting still (see .bar-node.playing). */
-@keyframes slot-breathe {
-  0%, 100% { outline-color: var(--accent); transform: scale(1); }
-  50% { outline-color: #fff; transform: scale(1.05); }
+/* Hover-raised cards still compress on press (the raise rule outranks the base
+   button:active otherwise). */
+@media (hover: hover) {
+  .track-color-row:hover:active,
+  .melody-sq:hover:active,
+  .preset-tile:hover:active { transform: scale(0.96); }
 }
 
-/* Mute/Solo glow when engaged. */
-.mix-toggle.mute.on { box-shadow: 0 0 10px rgba(255, 69, 58, 0.5); }
-.mix-toggle.solo.on { box-shadow: 0 0 10px rgba(255, 214, 10, 0.5); }
-
-/* One switch turns the whole fun pass off. */
+/* ================= accessibility: one switch turns the fun off ================= */
 @media (prefers-reduced-motion: reduce) {
-  .logo-letter, #start, .play-btn.playing,
-  .euclid-sound .dice, .shuffle-big .dice, .dice.rolled,
-  .shuffle-summary span:last-child, .euclid-sound.hit-flash,
-  .preset-tile, .voice-shuffle, .menu-panel, .preset-grid,
-  .bar-node.playing {
-    animation: none;
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+  /* The toast is REMOVED by JS after 1.7s — keep it visible until then. */
+  .toast { animation: none !important; opacity: 1; }
+  .confetti { display: none; }
 }
-
-/* confetti burst on save */
-.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 9999; overflow: hidden; }
-.confetti-piece {
-  position: absolute; left: 50%; top: 45%;
-  width: 9px; height: 9px; border-radius: 2px;
-  will-change: transform, opacity;
-  animation: confetti-fly 1.5s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
-}
-@keyframes confetti-fly {
-  0% { transform: translate(-50%, -50%) rotate(0); opacity: 1; }
-  100% {
-    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy) + 260px)) rotate(var(--rot));
-    opacity: 0;
-  }
-}
-@media (prefers-reduced-motion: reduce) { .confetti { display: none; } }
-
-/* ============================================================================
-   Procedural placement panels (track → colour → placement popup). See app.ts.
-   ========================================================================== */
-
-/* Track view: whole-track bar limit + the six colour rows. */
-.track-barlimit {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 12px 14px; margin-top: 4px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  font-size: 14px; font-weight: 600;
-}
-.track-barlimit input {
-  width: 82px; text-align: center; padding: 8px 6px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
-  color: var(--text); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
-  cursor: ns-resize; touch-action: none;
-}
-.track-colors { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
-.track-color-row {
-  --vc: var(--accent);
-  display: flex; align-items: center; gap: 12px; width: 100%;
-  padding: 14px 14px; text-align: left;
-  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--vc);
-  border-radius: 12px; color: var(--text);
-}
-.track-color-row:active { background: var(--panel2); }
-.track-color-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--vc); flex: none; box-shadow: 0 0 8px var(--vc); }
-.track-color-name { font-size: 15px; font-weight: 600; flex: 1; }
-.track-color-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-
-/* Colour view: the loop list. */
-.loop-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-.loop-row {
-  --vc: var(--accent);
-  display: flex; align-items: stretch; gap: 8px;
-  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--vc);
-  border-radius: 12px; overflow: hidden;
-}
-.loop-order { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding-left: 6px; }
-.loop-move {
-  width: 26px; height: 20px; padding: 0; line-height: 1;
-  background: transparent; border: none; color: var(--muted); font-size: 10px;
-}
-.loop-move:disabled { opacity: 0.25; }
-.loop-move:active:not(:disabled) { color: var(--text); }
-.loop-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 12px 8px; text-align: left; background: transparent; color: var(--text); }
-.loop-name { font-size: 14px; font-weight: 600; color: var(--vc); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.loop-summary { font-size: 12px; color: var(--muted); }
-.loop-remove { width: 40px; flex: none; background: transparent; border: none; border-left: 1px solid var(--line); color: var(--muted); font-size: 20px; }
-.loop-remove:active { color: #ff453a; background: var(--panel2); }
-.loop-body.hit-flash { animation: mix-flash 0.4s ease-out; }
-.loop-add {
-  width: 100%; margin-top: 12px; padding: 13px;
-  background: var(--panel); border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, var(--line));
-  border-radius: 12px; color: var(--accent); font-size: 14px; font-weight: 600;
-}
-.loop-add:active { background: var(--panel2); }
-
-/* Placement popup: the rule editor block. */
-.placement-sheet { --vc: var(--accent); }
-.placement-controls { display: flex; flex-direction: column; gap: 10px; }
-.placement-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.placement-lbl { font-size: 13px; color: var(--muted); flex: none; }
-.placement-row input {
-  width: 74px; text-align: center; padding: 8px 6px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
-  color: var(--text); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
-  cursor: ns-resize; touch-action: none;
-}
-.placement-seg { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.seg-btn {
-  padding: 7px 11px; font-size: 12px; font-weight: 600;
-  background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 9px;
-}
-.seg-btn.on { border-color: var(--vc); color: var(--vc); background: var(--panel2); box-shadow: inset 0 0 0 1px var(--vc); }
-.placement-roll { justify-content: flex-end; gap: 8px; }
-.roll-btn {
-  padding: 8px 14px; font-size: 13px; font-weight: 600;
-  background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
-}
-.roll-btn:disabled { opacity: 0.35; }
-.roll-btn:active:not(:disabled) { background: var(--panel); border-color: var(--vc); color: var(--vc); }
-
-/* Colour panel: read-only compiled-lane timeline. */
-.color-preview { --vc: var(--accent); display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
-.color-preview-lane { display: flex; gap: 2px; }
-.color-preview-cell { flex: 1; height: 12px; border-radius: 2px; background: var(--panel2); }
-.color-preview-cell.on { background: var(--vc); box-shadow: 0 0 5px var(--vc); }
-
-/* Track view is now a whole-track OVERVIEW: a bar ruler + per-colour lane timelines. */
-.track-overview { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
-.bar-ruler { display: flex; gap: 2px; padding: 0 14px 0 18px; }
-.bar-ruler-tick { flex: 1; min-width: 0; font-size: 9px; line-height: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
-.track-overview .track-color-row { flex-direction: column; align-items: stretch; gap: 8px; }
-.track-color-head { display: flex; align-items: center; gap: 10px; }
-.track-color-lanes { display: flex; flex-direction: column; gap: 3px; }
-
-/* Manual "At bars" text field in the placement popup. */
-.placement-atbars input {
-  flex: 1; min-width: 0; width: auto; text-align: left; padding: 8px 10px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
-  color: var(--text); font-size: 14px; font-variant-numeric: tabular-nums; cursor: text;
-}
-
-/* Loop numbers on the timeline cells, the overview playback line, the Fill hint. */
-.color-preview-cell {
-  display: flex; align-items: center; justify-content: center;
-  font-size: 9px; font-weight: 700; line-height: 1; color: var(--bg);
-  font-variant-numeric: tabular-nums; overflow: hidden;
-}
-.track-overview { position: relative; }
-.track-playhead {
-  position: absolute; top: 0; bottom: 0; width: 2px; z-index: 5;
-  left: calc(18px + var(--ph, 0) * (100% - 32px));
-  background: #fff; box-shadow: 0 0 6px #fff; pointer-events: none;
-  opacity: 0; transition: opacity 0.15s;
-}
-.track-playhead.live { opacity: 0.9; }
-.placement-hint { text-align: left; margin: 2px 0 0; }
-
-/* Dice-face weight picker (pool mode): six faces, the active one lit in the voice colour. */
-.dice-faces { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.dice-face {
-  width: 40px; height: 40px; padding: 0; font-size: 26px; line-height: 1;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-}
-.dice-face.on { color: var(--vc); border-color: var(--vc); background: var(--panel2); box-shadow: inset 0 0 0 1px var(--vc); }
-
-/* Melody (last coloured row): scale settings + weighted note cards. */
-.melody-row .track-color-count { font-style: italic; }
-.melody-scale { margin-bottom: 12px; }
-.melody-select {
-  flex: 0 1 auto; max-width: 60%; padding: 8px 10px; font-size: 14px;
-  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-}
-.melody-select:focus { outline: none; border-color: var(--vc); }
-.stepper { display: flex; align-items: center; gap: 10px; }
-.stepper-val { min-width: 52px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
-.melody-notes-head { margin-top: 4px; }
-.melody-notes { display: flex; flex-direction: column; gap: 10px; }
-.melody-note {
-  --vc: var(--accent);
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 12px; background: var(--panel); border: 1px solid var(--line);
-  border-left: 3px solid var(--vc); border-radius: 12px;
-}
-.melody-note-head { display: flex; align-items: center; gap: 8px; }
-.melody-note-head .placement-row { flex: 1 1 auto; }
-.melody-note .placement-row input { max-width: 150px; }
-.melody-soon { margin-top: 14px; text-align: left; opacity: 0.8; }
-.melody-gen-hint { font-size: 12px; color: var(--muted); font-style: italic; }
-.melody-tree-btn { margin-left: auto; }
-
-/* Sound-params nav button: opens the sound sub-page (a solid nav button, not the dashed
-   "add" style it borrows its base from). Used by the melody instrument and loop placement. */
-.melody-inst-btn, .placement-sound-btn {
-  border-style: solid; border-color: var(--vc); color: var(--vc);
-  font-weight: 600; text-align: center;
-}
-
-/* Compact scale/root/octave — three small fields on one row instead of tall rows. */
-.melody-scale-compact {
-  --vc: var(--accent);
-  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 4px;
-}
-.melody-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 0 0 auto; }
-.melody-field.grow { flex: 1 1 90px; }
-.melody-field-lbl { font-size: 11px; font-weight: 600; color: var(--muted); }
-.melody-select.compact { max-width: none; width: 100%; padding: 7px 8px; font-size: 13px; }
-.stepper.compact { gap: 6px; }
-.stepper.compact .stepper-val { min-width: 34px; }
-
-/* Mini piano roll of the generated melody (time →, pitch ↑, colour = pitch class). */
-.melody-seq {
-  --vc: var(--accent);
-  padding: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
-}
-.melody-seq-svg { display: block; width: 100%; }
-
-/* Generation bar: note count + Generate + Add-branch toggle. */
-.melody-genbar { --vc: var(--accent); margin-bottom: 8px; }
-.melody-genbtns { display: flex; gap: 8px; }
-.melody-genbtns .seg-btn { flex: 1 1 0; }
-.melody-gen-btn.seg-btn { color: var(--vc); border-color: var(--vc); }
-.melody-branch-toggle.on { color: var(--vc); border-color: var(--vc); background: var(--panel2); box-shadow: inset 0 0 0 1px var(--vc); }
-
-/* Compact square note grid — a note = a small tile (letter + weight); wraps on phones. */
-.melody-grid {
-  --vc: var(--accent);
-  display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
-}
-.melody-sq {
-  --nc: var(--vc);
-  position: relative; width: 52px; height: 52px; padding: 4px 0; flex: 0 0 auto;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  color: var(--text); background: var(--panel); border: 1px solid var(--nc); border-radius: 12px;
-  cursor: pointer; transition: transform 0.06s ease, box-shadow 0.1s ease;
-}
-/* Each note carries its own pitch colour: a tinted top stripe + coloured letter. */
-.melody-sq::before {
-  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5px;
-  background: var(--nc); border-radius: 11px 11px 0 0;
-}
-.melody-sq:active { transform: scale(0.94); }
-.melody-sq-letter { font-size: 17px; font-weight: 700; line-height: 1; color: var(--nc); }
-.melody-sq-weight { font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
-.melody-sq.has-branch { box-shadow: inset 0 0 0 1px var(--vc); }
-/* Add-branch mode: note tiles glow to invite a tap; already-branched ones dim. */
-.melody-sq.arm { border-color: var(--vc); box-shadow: 0 0 0 1px var(--vc); }
-.melody-sq.arm.has-branch { opacity: 0.55; box-shadow: none; }
-/* Branch tile (B1, B2…): filled in the melody colour to read as a "go deeper" chip. */
-.melody-sq.branch {
-  color: #0b0d10; background: var(--vc); border-color: var(--vc);
-}
-.melody-sq.branch::before { display: none; } /* no pitch stripe — it's a branch, not a note */
-.melody-sq.branch .melody-sq-letter { color: #0b0d10; }
-.melody-sq.branch .melody-sq-weight { color: rgba(0, 0, 0, 0.6); }
-
-/* Note settings popup: reuses the voice-sheet card; the note card fills it flush. */
-.melody-note-sheet { max-width: 420px; }
-.melody-note-sheet .melody-note { border: none; border-left: none; padding: 0; background: transparent; }
-
-/* Breadcrumb trail when editing a branch. */
-.melody-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 10px; }
-.melody-crumb {
-  padding: 4px 8px; font-size: 12px; font-weight: 600; border-radius: 8px;
-  color: var(--muted); background: var(--panel); border: 1px solid var(--line);
-}
-.melody-crumb.here { color: var(--vc); border-color: var(--vc); }
-.melody-crumb-sep { color: var(--muted); font-size: 12px; }
-
-/* Branch row inside a note card. */
-.melody-branch-row { border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 2px; }
-.melody-branch-btns { display: flex; align-items: center; gap: 6px; }
-.melody-branch-open.on { border-color: var(--vc); color: var(--vc); }
-.melody-branch-del { flex: none; }
-
-/* Zoomed-out tree overlay. */
-.melody-tree-overlay {
-  position: fixed; inset: 0; z-index: 220; padding: 16px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
-}
-.melody-tree-card {
-  --vc: var(--accent);
-  width: 100%; max-width: 90vw; max-height: 80vh; overflow: hidden;
-  display: flex; flex-direction: column; gap: 10px; padding: 16px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 16px;
-  animation: pop-in 0.16s ease-out;
-}
-/* SVG node-graph tree: scrolls in both axes if the diagram is large. */
-.melody-tree-scroll { overflow: auto; overscroll-behavior: contain; max-height: 64vh; }
-.melody-tree-svg { display: block; }
-.melody-tree-link { fill: none; stroke: var(--line); stroke-width: 2; }
-.melody-tree-gnode { cursor: pointer; }
-.melody-tree-gnode rect {
-  fill: var(--panel); stroke: var(--line); stroke-width: 1;
-  transition: stroke 0.1s ease;
-}
-.melody-tree-gnode:hover rect { stroke: var(--vc); }
-.melody-tree-gnode.here rect { fill: var(--bg); stroke: var(--vc); stroke-width: 2; }
-.melody-tree-t1 { fill: var(--text); font-size: 12px; font-weight: 700; }
-.melody-tree-gnode.here .melody-tree-t1 { fill: var(--vc); }
-.melody-tree-t2 { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-
-/* Loop transitions (fade in / fade out), below the placement rule. */
-.transition-controls { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
-.transition-head { font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.05em; font-size: 12px; }
-.fade-row { align-items: flex-start; }
-.fade-controls { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; flex: 1 1 auto; min-width: 0; }
-.fade-controls .placement-row { width: 100%; }
-.fade-modes { justify-content: flex-end; }
-.fade-toggle { min-width: 52px; }
-
-/* Loop popup tab nav (Sound / Loop / Transition), under the sheet header. */
-.placement-nav { justify-content: stretch; gap: 8px; margin: 4px 0 12px; }
-.placement-nav .seg-btn { flex: 1 1 0; text-align: center; padding: 9px 8px; font-size: 13px; }
-
-/* Transition curve visualization: the eased blend path with its start/end value labels. */
-.curve-viz-box {
-  width: 100%; margin-top: 2px; padding: 6px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
-}
-.curve-viz { display: block; width: 100%; height: auto; }
-.curve-viz-line { fill: none; stroke: var(--vc); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.curve-viz-lbl { fill: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
-
-/* Wrapped overview lines: pad cells, active-line highlight, and the line badge. */
-.color-preview-cell.pad { visibility: hidden; }
-.track-line-indicator {
-  align-self: flex-end; font-size: 11px; font-weight: 600; color: var(--muted);
-  font-variant-numeric: tabular-nums; padding: 0 14px 2px 0;
-}
-.track-overview.playing .color-preview-lane { opacity: 0.38; transition: opacity 0.12s; }
-.track-overview.playing .color-preview-lane.seg-live { opacity: 1; }

@@ -109,7 +109,7 @@ export class EuclidView {
       // Faint guide ring for every slot so all 6 circles read even when empty.
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, TWO_PI);
-      ctx.strokeStyle = "#2a2d36";
+      ctx.strokeStyle = "#242a3a";
       ctx.lineWidth = 1;
       ctx.stroke();
 
@@ -148,7 +148,7 @@ export class EuclidView {
         ctx.arc(px, py, isNow ? 6 + 5 * p : hit ? 4 : 2.5, 0, TWO_PI);
         if (isNow) ctx.fillStyle = "#ffffff";
         else if (hit) ctx.fillStyle = v.color;
-        else ctx.fillStyle = "#4a4e58";
+        else ctx.fillStyle = "#4a5064";
         ctx.fill();
         if (isNow) {
           ctx.strokeStyle = v.color;

@@ -1,63 +1,25 @@
-// The Sounds view: a full parameter editor for one drum. Port of DrumEditorPanel,
-// reworked: ONE global Shuffle/Back/Reset + a single Randomness amount for the whole
-// drum; a Presets button that opens a grid of factory presets (each carrying its own
-// shuffle range) plus the drum's saved sounds; per-param manual numeric entry that can
-// exceed the preset range (clamped only to the absolute base range); and the LFO block
-// split into three independent sections, each with a destination dropdown.
+// The deep sound editor for one loop's sound, opened via "Full Parameters": the
+// shuffle section (one global Shuffle + Randomness/Spread/Max-len/Snap/Seed), the
+// sound's JSON, then every parameter grouped by category. Values edit live; manual
+// numeric entry may exceed the preset range (clamped only to the absolute base range).
 
-import { DrumKit, FreqCurve, PitchSnap } from "../model/drumKit";
+import { DrumKit } from "../model/drumKit";
 import { DrumType } from "../model/drums";
 import {
   ParamId, ParamGroup, NUM_PARAMS, getParamGroup, getParamGroupName,
 } from "../model/params";
 import { getParamSpec, formatValue, isDiscrete } from "../model/paramSpec";
 import { FACTORY_PRESETS, Preset } from "../model/presets";
+import {
+  CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS,
+  defaultShuffleSettings, shuffleOptions, randomSeed,
+  mkBtn, textOn, selectRow, seedRow, randomnessRow, shuffleButton,
+} from "./controls";
 
 const ALL_GROUPS = [
   ParamGroup.Tone, ParamGroup.Amp, ParamGroup.Filter, ParamGroup.Lfo, ParamGroup.Fx,
   ParamGroup.Life, ParamGroup.Output,
 ];
-
-// Shuffle frequency spread: how Pitch & Filter Cutoff are randomly distributed.
-// "Linear" is uniform in Hz (high-heavy); the others spread the draw the way the
-// ear hears pitch (logarithmically). See FreqCurve.
-export const CURVE_OPTIONS: { label: string; curve: FreqCurve }[] = [
-  { label: "Linear", curve: FreqCurve.Linear },
-  { label: "Logarithmic", curve: FreqCurve.Log },
-  { label: "Bass", curve: FreqCurve.GaussLow },
-  { label: "Mid", curve: FreqCurve.GaussMid },
-  { label: "High", curve: FreqCurve.GaussHigh },
-];
-
-// Max audible length for a shuffled sound (0 = off). The shuffle trims FX tails,
-// then the amp body, so the estimated length fits — keeps drum hits punchy.
-export const MAXLEN_OPTIONS: { label: string; seconds: number }[] = [
-  { label: "Off", seconds: 0 },
-  { label: "0.1s", seconds: 0.1 },
-  { label: "0.2s", seconds: 0.2 },
-  { label: "0.3s", seconds: 0.3 },
-  { label: "0.5s", seconds: 0.5 },
-  { label: "0.75s", seconds: 0.75 },
-  { label: "1s", seconds: 1 },
-  { label: "1.5s", seconds: 1.5 },
-  { label: "2s", seconds: 2 },
-];
-
-// Pitch quantisation for shuffled sounds: free Hz, nearest semitone, or the nearest
-// note of the current grid's key (root + scale).
-export const SNAP_OPTIONS: { label: string; snap: PitchSnap }[] = [
-  { label: "Off", snap: PitchSnap.Off },
-  { label: "Semitone", snap: PitchSnap.Chromatic },
-  { label: "Key", snap: PitchSnap.Key },
-];
-
-/** A 6-char shareable seed for a shuffle (shown after every roll). */
-export function randomSeed(): string {
-  let s = "";
-  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L look-alikes
-  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return s;
-}
 
 export interface SoundViewCallbacks {
   onChange: (drum: DrumType) => void;      // a value changed -> resend live params
@@ -69,12 +31,7 @@ export interface SoundViewCallbacks {
 
 export class SoundView {
   readonly el = document.createElement("div");
-  private randomness = 1.0; // single global shuffle amount (1 = uniform over range)
-  private curveIdx = 1; // index into CURVE_OPTIONS (1 = Logarithmic, default)
-  private maxLenIdx = 0; // index into MAXLEN_OPTIONS (0 = Off, no length cap)
-  private snapIdx = 0;  // index into SNAP_OPTIONS (0 = Off, free Hz)
-  private seedText = ""; // user-entered seed ("" = roll a fresh one per shuffle)
-  private lastSeed = ""; // the seed the last shuffle actually used (shareable)
+  private st = defaultShuffleSettings();
   private rolled = false; // one-shot: spin the die on the rebuild right after a shuffle
 
   constructor(
@@ -103,14 +60,12 @@ export class SoundView {
     this.el.innerHTML = "";
     this.el.append(this.shuffleSection());
     this.el.append(this.jsonBox());
-    // The full per-parameter editor is always shown (no "weeds" toggle) — this view is
-    // opened deliberately via a voice's "Full Parameters" button.
     for (const g of ALL_GROUPS) this.el.append(this.category(g));
   }
 
   // Presets: a single button labelled with the active preset's name + colour (Full
-  // Range by default); tapping it opens the grid of factory presets (no Save/Saved —
-  // this editor works live). Sits in the Back/Reset row, small like those buttons.
+  // Range by default); tapping it opens the grid of factory presets. Sits in the
+  // Back/Reset row, small like those buttons.
   private presetButton(): HTMLButtonElement {
     const presetBtn = mkBtn(this.params().presetName(), "cat-btn preset-name-btn");
     const col = this.params().presetColor();
@@ -129,24 +84,17 @@ export class SoundView {
     const panel = document.createElement("div");
     panel.className = "preset-grid";
 
-    let tileIdx = 0;
-    const addTile = (label: string, color: string | null, onPick: () => void) => {
+    FACTORY_PRESETS.forEach((p, i) => {
       const b = document.createElement("button");
       b.className = "preset-tile";
-      b.textContent = label;
-      b.style.setProperty("--i", String(tileIdx++)); // staggered pop-in
-      if (color) {
-        b.style.background = color;
-        b.style.color = textOn(color);
-        b.style.borderColor = "transparent";
-      }
-      b.onclick = () => { panel.remove(); onPick(); };
+      b.textContent = p.name;
+      b.style.setProperty("--i", String(i)); // staggered pop-in
+      b.style.background = p.color;
+      b.style.color = textOn(p.color);
+      b.style.borderColor = "transparent";
+      b.onclick = () => { panel.remove(); this.applyPreset(p); };
       panel.append(b);
-    };
-
-    for (const p of FACTORY_PRESETS) {
-      addTile(p.name, p.color, () => this.applyPreset(p));
-    }
+    });
 
     anchor.parentElement?.append(panel);
     // Dismiss on the next outside tap.
@@ -164,7 +112,7 @@ export class SoundView {
     this.afterReplace();
   }
 
-  // After a whole-sound replacement (preset/saved/shuffle/reset/back): resend params
+  // After a whole-sound replacement (preset/shuffle/reset/back): resend params
   // + pitch range, audition, and rebuild (values + Back-enabled state).
   private afterReplace(): void {
     this.cb.onChange(this.drum);
@@ -173,35 +121,21 @@ export class SoundView {
     this.build();
   }
 
-  // The redesigned top of the Sounds view: a big primary Shuffle button, the recap
-  // string right beneath it, then the preset/Saved/Save row and the rest of the
-  // shuffle controls (Back/Reset, Randomness, Spread, Max len).
+  // The top of the view: a big primary Shuffle button, the recap string right
+  // beneath it, the Back/Reset/preset row, then the rest of the shuffle controls.
   private shuffleSection(): HTMLElement {
     const drum = this.drum;
     const sec = document.createElement("section");
     sec.className = "cat shuffle-section";
 
-    const shuffle = mkBtn(" Shuffle", "shuffle-big");
-    const dice = document.createElement("span");
-    dice.className = "dice" + (this.rolled ? " rolled" : "");
-    dice.textContent = "🎲";
-    shuffle.prepend(dice);
+    const shuffle = shuffleButton(this.rolled);
     this.rolled = false;
     shuffle.onclick = () => {
       const ctx = this.cb.context?.() ?? { root: 0, scale: 0, bpm: 120 };
       // A typed seed repeats exactly (at 100% randomness); empty rolls a fresh one.
-      const seed = this.seedText.trim() || randomSeed();
-      this.lastSeed = seed;
-      this.kit.shuffleAll(drum, {
-        randomness: this.randomness,
-        curve: CURVE_OPTIONS[this.curveIdx].curve,
-        maxLen: MAXLEN_OPTIONS[this.maxLenIdx].seconds,
-        bpm: ctx.bpm,
-        snap: SNAP_OPTIONS[this.snapIdx].snap,
-        root: ctx.root,
-        scale: ctx.scale,
-        seed,
-      });
+      const seed = this.st.seedText.trim() || randomSeed();
+      this.st.lastSeed = seed;
+      this.kit.shuffleAll(drum, shuffleOptions(this.st, ctx, seed));
       this.rolled = true;
       this.afterReplace();
     };
@@ -218,9 +152,7 @@ export class SoundView {
     sum.append(play, txt);
     sec.append(sum);
 
-    // Back / Reset / Preset — one small-button row. The preset button carries the
-    // active preset's name + colour (Full Range by default); tapping it opens the grid
-    // of character windows. Sitting it beside Back/Reset keeps all three the same size.
+    // Back / Reset / Preset — one small-button row.
     const br = document.createElement("div");
     br.className = "sound-lib";
     const back = mkBtn("Back", "cat-btn");
@@ -231,74 +163,16 @@ export class SoundView {
     br.append(back, reset, this.presetButton());
     sec.append(br);
 
-    // Randomness amount.
-    const rnd = document.createElement("div");
-    rnd.className = "rnd";
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.min = "0";
-    slider.max = "100";
-    slider.value = String(Math.round(this.randomness * 100));
-    const lbl = document.createElement("span");
-    lbl.className = "rnd-lbl";
-    lbl.textContent = `${slider.value}%`;
-    slider.oninput = () => {
-      this.randomness = Number(slider.value) / 100;
-      lbl.textContent = `${slider.value}%`;
-    };
-    rnd.append(slider, lbl);
-    sec.append(rnd);
-
-    // Spread (frequency distribution) + Max length cap + Pitch snap + Seed.
-    sec.append(this.selectRow("Spread", CURVE_OPTIONS.map((o) => o.label), this.curveIdx, (i) => { this.curveIdx = i; }));
-    sec.append(this.selectRow("Max len", MAXLEN_OPTIONS.map((o) => o.label), this.maxLenIdx, (i) => { this.maxLenIdx = i; }));
-    sec.append(this.selectRow("Snap", SNAP_OPTIONS.map((o) => o.label), this.snapIdx, (i) => { this.snapIdx = i; }));
-    sec.append(this.seedRow());
+    sec.append(randomnessRow(this.st));
+    sec.append(selectRow("Spread", CURVE_OPTIONS.map((o) => o.label), this.st.curveIdx, (i) => { this.st.curveIdx = i; }));
+    sec.append(selectRow("Max len", MAXLEN_OPTIONS.map((o) => o.label), this.st.maxLenIdx, (i) => { this.st.maxLenIdx = i; }));
+    sec.append(selectRow("Snap", SNAP_OPTIONS.map((o) => o.label), this.st.snapIdx, (i) => { this.st.snapIdx = i; }));
+    sec.append(seedRow(this.st));
 
     return sec;
   }
 
-  // Seed row: type a seed to repeat a shuffle exactly (best at 100% randomness);
-  // leave it empty and every roll shows the fresh seed it used, ready to share.
-  private seedRow(): HTMLElement {
-    const row = document.createElement("div");
-    row.className = "precision";
-    const lbl = document.createElement("span");
-    lbl.className = "precision-lbl";
-    lbl.textContent = "Seed";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "vbox-num seed-input";
-    input.placeholder = this.lastSeed ? `last: ${this.lastSeed}` : "random";
-    input.value = this.seedText;
-    input.onchange = () => { this.seedText = input.value; };
-    row.append(lbl, input);
-    return row;
-  }
-
-  // A labelled <select> row (used for Spread + Max len).
-  private selectRow(label: string, options: string[], value: number, onChange: (i: number) => void): HTMLElement {
-    const row = document.createElement("div");
-    row.className = "precision";
-    const lbl = document.createElement("span");
-    lbl.className = "precision-lbl";
-    lbl.textContent = label;
-    const sel = document.createElement("select");
-    sel.className = "vbox-select";
-    options.forEach((o, i) => {
-      const opt = document.createElement("option");
-      opt.value = String(i);
-      opt.textContent = o;
-      sel.append(opt);
-    });
-    sel.value = String(value);
-    sel.onchange = () => onChange(Number(sel.value));
-    row.append(lbl, sel);
-    return row;
-  }
-
-  // The shuffle-generated JSON for the current sound, shown above "Get in the weeds".
-  // Refreshes on every shuffle / Back / preset / Reset (build() re-renders it).
+  // The current sound as JSON, refreshed by every build() (shuffle/Back/preset/Reset).
   private jsonBox(): HTMLElement {
     const sec = document.createElement("section");
     sec.className = "cat json-box";
@@ -478,26 +352,9 @@ export class SoundView {
   }
 }
 
-function mkBtn(text: string, cls: string): HTMLButtonElement {
-  const b = document.createElement("button");
-  b.textContent = text;
-  b.className = cls;
-  return b;
-}
-
 // Round a value for the numeric box without trailing-zero noise.
 function trim(v: number): string {
   return String(Math.round(v * 1000) / 1000);
-}
-
-// Pick black or white text for readability on a given hex background.
-function textOn(hex: string): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return lum > 0.6 ? "#15161a" : "#ffffff";
 }
 
 // Skew-aware slider mapping over an explicit [lo,hi] window (mirrors the paramSpec

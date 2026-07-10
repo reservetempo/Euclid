@@ -32,10 +32,6 @@ export class EngineHost {
     return this.ctx?.sampleRate ?? 44100;
   }
 
-  get started(): boolean {
-    return this.node !== null;
-  }
-
   /** Must be called from a user gesture (iOS/Chrome autoplay policy). */
   async start(): Promise<void> {
     if (this.node) return;
@@ -113,12 +109,6 @@ export class EngineHost {
 
   setTempo(bpm: number): void {
     this.node?.port.postMessage({ type: "tempo", bpm });
-  }
-
-  /** Loop just a node's window (in 16th steps) of the whole loop, for auditioning an
-      edit in context. `len = 0` clears it (play the whole loop). Applied immediately. */
-  setSection(start: number, len: number): void {
-    this.node?.port.postMessage({ type: "section", start, len });
   }
 
   play(): void {

@@ -40,10 +40,12 @@ import {
   ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree, semitoneForDegree,
 } from "../model/melodyScale";
 import { EuclidView, RingState } from "./euclidView";
-import { SoundView, CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS, randomSeed } from "./soundView";
+import { SoundView } from "./soundView";
+import { defaultShuffleSettings, shuffleOptions, randomSeed } from "./controls";
 import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
 import { logoLetters } from "./logo";
 
+// Storage key kept from the app's working title so existing saves keep loading.
 const PROJECT_KEY = "msq010.project";
 
 // Every loop's inline shuffle editor drives a single-drum DrumKit; the reference drum
@@ -440,7 +442,9 @@ export class App {
     this.root.append(bar);
 
     this.viewRoot = document.createElement("main");
-    this.viewRoot.className = "viewroot";
+    // .view-enter plays the entrance stagger — only on a genuine navigation, so
+    // in-place re-renders (scrubs, toggles) don't replay it.
+    this.viewRoot.className = "viewroot" + (sameView ? "" : " view-enter");
     this.root.append(this.viewRoot);
 
     if (this.view === "track") this.renderTrackPanel();
@@ -719,7 +723,7 @@ export class App {
     this.melodyInstrumentPage = false;
     this.melodyOptionsPage = false;
     const item = this.currentMelodyItem();
-    if (item && item.inst.soundId < 0) this.mintLoopSound(item.inst, MELODY_COLOR_INDEX);
+    if (item && item.inst.soundId < 0) this.mintLoopSound(item.inst);
     this.render();
   }
 
@@ -1074,15 +1078,17 @@ export class App {
       controls in a floating card over the grid. */
   private openMelodyNotePopup(node: MelodyNode, note: MelodyNote): void {
     this.melodyNoteEdit = note;
-    this.buildMelodyNotePopup(node, note);
+    this.buildMelodyNotePopup(node, note, true);
   }
 
-  private buildMelodyNotePopup(node: MelodyNode, note: MelodyNote): void {
+  /** Pass `enter` on a fresh open to play the card's entrance (re-opens after an
+      in-place re-render stay still). */
+  private buildMelodyNotePopup(node: MelodyNode, note: MelodyNote, enter = false): void {
     document.querySelector(".melody-note-overlay")?.remove();
     const i = node.notes.indexOf(note);
     if (i < 0) { this.melodyNoteEdit = null; return; } // note gone (removed / drilled away)
     const overlay = document.createElement("div");
-    overlay.className = "voice-sheet-overlay melody-note-overlay";
+    overlay.className = "voice-sheet-overlay melody-note-overlay" + (enter ? " sheet-enter" : "");
     overlay.onclick = (e) => { if (e.target === overlay) this.closeMelodyNotePopup(); };
     const card = document.createElement("div");
     card.className = "voice-sheet placement-sheet melody-note-sheet";
@@ -1450,16 +1456,11 @@ export class App {
     card.className = "melody-note";
     card.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
 
-    const noteLbl = (deg: number) => {
-      const nm = noteNameForDegree(deg, node.root, node.scale);
-      const oct = Math.floor(deg / len);
-      return oct === 0 ? nm : `${nm}${oct > 0 ? "+" : ""}${oct}`;
-    };
-
     const hd = document.createElement("div");
     hd.className = "melody-note-head";
     hd.append(this.stepperRow("Note", note.degree, 0, len * 3 - 1,
-      (n) => { note.degree = n; this.melodyChanged(); }, noteLbl));
+      (n) => { note.degree = n; this.melodyChanged(); },
+      (deg) => this.noteLabelFor(node, { ...note, degree: deg })));
     const rm = document.createElement("button");
     rm.className = "loop-remove";
     rm.textContent = "×";
@@ -1608,7 +1609,7 @@ export class App {
     const loops = this.track.colors[c].loops;
     const row = document.createElement("div");
     row.className = "loop-row";
-    row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a4e58");
+    row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
 
     // Reorder controls (priority for solo loops; list order in general).
     const order = document.createElement("div");
@@ -1770,7 +1771,7 @@ export class App {
   private addLoop(c: number): void {
     const loop = emptyLoop(c, -1);
     this.track.colors[c].loops.push(loop);
-    this.mintLoopSound(loop, c);
+    this.mintLoopSound(loop);
     this.render();
     this.openPlacement(loop);
   }
@@ -1807,17 +1808,19 @@ export class App {
       appended to the root, so it survives a panel re-render). */
   private openPlacement(loop: Loop): void {
     document.querySelector(".placement-overlay")?.remove();
-    if (this.editLoop !== loop) this.placementTab = "loop"; // fresh open starts on the Loop tab
+    const fresh = this.editLoop !== loop;
+    if (fresh) this.placementTab = "loop"; // fresh open starts on the Loop tab
     this.editLoop = loop;
     const rerender = () => this.openPlacement(loop);
 
     const overlay = document.createElement("div");
-    overlay.className = "placement-overlay voice-sheet-overlay";
+    // .sheet-enter animates the card in — only on a fresh open, not in-place rebuilds.
+    overlay.className = "placement-overlay voice-sheet-overlay" + (fresh ? " sheet-enter" : "");
     overlay.onclick = (e) => { if (e.target === overlay) this.closePlacement(); };
 
     const sheet = document.createElement("div");
     sheet.className = "voice-sheet placement-sheet";
-    sheet.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a4e58");
+    sheet.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
 
     const head = document.createElement("div");
     head.className = "voice-sheet-head";
@@ -2394,7 +2397,7 @@ export class App {
     const splitLocked = loop.hits < 2 || maxSplitGap(loop.hits, loop.steps) <= 1;
     const vals = document.createElement("div");
     vals.className = "euclid-vals";
-    vals.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a4e58");
+    vals.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
     vals.append(
       mkNum("Hits", loop.hits, "hits"),
       mkNum("Steps", loop.steps, "steps"),
@@ -2431,7 +2434,7 @@ export class App {
     if (loop.preset) kit.adoptPresetByName(REF_DRUM, loop.preset);
     if (loop.ranges) p.restoreRanges(loop.ranges.lo, loop.ranges.hi);
     if (loop.snapshot.length) p.restore(loop.snapshot);
-    ed = { kit, randomness: 1.0, curveIdx: 1, maxLenIdx: 0, snapIdx: 0, seedText: "", lastSeed: "" };
+    ed = { kit, ...defaultShuffleSettings() };
     this.voiceEditors.set(loop, ed);
     return ed;
   }
@@ -2503,20 +2506,9 @@ export class App {
   }
 
   /** Mint an audible sound for a fresh loop by shuffling a new editor and writing it. */
-  private mintLoopSound(loop: Loop, c: number): void {
+  private mintLoopSound(loop: Loop): void {
     const ed = this.voiceEditorFor(loop);
-    const ctx = this.shuffleContext();
-    ed.kit.shuffleAll(REF_DRUM, {
-      randomness: ed.randomness,
-      curve: CURVE_OPTIONS[ed.curveIdx].curve,
-      maxLen: MAXLEN_OPTIONS[ed.maxLenIdx].seconds,
-      bpm: ctx.bpm,
-      snap: SNAP_OPTIONS[ed.snapIdx].snap,
-      root: ctx.root,
-      scale: ctx.scale,
-      seed: randomSeed(),
-    });
-    void c;
+    ed.kit.shuffleAll(REF_DRUM, shuffleOptions(ed, this.shuffleContext(), randomSeed()));
     this.writeLoopFromEditor(loop);
     void this.normalizeLoop(loop);
   }
@@ -2830,11 +2822,8 @@ export class App {
     const back = document.createElement("button");
     back.className = "mixer-back";
     back.textContent = this.soundReturn === "color" ? "‹ Loops" : "‹ Track";
-    back.onclick = () => {
-      this.view = this.soundReturn;
-      if (this.soundReturn === "color" && this.editLoop) { /* popup reopens via render */ }
-      this.render();
-    };
+    // Returning to "color" with an editLoop set reopens the placement popup via render().
+    back.onclick = () => { this.view = this.soundReturn; this.render(); };
     const title = document.createElement("h2");
     title.className = "mixer-title";
     title.textContent = loop.name || "Loop";

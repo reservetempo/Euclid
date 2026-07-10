@@ -23,6 +23,9 @@ import {
   STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
 import { MelodyNode, emptyMelody, melodyNoteNode, generateMelody, EmittedNote, MELODY_COLOR_INDEX } from "./melody";
+import { rng01, randomSeed } from "./rng";
+
+export { randomSeed }; // re-export: a rule's seed is minted here and in the UI
 
 /** How a loop repeats across the track. */
 export type EveryRule =
@@ -175,11 +178,6 @@ export function defaultRule(): PlacementRule {
   return { every: { kind: "nth", n: 4 }, forBars: 1, mode: "solo", seed: randomSeed(), seedHistory: [] };
 }
 
-/** A 32-bit seed for a weighted roll. */
-export function randomSeed(): number {
-  return (Math.random() * 0xffffffff) >>> 0;
-}
-
 // A compiled lane: a node chain (as the old voice lines) plus the colour it belongs to.
 export interface Lane {
   color: number;
@@ -191,17 +189,6 @@ interface Interval {
   startBar: number;
   forBars: number;
   loop: Loop;
-}
-
-// --- seeded RNG (xorshift32, ported from engine.js makeRng) → [0,1) ------------
-function rng01(seed: number): () => number {
-  let s = (seed >>> 0) || 0x9e3779b9;
-  return function () {
-    s ^= s << 13; s >>>= 0;
-    s ^= s >> 17;
-    s ^= s << 5; s >>>= 0;
-    return s / 4294967296;
-  };
 }
 
 /** Where a loop lands across [0, barLimit) bars, as a list of intervals. */

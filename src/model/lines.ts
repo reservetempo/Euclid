@@ -22,8 +22,8 @@
 // bars fading in and 2 bars steady, or all 4 bars fading — it's always ONE block.
 // See engine.js fireStep for the per-hit blend.
 //
-// This replaces the previous 6-grids + 20-slot-order arrangement (every voice used
-// to switch grids together); see project.ts for the migration of old saves.
+// Nodes are no longer hand-placed: track.ts compiles each colour's loops (placement
+// rules) into these chains, and project.ts serialises the track, not the chains.
 
 import { EUCLID_VOICES, voicePattern, VOICE_DEFAULT } from "./euclid";
 import { ParamId } from "./params";
@@ -56,8 +56,7 @@ export type TransitionMode =
   | "morph" | "crossfade" | "alternate" | "filter"
   | "fade" | "wash" | "thin" | "drive" | "crush" | "echo" | "speed";
 
-/** All modes a transition can take, by kind (sound↔sound vs silence↔sound). */
-export const PAIR_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter"];
+/** All modes a silence↔sound transition can take (the loop fade picker's options). */
 export const FADE_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo", "speed"];
 
 /** Deterministic accent/ghost placement for a loop — a per-loop LIFE layer that
@@ -125,11 +124,6 @@ export const TRANSITION_SWEEP: Partial<Record<TransitionMode, SweepSpec>> = {
   echo:   { paramId: ParamId.EchoMix,     label: "Echo",   min: 0,   max: 1,    step: 0.01, farDefault: () => 0.6, format: pct },
 };
 
-/** Which way an intro blends: in from silence, or morphing from a previous sound. */
-export function introKind(fromId: number): "in" | "pair" { return fromId < 0 ? "in" : "pair"; }
-/** Which way an outro blends: out to silence, or morphing into a next sound. */
-export function outroKind(toId: number): "out" | "pair" { return toId < 0 ? "out" : "pair"; }
-
 // One node of a line: an assigned sound plus its rhythm and repeat count. soundId =
 // EMPTY when no sound is assigned (a REST that still occupies its window, so the
 // line's timing holds). A transition node morphs `transition.fromId`→`toId`.
@@ -193,12 +187,6 @@ export function waitLen(n: VoiceNode): number {
     for the engine message, the loop math, and the section-loop window. */
 export function nodeLen(n: VoiceNode): number {
   return Math.max(1, n.reps | 0) * nodeUnit(n) + waitLen(n);
-}
-
-/** A node's length expressed in bars (for the loop view label) — may be fractional
-    (28 steps = 1.75 bars). */
-export function nodeBars(n: VoiceNode): number {
-  return nodeLen(n) / STEPS_PER_BAR;
 }
 
 /** Keep a node's intro/outro fades within its own reps: each ≥ 1 rep, and the two
