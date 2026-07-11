@@ -88,6 +88,18 @@ export class EngineHost {
     return true;
   }
 
+  /** Tap a MediaStream (the mic) into the live context for analysis: returns an
+      AnalyserNode fed by the stream plus a dispose that disconnects the tap. The
+      caller owns the stream (and stops its tracks). Null before start(). */
+  micTap(stream: MediaStream): { analyser: AnalyserNode; dispose: () => void } | null {
+    if (!this.ctx) return null;
+    const src = this.ctx.createMediaStreamSource(stream);
+    const analyser = this.ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    src.connect(analyser);
+    return { analyser, dispose: () => { try { src.disconnect(); } catch { /* already gone */ } } };
+  }
+
   /** Replace the sound table (every painted sound across all grids). The engine binds
       each id to a pool channel on demand and steals idle channels under pressure. */
   setSounds(sounds: EngineSound[]): void {

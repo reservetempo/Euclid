@@ -34,7 +34,9 @@ export type EveryRule =
                                         // dice loops share the bars: the track is filled
                                         // bar-by-bar, each slot drawn from the pool with
                                         // odds ∝ weight (no overlap). See dicePoolLane.
-  | { kind: "nth"; n: number }         // every n-th bar (n, 2n, 3n …)
+  | { kind: "nth"; n: number; start?: number } // every n-th bar (start, start+n, …);
+                                        // `start` is a 1-indexed bar to shift the whole
+                                        // series later (default/absent = bar 1)
   | { kind: "pow2" }                   // at bars 1, 2, 4, 8, 16 …
   | { kind: "at"; bars: number[] }     // at explicit, 1-indexed bar numbers
   | { kind: "fill" };                  // every bar — fills gaps left by higher-priority
@@ -201,7 +203,8 @@ export function placementsFor(loop: Loop, barLimit: number): Interval[] {
   const every = loop.rule.every;
   if (every.kind === "nth") {
     const n = Math.max(1, Math.round(every.n));
-    for (let b = 0; b < barLimit; b += n) push(b);
+    const start0 = Math.max(0, Math.round((every.start ?? 1) - 1)); // 1-indexed bar → 0-indexed
+    for (let b = start0; b < barLimit; b += n) push(b);
   } else if (every.kind === "pow2") {
     // Bars 1, 2, 4, 8, 16 … (1-indexed for the musician; stored 0-indexed).
     for (let p = 1; p - 1 < barLimit; p *= 2) push(p - 1);
@@ -390,6 +393,39 @@ export function compile(colors: ColorTrack[], barLimit: number): Lane[] {
 /** A blank track: `NUM_LINES` empty colours and a default bar limit. */
 export function emptyColors(): ColorTrack[] {
   return Array.from({ length: NUM_LINES }, () => ({ loops: [] as Loop[] }));
+}
+
+/** A deep, independent copy of a loop — its own arrays and rule (so editing the copy or
+    the original never touches the other). Keeps the SAME `soundId`; a caller that wants
+    the copy to carry its own engine sound must re-mint the id after cloning. */
+export function cloneLoop(loop: Loop): Loop {
+  const e = loop.rule.every;
+  const every: EveryRule = e.kind === "at" ? { kind: "at", bars: e.bars.slice() } : { ...e };
+  return {
+    soundId: loop.soundId,
+    snapshot: loop.snapshot.slice(),
+    color: loop.color,
+    name: loop.name,
+    pitch: [loop.pitch[0], loop.pitch[1]],
+    hits: loop.hits,
+    steps: loop.steps,
+    rotation: loop.rotation,
+    split: loop.split,
+    gain: loop.gain,
+    intro: loop.intro ? { ...loop.intro } : undefined,
+    outro: loop.outro ? { ...loop.outro } : undefined,
+    accent: loop.accent ? { ...loop.accent } : undefined,
+    ghost: loop.ghost ? { ...loop.ghost } : undefined,
+    preset: loop.preset,
+    ranges: loop.ranges ? { lo: loop.ranges.lo.slice(), hi: loop.ranges.hi.slice() } : undefined,
+    rule: {
+      every,
+      forBars: loop.rule.forBars,
+      mode: loop.rule.mode,
+      seed: loop.rule.seed,
+      seedHistory: loop.rule.seedHistory.slice(),
+    },
+  };
 }
 
 /** A fresh loop for colour `c` with a blank sound and a default rule. */

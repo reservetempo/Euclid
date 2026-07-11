@@ -39,7 +39,7 @@ const SCALE_NAMES = [
   "Lydian", "Mixolydian", "Harm Minor", "Blues", "Chromatic",
 ];
 
-const ROOT_MIDI = 60; // C4 anchor for root semitone 0
+export const ROOT_MIDI = 60; // C4 anchor for root semitone 0
 
 const clampInt = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 

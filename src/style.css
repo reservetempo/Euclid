@@ -539,6 +539,52 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   }
 }
 
+/* "Copy to another row" — a loop-add button tinted to the loop's own colour. */
+.copy-loop-btn {
+  margin-top: 4px;
+  background: color-mix(in srgb, var(--vc) 5%, transparent);
+  border-color: color-mix(in srgb, var(--vc) 45%, var(--line)); color: var(--vc);
+}
+.copy-loop-btn:active { background: color-mix(in srgb, var(--vc) 12%, transparent); }
+@media (hover: hover) {
+  .copy-loop-btn:hover {
+    background: color-mix(in srgb, var(--vc) 10%, transparent);
+    border-color: var(--vc); box-shadow: 0 0 18px color-mix(in srgb, var(--vc) 18%, transparent);
+  }
+}
+
+/* Copy-to-row picker: a compact modal over the loop popup. */
+.copy-menu-overlay {
+  position: fixed; inset: 0; z-index: 240; padding: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 7, 12, 0.6);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  animation: fade-in 0.16s ease-out;
+}
+.copy-menu-card {
+  width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 8px; padding: 16px;
+  background: var(--panel2-glass);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4); backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--pop-shadow);
+  animation: sheet-up 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.copy-menu-row {
+  display: flex; align-items: center; gap: 10px; padding: 12px 12px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 11px;
+  color: var(--text); font-size: 14px; font-weight: 600; text-align: left;
+}
+.copy-menu-dot {
+  flex: none; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--vc); box-shadow: 0 0 8px color-mix(in srgb, var(--vc) 70%, transparent);
+}
+.copy-menu-name { flex: 1; }
+.copy-menu-count { font-size: 12px; font-weight: 600; color: var(--muted); }
+.copy-menu-row:active { border-color: var(--vc); background: color-mix(in srgb, var(--vc) 12%, var(--panel2)); }
+@media (hover: hover) {
+  .copy-menu-row:hover { border-color: var(--vc); background: color-mix(in srgb, var(--vc) 10%, var(--panel2)); }
+}
+.copy-menu-card .tr-cancel { margin-top: 2px; padding: 11px; border-radius: 11px; }
+
 /* --- sheets (placement popup / melody note popup) ------------------------------- */
 /* A modal glass card over the whole app. The card margin:auto-centres when it fits
    and pins to the (safe-area-padded) top when taller than the screen. */
@@ -994,6 +1040,74 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 
 .melody-tree-foot { display: flex; align-items: center; gap: 10px; }
 .melody-tree-hint { flex: 1; margin: 0; font-size: 12px; color: var(--muted); }
+
+/* --- melody Sing tab (voice → notes) ------------------------------------------ */
+.melody-tabs { margin: 2px 0 12px; }
+.melody-sing { display: flex; flex-direction: column; gap: 12px; }
+
+/* Live tuner: the big note read-out + a cents needle. */
+.sing-tuner {
+  padding: 18px 16px 16px; text-align: center;
+  background: var(--panel-glass); border: 1px solid var(--line-soft);
+  border-radius: var(--r-md); box-shadow: var(--card-shadow);
+}
+.sing-note {
+  font-size: 46px; font-weight: 800; line-height: 1.1; letter-spacing: 0.02em;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+  transition: color 0.12s ease;
+}
+.sing-note.voiced {
+  color: var(--vc);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--vc) 55%, transparent);
+}
+.sing-cents {
+  position: relative; height: 6px; margin: 14px 12% 4px; border-radius: 3px;
+  background: var(--field); border: 1px solid var(--line-soft);
+}
+.sing-cents::after {
+  content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px;
+  background: var(--line);
+}
+.sing-cents-mark {
+  position: absolute; top: 50%; left: 50%; width: 12px; height: 12px;
+  transform: translate(-50%, -50%); border-radius: 50%;
+  background: var(--vc); box-shadow: 0 0 10px color-mix(in srgb, var(--vc) 70%, transparent);
+  transition: left 0.08s linear;
+}
+.sing-hz { margin-top: 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Record / Stop. */
+.sing-rec {
+  padding: 13px; font-size: 15px; font-weight: 700; border-radius: 14px;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+}
+.sing-rec.armed {
+  color: #ff8896; border-color: rgba(255, 90, 110, 0.65);
+  background: rgba(255, 80, 100, 0.12);
+  animation: sing-arm 1.3s ease-in-out infinite;
+}
+@keyframes sing-arm {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 80, 100, 0.35); }
+  50% { box-shadow: 0 0 16px 2px rgba(255, 80, 100, 0.22); }
+}
+@media (prefers-reduced-motion: reduce) { .sing-rec.armed { animation: none; } }
+.sing-err { margin: 0; font-size: 12.5px; color: #ff8896; }
+
+/* The take: sung notes in order, as pitch-coloured chips. */
+.sing-take-head { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); }
+.sing-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+.sing-chip {
+  display: inline-flex; align-items: baseline; gap: 5px; padding: 6px 10px;
+  border-radius: 11px; font-weight: 700; font-size: 13px; color: var(--text);
+  background: color-mix(in srgb, var(--nc) 16%, var(--panel2));
+  border: 1px solid color-mix(in srgb, var(--nc) 55%, transparent);
+}
+.sing-chip .sub { font-size: 10.5px; font-weight: 600; color: var(--muted); }
+.sing-apply { display: flex; gap: 8px; }
+.sing-apply .seg-btn { flex: 1 1 0; padding: 11px 8px; }
+.sing-apply .sing-apply-order { color: var(--vc); border-color: var(--vc); }
+.sing-apply .sing-clear { flex: 0 0 auto; }
+.sing-hint { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
 
 /* The melody instrument page's wrapper card. */
 .melody-inst {

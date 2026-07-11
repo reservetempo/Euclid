@@ -82,6 +82,24 @@ export function newBranch(parent: MelodyNode): MelodyNode {
   };
 }
 
+/** Lay an ordered run of notes into `node` as a sequential CHAIN: the first note becomes
+    the context's only note and each later note nests in a single-note branch under the
+    one before, so the walk plays the run exactly in order (then repeats to fill the
+    track). Used by the Sing tab's "keep my order" apply. Capped under the walk's depth
+    limit; any branches on the incoming notes are dropped. */
+export function chainNotes(node: MelodyNode, notes: MelodyNote[]): void {
+  const run = notes.slice(0, 24).map((n): MelodyNote => ({
+    degree: n.degree, weight: n.weight, lengthSteps: n.lengthSteps, restSteps: n.restSteps,
+  }));
+  node.notes = run.length ? [run[0]] : [];
+  for (let i = 1; i < run.length; i++) {
+    run[i - 1].branch = {
+      scale: node.scale, root: node.root, octave: node.octave,
+      notes: [run[i]], seed: melodySeed(), seedHistory: [],
+    };
+  }
+}
+
 /** Total notes in a melody tree (root + every branch), for summaries. */
 export function countNotes(node: MelodyNode): number {
   let n = node.notes.length;

@@ -28,17 +28,18 @@ import {
   TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape,
 } from "../model/lines";
 import {
-  Track, Loop, EveryRule, emptyLoop, loopToNode, randomSeed as newSeed,
+  Track, Loop, EveryRule, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
   MelodyItem, newMelodyItem,
 } from "../model/track";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
   MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes, randomizeNotes,
-  generateMelody,
+  generateMelody, chainNotes,
 } from "../model/melody";
 import {
   ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree, semitoneForDegree,
 } from "../model/melodyScale";
+import { detectPitchHz, SingTracker, SungNote, sungToMelodyNotes, midiName } from "../model/sing";
 import { EuclidView, RingState } from "./euclidView";
 import { SoundView } from "./soundView";
 import { defaultShuffleSettings, shuffleOptions, randomSeed } from "./controls";
@@ -57,6 +58,19 @@ const REF_DRUM = DrumType.Kick;
 const BARS_PER_ROW = 32;
 
 type View = "track" | "color" | "sound" | "mixer" | "melody";
+
+/** A live Sing recording: the mic stream + analyser tap, the pitch tracker, and the DOM
+    bits the rAF loop writes into (rebound whenever the Sing tab re-renders). */
+interface SingSession {
+  stream: MediaStream;
+  dispose: () => void; // disconnects the analyser tap
+  analyser: AnalyserNode;
+  buf: Float32Array<ArrayBuffer>;
+  tracker: SingTracker;
+  raf: number;
+  els: { note: HTMLElement; cents: HTMLElement; hz: HTMLElement; strip: HTMLElement } | null;
+  lastN: number; // completed sung notes already rendered into the strip
+}
 
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
 type RhythmField = "hits" | "steps" | "rotation" | "split";
@@ -90,6 +104,10 @@ export class App {
   private melodyNoteEdit: MelodyNote | null = null; // note whose settings popup is open
   private melodyInstrumentPage = false;  // melody sub-page: the current item's sound params
   private melodyOptionsPage = false;     // melody sub-page: the current item's loop options
+  private melodyTab: "notes" | "sing" = "notes"; // melody item sub-tab (notes editor / sing-to-notes)
+  private singSession: SingSession | null = null; // live mic recording (null = idle)
+  private singTake: SungNote[] | null = null;     // last finished take, awaiting Apply
+  private singError: string | null = null;        // mic/take status line for the Sing tab
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private placementTab: "loop" | "transition" | "sound" = "loop"; // which sub-page of the loop popup
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
@@ -423,8 +441,13 @@ export class App {
     // top on every edit. Only restore when the view is unchanged — a genuine navigation
     // should start at the top.
     const savedScroll = this.viewRoot?.scrollTop ?? 0;
-    // The melody instrument sub-page is a distinct scroll context from the notes page.
-    const viewKey = this.view + (this.view === "melody" && this.melodyInstrumentPage ? ":inst" : "");
+    // The melody instrument sub-page and Sing tab are distinct scroll contexts from the
+    // notes page.
+    let viewKey = this.view;
+    if (this.view === "melody") {
+      if (this.melodyInstrumentPage) viewKey += ":inst";
+      else if (this.melodyTab === "sing") viewKey += ":sing";
+    }
     const sameView = this.lastViewKey === viewKey;
     this.lastViewKey = viewKey;
     this.root.innerHTML = "";
@@ -462,6 +485,12 @@ export class App {
     // Likewise the melody note-settings popup (re-opens over the rebuilt grid).
     if (this.view === "melody" && this.melodyNoteEdit && this.currentMelodyItem()) {
       this.buildMelodyNotePopup(this.currentMelodyNode(), this.melodyNoteEdit);
+    }
+
+    // A live Sing recording only survives while its tab is on screen (the rAF loop's DOM
+    // targets are rebound each render); navigating anywhere else stops the mic.
+    if (this.singSession && !(this.singSession.els && document.contains(this.singSession.els.note))) {
+      this.stopSing();
     }
 
     if (sameView) this.viewRoot.scrollTop = savedScroll;
@@ -705,8 +734,17 @@ export class App {
     this.melodyPath = [];
     this.melodyInstrumentPage = false;
     this.melodyOptionsPage = false;
+    this.resetSingTab();
     this.view = "melody";
     this.render();
+  }
+
+  /** Back to the Sing tab's idle state (mic off, take discarded). */
+  private resetSingTab(): void {
+    this.stopSing();
+    this.melodyTab = "notes";
+    this.singTake = null;
+    this.singError = null;
   }
 
   /** The melody item currently being edited, or null when on the list/menu. */
@@ -722,6 +760,7 @@ export class App {
     this.melodyPath = [];
     this.melodyInstrumentPage = false;
     this.melodyOptionsPage = false;
+    this.resetSingTab();
     const item = this.currentMelodyItem();
     if (item && item.inst.soundId < 0) this.mintLoopSound(item.inst);
     this.render();
@@ -898,6 +937,25 @@ export class App {
 
     if (!atRoot) v.append(this.melodyBreadcrumb(item));
 
+    // Notes / Sing tab nav. Sing records into the context being edited (root or branch).
+    const nav = document.createElement("div");
+    nav.className = "placement-seg placement-nav melody-tabs";
+    nav.style.setProperty("--vc", VOICE_COLORS[c]);
+    const mkTab = (tab: "notes" | "sing", text: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (this.melodyTab === tab ? " on" : "");
+      b.textContent = text;
+      b.onclick = () => { if (this.melodyTab !== tab) { this.melodyTab = tab; this.render(); } };
+      return b;
+    };
+    nav.append(mkTab("notes", "Notes"), mkTab("sing", "🎤 Sing"));
+    v.append(nav);
+
+    if (this.melodyTab === "sing") {
+      v.append(this.melodySingSection(node));
+      return;
+    }
+
     if (atRoot) {
       const seqView = this.melodySequenceView(node, Math.max(1, Math.round(item.inst.rule.forBars)));
       if (seqView) v.append(seqView);
@@ -1069,6 +1127,215 @@ export class App {
       }
     });
     return grid;
+  }
+
+  // --- Sing tab (voice → notes) -----------------------------------------
+
+  /** The Sing tab: record yourself singing and the app pitch-tracks the mic live — the
+      tuner shows the note it hears, the strip collects the sung notes in order, and
+      Apply turns the take into this context's notes: as a sequential chain that keeps
+      the sung order, or as a plain weighted pool for the dice walk. */
+  private melodySingSection(node: MelodyNode): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "melody-sing";
+    wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const rec = this.singSession;
+
+    // Live tuner: the pitch being heard right now.
+    const tuner = document.createElement("div");
+    tuner.className = "sing-tuner";
+    const noteEl = document.createElement("div");
+    noteEl.className = "sing-note";
+    noteEl.textContent = "—";
+    const centsTrack = document.createElement("div");
+    centsTrack.className = "sing-cents";
+    const centsMark = document.createElement("div");
+    centsMark.className = "sing-cents-mark";
+    centsTrack.append(centsMark);
+    const hzEl = document.createElement("div");
+    hzEl.className = "sing-hz";
+    hzEl.textContent = rec ? "listening…" : "mic off";
+    tuner.append(noteEl, centsTrack, hzEl);
+    wrap.append(tuner);
+
+    const btn = document.createElement("button");
+    btn.className = "sing-rec" + (rec ? " armed" : "");
+    btn.textContent = rec ? "■ Stop" : "● Record";
+    btn.onclick = () => {
+      if (this.singSession) { this.stopSing(); this.render(); }
+      else void this.startSing();
+    };
+    wrap.append(btn);
+
+    if (this.singError) {
+      const err = document.createElement("p");
+      err.className = "sing-err";
+      err.textContent = this.singError;
+      wrap.append(err);
+    }
+
+    // The sung notes so far (live: as heard; after Stop: snapped onto this scale).
+    const strip = document.createElement("div");
+    strip.className = "sing-strip";
+
+    if (rec) {
+      rec.els = { note: noteEl, cents: centsMark, hz: hzEl, strip };
+      rec.lastN = 0;
+      for (const s of rec.tracker.done) {
+        strip.append(this.singChip(midiName(s.midi), "", this.pcColor(Math.round(s.midi))));
+      }
+      rec.lastN = rec.tracker.done.length;
+      wrap.append(strip);
+      const hint = document.createElement("p");
+      hint.className = "sing-hint";
+      hint.textContent = "Sing or hum — hold each note; take a short breath to separate repeated notes.";
+      wrap.append(hint);
+      return wrap;
+    }
+
+    if (this.singTake && this.singTake.length > 0) {
+      const mapped = sungToMelodyNotes(this.singTake, this.tempo, node.scale, node.root, node.octave);
+      const headline = document.createElement("p");
+      headline.className = "sing-take-head";
+      headline.textContent = `Your take — ${mapped.length} note${mapped.length === 1 ? "" : "s"}, snapped to ${ALL_ROOTS[node.root]} ${ALL_SCALES[node.scale]}:`;
+      wrap.append(headline);
+      mapped.forEach((mn) => strip.append(this.singChip(this.noteLabelFor(node, mn), `×${mn.lengthSteps}`, this.noteColor(node, mn))));
+      wrap.append(strip);
+
+      const apply = document.createElement("div");
+      apply.className = "placement-row sing-apply";
+      const inOrder = document.createElement("button");
+      inOrder.className = "seg-btn sing-apply-order";
+      inOrder.textContent = "✓ Use in my order";
+      inOrder.title = "Replace this context's notes with a chain that plays exactly what you sang";
+      inOrder.onclick = () => { chainNotes(node, mapped); this.afterSingApply(); };
+      const asPool = document.createElement("button");
+      asPool.className = "seg-btn";
+      asPool.textContent = "⚄ Use as dice pool";
+      asPool.title = "Replace this context's notes with the sung notes; the seeded walk picks their order";
+      asPool.onclick = () => { node.notes = mapped; this.afterSingApply(); };
+      const clear = document.createElement("button");
+      clear.className = "seg-btn sing-clear";
+      clear.textContent = "✕";
+      clear.title = "Discard this take";
+      clear.onclick = () => { this.singTake = null; this.render(); };
+      apply.append(inOrder, asPool, clear);
+      wrap.append(apply);
+
+      const hint = document.createElement("p");
+      hint.className = "sing-hint";
+      hint.textContent = "In my order chains the notes so playback follows the take exactly; dice pool lets the seeded walk shuffle them. Lengths and pauses are quantized to 16ths at the current tempo.";
+      wrap.append(hint);
+      return wrap;
+    }
+
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = "Hit Record and sing a phrase — each held note becomes a note here, in the order you sang it, snapped to this scale and quantized to the tempo.";
+    wrap.append(hint);
+    return wrap;
+  }
+
+  /** One chip in the Sing strip: a sung/mapped note label (+ optional length sub). */
+  private singChip(label: string, sub: string, color: string): HTMLElement {
+    const chip = document.createElement("span");
+    chip.className = "sing-chip";
+    chip.style.setProperty("--nc", color);
+    const l = document.createElement("span");
+    l.textContent = label;
+    chip.append(l);
+    if (sub) {
+      const s = document.createElement("span");
+      s.className = "sub";
+      s.textContent = sub;
+      chip.append(s);
+    }
+    return chip;
+  }
+
+  /** Shared post-Apply: drop the take and show the result on the Notes tab. */
+  private afterSingApply(): void {
+    this.singTake = null;
+    this.melodyTab = "notes";
+    this.melodyChanged();
+  }
+
+  /** Per-frame DOM updates while recording (no full render): the tuner's note, cents
+      marker and Hz read-out, plus newly completed sung notes appended to the strip. */
+  private updateSingLive(s: SingSession): void {
+    const els = s.els;
+    if (!els || !document.contains(els.note)) return;
+    const m = s.tracker.liveMidi;
+    if (m === null) {
+      els.note.textContent = "—";
+      els.note.classList.remove("voiced");
+      els.hz.textContent = "listening…";
+    } else {
+      els.note.textContent = midiName(m);
+      els.note.classList.add("voiced");
+      const cents = Math.round((m - Math.round(m)) * 100);
+      els.cents.style.left = `${50 + cents}%`;
+      els.hz.textContent = `${Math.round(440 * Math.pow(2, (m - 69) / 12))} Hz · ${cents >= 0 ? "+" : ""}${cents}¢`;
+    }
+    const done = s.tracker.done;
+    for (let i = s.lastN; i < done.length; i++) {
+      els.strip.append(this.singChip(midiName(done[i].midi), "", this.pcColor(Math.round(done[i].midi))));
+    }
+    s.lastN = done.length;
+  }
+
+  /** Start a live Sing recording: mic → analyser → per-frame pitch detection into a
+      SingTracker, with the tuner and strip updated directly (no re-render per frame). */
+  private async startSing(): Promise<void> {
+    if (this.singSession) return;
+    this.singTake = null;
+    this.singError = null;
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        // Raw voice tracks best: browser echo-cancel/noise-suppress smear the pitch.
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+    } catch {
+      this.singError = "Microphone unavailable — check the browser's mic permission.";
+      this.render();
+      return;
+    }
+    const tap = this.engine.micTap(stream);
+    if (!tap) {
+      for (const t of stream.getTracks()) t.stop();
+      this.singError = "Audio engine isn't running yet — tap ▶ Start first.";
+      this.render();
+      return;
+    }
+    const session: SingSession = {
+      stream, dispose: tap.dispose, analyser: tap.analyser,
+      buf: new Float32Array(tap.analyser.fftSize),
+      tracker: new SingTracker(), raf: 0, els: null, lastN: 0,
+    };
+    this.singSession = session;
+    const loop = () => {
+      if (this.singSession !== session) return; // stopped
+      session.analyser.getFloatTimeDomainData(session.buf);
+      session.tracker.push(detectPitchHz(session.buf, this.engine.sampleRate), performance.now());
+      this.updateSingLive(session);
+      session.raf = requestAnimationFrame(loop);
+    };
+    session.raf = requestAnimationFrame(loop);
+    this.render(); // arm the tuner and swap Record → Stop
+  }
+
+  /** Stop the live Sing recording (mic off), keeping the take for the Apply buttons. */
+  private stopSing(): void {
+    const s = this.singSession;
+    if (!s) return;
+    this.singSession = null;
+    cancelAnimationFrame(s.raf);
+    s.dispose();
+    for (const t of s.stream.getTracks()) t.stop();
+    const take = s.tracker.finish();
+    this.singTake = take.length ? take : null;
+    if (take.length === 0) this.singError = "No notes heard — try singing closer to the mic.";
   }
 
   /** Open (or re-open, after a re-render) a note's settings popup — the full per-note
@@ -1842,7 +2109,10 @@ export class App {
   private ruleSummary(loop: Loop): string {
     const r = loop.rule;
     let every: string;
-    if (r.every.kind === "nth") every = r.every.n === 1 ? "every bar" : `every ${r.every.n} bars`;
+    if (r.every.kind === "nth") {
+      const base = r.every.n === 1 ? "every bar" : `every ${r.every.n} bars`;
+      every = r.every.start && r.every.start > 1 ? `${base} from bar ${r.every.start}` : base;
+    }
     else if (r.every.kind === "pow2") every = "at 1,2,4,8…";
     else if (r.every.kind === "at") every = r.every.bars.length ? `at bars ${r.every.bars.join(",")}` : "no bars set";
     else if (r.every.kind === "fill") every = "fill the blanks";
@@ -1942,10 +2212,73 @@ export class App {
       detail.className = "euclid-detail";
       detail.append(this.rhythmCircles(loop, rerender));
       sheet.append(detail);
+
+      // Copy this whole loop (sound + rhythm + rule) onto another coloured row.
+      const copy = document.createElement("button");
+      copy.className = "loop-add copy-loop-btn";
+      copy.textContent = "⧉ Copy to another row";
+      copy.onclick = () => this.openCopyLoopMenu(loop);
+      sheet.append(copy);
     }
 
     overlay.append(sheet);
     this.root.append(overlay);
+  }
+
+  /** A small picker over the loop popup: tap a coloured row to drop an independent copy of
+      this loop there (its own sound id, so the two never share an engine sound). */
+  private openCopyLoopMenu(loop: Loop): void {
+    document.querySelector(".copy-menu-overlay")?.remove();
+    const from = this.colorOf(loop);
+    const overlay = document.createElement("div");
+    overlay.className = "copy-menu-overlay";
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    const card = document.createElement("div");
+    card.className = "copy-menu-card";
+    const title = document.createElement("h3");
+    title.className = "tr-title";
+    title.textContent = "Copy loop to…";
+    card.append(title);
+
+    // Only loop-holding rows (the last colour is the melody, which has no loops).
+    for (let c = 0; c < MELODY_COLOR_INDEX; c++) {
+      const n = this.track.colors[c].loops.length;
+      const row = document.createElement("button");
+      row.className = "copy-menu-row";
+      row.style.setProperty("--vc", VOICE_COLORS[c]);
+      const dot = document.createElement("span");
+      dot.className = "copy-menu-dot";
+      const name = document.createElement("span");
+      name.className = "copy-menu-name";
+      name.textContent = `Voice ${c + 1}${c === from ? " (this row)" : ""}`;
+      const count = document.createElement("span");
+      count.className = "copy-menu-count";
+      count.textContent = n === 0 ? "empty" : `${n} loop${n === 1 ? "" : "s"}`;
+      row.append(dot, name, count);
+      row.onclick = () => { overlay.remove(); this.copyLoopTo(loop, c); };
+      card.append(row);
+    }
+
+    const close = document.createElement("button");
+    close.className = "tr-cancel";
+    close.textContent = "Cancel";
+    close.onclick = () => overlay.remove();
+    card.append(close);
+    overlay.append(card);
+    this.root.append(overlay);
+  }
+
+  /** Append an independent copy of `loop` to colour `target` (own sound id + editor), then
+      resend sounds/lanes. Leaves the current popup as-is (least disruptive) and toasts. */
+  private copyLoopTo(loop: Loop, target: number): void {
+    const clone = cloneLoop(loop);
+    clone.color = VOICE_COLORS[target % VOICE_COLORS.length];
+    if (clone.soundId >= 0) clone.soundId = this.nextSoundId++; // its own engine sound entry
+    this.track.colors[target].loops.push(clone);
+    this.pushSounds();  // register the clone's sound before it's asked to play
+    this.recompile();
+    this.render();      // the loop list / previews may be visible under the popup
+    this.toast(`Copied to Voice ${target + 1}`);
   }
 
   /** The Sound tab: the loop's shuffle menu (its sound params), appended under the shared
@@ -2009,9 +2342,20 @@ export class App {
     // Per-kind parameter.
     if (r.every.kind === "nth") {
       wrap.append(this.numRow("Every N bars", () => (r.every as { n: number }).n, (n) => {
-        r.every = { kind: "nth", n: Math.max(1, Math.round(n)) };
+        const e = r.every as { n: number; start?: number };
+        r.every = { kind: "nth", n: Math.max(1, Math.round(n)), start: e.start };
         this.recompile();
       }, rerender, () => `${(r.every as { n: number }).n}`));
+      // Start at bar: shift the whole series later. 1 (or off the track) = no shift.
+      wrap.append(this.numRow("Start at bar", () => (r.every as { start?: number }).start ?? 1, (n) => {
+        const e = r.every as { n: number };
+        const s = Math.max(1, Math.min(this.track.barLimit, Math.round(n)));
+        r.every = { kind: "nth", n: e.n, start: s > 1 ? s : undefined };
+        this.recompile();
+      }, rerender, () => {
+        const s = (r.every as { start?: number }).start ?? 1;
+        return s <= 1 ? "bar 1" : `bar ${s}`;
+      }));
     } else if (r.every.kind === "at") {
       // Manual bar list: a read-only field that opens the custom list numpad (the native
       // numeric keyboard has no comma, so multi-bar entry needs our own pad).
