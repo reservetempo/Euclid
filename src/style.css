@@ -783,6 +783,10 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--vc) 55%, transparent));
 }
 .graph-note { stroke: rgba(10, 12, 20, 0.5); stroke-width: 0.6; }
+.graph-playhead {
+  stroke: #fff; stroke-width: 1.4;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--vc) 80%, transparent));
+}
 .graph-apply { gap: 10px; }
 .graph-apply .placement-lbl { flex: 1 1 auto; text-align: left; }
 .graph-apply .seg-btn { flex: none; padding: 11px 16px; }

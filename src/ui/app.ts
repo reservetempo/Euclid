@@ -29,7 +29,7 @@ import {
 } from "../model/lines";
 import {
   Track, Loop, EveryRule, RowSweep, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
-  ruleLengths, defaultRowSweep, MelodyItem, newMelodyItem,
+  ruleLengths, defaultRowSweep, MelodyItem, newMelodyItem, placementsFor,
 } from "../model/track";
 import { generateName, reshuffleNames } from "../model/name";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
@@ -109,10 +109,9 @@ export class App {
   private melodyBranchMode = false;      // Add-branch mode: tapping a note square branches it
   private melodyGenCount = 4;            // desired note count for the Generate button
   private melodyNoteEdit: MelodyNote | null = null; // note whose settings popup is open
-  private melodyOptionsPage = false;     // melody sub-page: the current item's loop options
   // Melody item sub-tabs: notes editor / sing-to-notes / graph generator / instrument
-  // sound / transition.
-  private melodyTab: "notes" | "sing" | "graph" | "sound" | "transition" = "notes";
+  // sound / placement rule / transition — mirroring a voice loop's Sound/Loop/Transition.
+  private melodyTab: "notes" | "sing" | "graph" | "sound" | "loop" | "transition" = "notes";
   // Graph-melody generator state (the 📈 Graph tab): the drawn function + how forgiving
   // the note/time lattice is. Session-only — Apply writes actual notes into the melody.
   private graph = {
@@ -163,6 +162,9 @@ export class App {
   // Channel -> flash LED (mixer) and sound id -> loop-row button (colour panel).
   private mixerLeds: Map<number, HTMLElement> | null = null;
   private voiceBtns: Map<number, HTMLElement> | null = null;
+  // Live playhead on the melody Graph tab: maps the engine's loop position onto the
+  // graph's phrase axis (null = the tab isn't showing). Rebound by graphSvg each render.
+  private graphPlayheadUpdate: ((posStep: number | null) => void) | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -194,8 +196,11 @@ export class App {
       this.trackPlayheadEl?.classList.remove("live");
       this.trackOverviewEl?.classList.remove("playing");
       for (const row of this.segRows) row.classList.remove("seg-live");
+      this.graphPlayheadUpdate?.(null);
       return;
     }
+    // The melody Graph tab's playhead (position within the phrase being drawn).
+    this.graphPlayheadUpdate?.(p.pos);
     // Overview: sweep the playback line to the current position — it loops back at each
     // 32-bar wrap — highlight the active wrapped line, and name it in the badge.
     if (this.trackPlayheadEl) {
@@ -496,7 +501,7 @@ export class App {
     // notes page.
     let viewKey = this.view;
     // Each melody sub-tab is its own scroll context (distinct from the notes page).
-    if (this.view === "melody" && this.currentMelodyItem() && !this.melodyOptionsPage) viewKey += ":" + this.melodyTab;
+    if (this.view === "melody" && this.currentMelodyItem()) viewKey += ":" + this.melodyTab;
     // Likewise the colour panel's and melody list's sub-tabs.
     if (this.view === "color") viewKey += ":" + this.colorTab;
     if (this.view === "melody" && !this.currentMelodyItem()) viewKey += ":list:" + this.melodyListTab;
@@ -510,6 +515,7 @@ export class App {
     this.segRows = [];
     this.mixerLeds = null;
     this.voiceBtns = null;
+    this.graphPlayheadUpdate = null;
 
     const bar = document.createElement("header");
     bar.className = "topbar";
@@ -926,7 +932,6 @@ export class App {
   private openMelody(): void {
     this.melodyItemIndex = -1;
     this.melodyPath = [];
-    this.melodyOptionsPage = false;
     this.melodyListTab = "melodies";
     this.resetSingTab();
     this.view = "melody";
@@ -952,7 +957,6 @@ export class App {
   private openMelodyItem(i: number): void {
     this.melodyItemIndex = i;
     this.melodyPath = [];
-    this.melodyOptionsPage = false;
     this.resetSingTab();
     const item = this.currentMelodyItem();
     if (item && item.inst.soundId < 0) this.mintLoopSound(item.inst);
@@ -1032,7 +1036,6 @@ export class App {
   private renderMelodyPanel(): void {
     const item = this.currentMelodyItem();
     if (!item) { this.renderMelodyList(); return; }
-    if (this.melodyOptionsPage) { this.renderMelodyOptionsPage(item); return; }
     this.renderMelodyItemParams(item);
   }
 
@@ -1149,9 +1152,9 @@ export class App {
     const c = MELODY_COLOR_INDEX;
     const atRoot = this.melodyPath.length === 0;
     const node = this.currentMelodyNode();
-    // Sound / Graph / Transition are item-level (root only); drilling into a branch drops
-    // back to Notes.
-    if (!atRoot && (this.melodyTab === "sound" || this.melodyTab === "graph" || this.melodyTab === "transition")) this.melodyTab = "notes";
+    // Graph / Sound / Loop / Transition are item-level (root only); drilling into a
+    // branch drops back to Notes.
+    if (!atRoot && this.melodyTab !== "notes" && this.melodyTab !== "sing") this.melodyTab = "notes";
 
     const head = document.createElement("div");
     head.className = "mixer-head";
@@ -1192,12 +1195,12 @@ export class App {
       return b;
     };
     nav.append(mkTab("notes", "Notes"), mkTab("sing", "🎤 Sing"));
-    if (atRoot) nav.append(mkTab("graph", "📈 Graph"), mkTab("sound", "🎛 Sound"), mkTab("transition", "Transition"));
+    if (atRoot) nav.append(mkTab("graph", "📈 Graph"), mkTab("sound", "🎛 Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transition"));
     v.append(nav);
 
     if (this.melodyTab === "sing") { v.append(this.melodySingSection(node)); return; }
-    // Graph / Sound / Transition act on the whole item (root only — a branch has no own
-    // sound, and the graph draws across the item's phrase).
+    // Graph / Sound / Loop / Transition act on the whole item (root only — a branch has
+    // no own sound, and the graph draws across the item's phrase).
     if (atRoot && this.melodyTab === "graph") {
       v.append(this.melodyGraphSection(item));
       return;
@@ -1207,6 +1210,12 @@ export class App {
       instWrap.className = "melody-inst";
       instWrap.append(this.melodyInstrumentMenu(item.inst));
       v.append(instWrap);
+      return;
+    }
+    if (atRoot && this.melodyTab === "loop") {
+      // The placement rule — the same Loop menu a voice row's loops get (Repeat every /
+      // For n bars / overlap-solo); "For" doubles as the phrase Length.
+      v.append(this.placementControls(item.inst, () => this.render()));
       return;
     }
     if (atRoot && this.melodyTab === "transition") {
@@ -1219,20 +1228,13 @@ export class App {
       if (seqView) v.append(seqView);
       v.append(this.melodyGenerateRow(node));
 
-      // Length (phrase bars) + Loop options.
+      // Length (phrase bars) — placement itself lives on the Loop tab.
       const lenBar = document.createElement("div");
       lenBar.className = "placement-controls melody-genbar";
       lenBar.style.setProperty("--vc", VOICE_COLORS[c]);
       lenBar.append(this.stepperRow("Length", Math.max(1, Math.round(item.inst.rule.forBars)), 1, 64,
         (nn) => { item.inst.rule.forBars = nn; this.melodyChanged(); }, (nn) => `${nn} bar${nn === 1 ? "" : "s"}`));
       v.append(lenBar);
-
-      const optBtn = document.createElement("button");
-      optBtn.className = "seg-btn melody-inst-btn";
-      optBtn.style.setProperty("--vc", VOICE_COLORS[c]);
-      optBtn.textContent = "⚙ Loop options ›";
-      optBtn.onclick = () => { this.melodyOptionsPage = true; this.render(); };
-      v.append(optBtn);
     }
 
     v.append(this.melodyScaleControls(node));
@@ -1254,26 +1256,6 @@ export class App {
     add.onclick = () => { node.notes.push(defaultNote()); this.melodyChanged(); };
     v.append(add);
   }
-
-  /** One melody item's Loop-options page: the placement rule (Repeat every / length /
-      overlap-solo), reusing the loop placement editor. Back returns to the item. */
-  private renderMelodyOptionsPage(item: MelodyItem): void {
-    const v = this.viewRoot;
-    const head = document.createElement("div");
-    head.className = "mixer-head";
-    head.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
-    const back = document.createElement("button");
-    back.className = "mixer-back";
-    back.textContent = "‹ Melody";
-    back.onclick = () => { this.melodyOptionsPage = false; this.render(); };
-    const title = document.createElement("h2");
-    title.className = "mixer-title";
-    title.textContent = "Loop options";
-    head.append(back, title);
-    v.append(head);
-    v.append(this.placementControls(item.inst, () => this.render()));
-  }
-
 
   /** Scale-driven generation controls: how many notes to draw, a Generate button that
       fills the grid with fresh random notes, and the Add-branch mode toggle. */
@@ -1514,6 +1496,61 @@ export class App {
     wrap.className = "melody-graph";
     wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
 
+    // The graph itself sits at the TOP; everything below tweaks it. Compute the current
+    // landing first so the graph and the Apply row share it.
+    const phraseBars = Math.max(1, Math.round(item.inst.rule.forBars));
+    const params: GraphParams = { preset: g.preset, rise: g.rise, offset: g.offset, bend: g.bend / 100, cycles: g.cycles };
+    const phraseSteps = phraseBars * STEPS_PER_BAR;
+    const maxAbs = degreesPerOctave(node.scale) * 3;
+    const hits = graphHits(params, phraseSteps, g.noteWidth / 100, g.timeWidth / 100, maxAbs);
+    const notes = hitsToNotes(hits);
+    // Playhead mapping: engine loop step → step within THIS phrase, via the item's
+    // placements (mirroring melodyLanes' overlap guard + phrase cap); null = not
+    // sounding this melody right now (a gap, or past the phrase inside a long slot).
+    const limitSteps = Math.max(1, this.track.barLimit) * STEPS_PER_BAR;
+    const spans: { start: number; end: number }[] = [];
+    {
+      const ivs = placementsFor(item.inst, Math.max(1, this.track.barLimit))
+        .slice().sort((a, b) => a.startBar - b.startBar);
+      let cursor = 0;
+      for (const iv of ivs) {
+        const start = iv.startBar * STEPS_PER_BAR;
+        if (start < cursor) continue;
+        const len = Math.min(iv.forBars * STEPS_PER_BAR, phraseSteps, limitSteps - start);
+        if (len <= 0) continue;
+        spans.push({ start, end: start + len });
+        cursor = start + len;
+      }
+    }
+    const phrasePos = (pos: number): number | null => {
+      const p = ((pos % limitSteps) + limitSteps) % limitSteps;
+      for (const s of spans) if (p >= s.start && p < s.end) return p - s.start;
+      return null;
+    };
+    wrap.append(this.graphSvg(node, params, phraseSteps, notes, g.noteWidth / 100, g.timeWidth / 100, phrasePos));
+
+    // Apply: lay the landed notes down as the melody (a verbatim chain, like a kept take).
+    const apply = document.createElement("div");
+    apply.className = "placement-row sing-apply graph-apply";
+    const count = document.createElement("span");
+    count.className = "placement-lbl";
+    count.textContent = notes.length === 0
+      ? "no notes land — widen the lines"
+      : `${notes.length} note${notes.length === 1 ? "" : "s"} land${notes.length === 1 ? "s" : ""}${notes.length > MAX_CHAIN ? ` (first ${MAX_CHAIN} kept)` : ""}`;
+    const use = document.createElement("button");
+    use.className = "seg-btn sing-apply-order";
+    use.textContent = "✓ Use as my loop";
+    use.title = "Replace this melody's notes with the graph's — played in order, looping";
+    use.disabled = notes.length === 0;
+    use.onclick = () => {
+      if (!notes.length) return;
+      chainNotes(node, notes);
+      this.melodyChanged();
+      this.toast(`Graph applied — ${Math.min(notes.length, MAX_CHAIN)} note${notes.length === 1 ? "" : "s"}`);
+    };
+    apply.append(count, use);
+    wrap.append(apply);
+
     const hint = document.createElement("p");
     hint.className = "sing-hint";
     hint.textContent = "Draw a function over the phrase: y is notes on the scale (0 = the root), x is time. Wherever the curve touches a note line at a step, that note plays. Widen the note/time lines if a curly shape misses too much.";
@@ -1523,7 +1560,6 @@ export class App {
     wrap.append(this.melodyScaleControls(node));
 
     // Phrase length (the x axis) — the same Length as the Notes tab.
-    const phraseBars = Math.max(1, Math.round(item.inst.rule.forBars));
     const lenBar = document.createElement("div");
     lenBar.className = "placement-controls melody-genbar";
     lenBar.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
@@ -1582,45 +1618,17 @@ export class App {
       g.timeWidth = Math.max(0, Math.min(50, Math.round(n)));
     }, rerender, () => `${g.timeWidth}%`));
     wrap.append(controls);
-
-    // The graph itself + the notes the curve currently lands on.
-    const params: GraphParams = { preset: g.preset, rise: g.rise, offset: g.offset, bend: g.bend / 100, cycles: g.cycles };
-    const phraseSteps = phraseBars * STEPS_PER_BAR;
-    const maxAbs = degreesPerOctave(node.scale) * 3;
-    const hits = graphHits(params, phraseSteps, g.noteWidth / 100, g.timeWidth / 100, maxAbs);
-    const notes = hitsToNotes(hits);
-    wrap.append(this.graphSvg(node, params, phraseSteps, notes, g.noteWidth / 100, g.timeWidth / 100));
-
-    // Apply: lay the landed notes down as the melody (a verbatim chain, like a kept take).
-    const apply = document.createElement("div");
-    apply.className = "placement-row sing-apply graph-apply";
-    const count = document.createElement("span");
-    count.className = "placement-lbl";
-    count.textContent = notes.length === 0
-      ? "no notes land — widen the lines"
-      : `${notes.length} note${notes.length === 1 ? "" : "s"} land${notes.length === 1 ? "s" : ""}${notes.length > MAX_CHAIN ? ` (first ${MAX_CHAIN} kept)` : ""}`;
-    const use = document.createElement("button");
-    use.className = "seg-btn sing-apply-order";
-    use.textContent = "✓ Use as my loop";
-    use.title = "Replace this melody's notes with the graph's — played in order, looping";
-    use.disabled = notes.length === 0;
-    use.onclick = () => {
-      if (!notes.length) return;
-      chainNotes(node, notes);
-      this.melodyChanged();
-      this.toast(`Graph applied — ${Math.min(notes.length, MAX_CHAIN)} note${notes.length === 1 ? "" : "s"}`);
-    };
-    apply.append(count, use);
-    wrap.append(apply);
     return wrap;
   }
 
   /** Draw the graph: the note lattice (horizontal degree lines, fattened by the note
       width; roots tinted + labelled), the time grid (beats/bars, steps fattened by the
-      time width), the curve, and a piano-roll bar for every landed note run. */
+      time width), the curve, a piano-roll bar for every landed note run — and a live
+      playhead line while the loop plays (`phrasePos` maps the engine's loop step onto
+      the phrase axis; null = this melody isn't sounding right now). */
   private graphSvg(
     node: MelodyNode, p: GraphParams, phraseSteps: number, notes: MelodyNote[],
-    noteWidth: number, timeWidth: number,
+    noteWidth: number, timeWidth: number, phrasePos?: (pos: number) => number | null,
   ): HTMLElement {
     const NS = "http://www.w3.org/2000/svg";
     const W = 360, H = 216, L = 34, R = 6, T = 10, B = 18;
@@ -1660,6 +1668,7 @@ export class App {
       l.setAttribute("x2", x2.toFixed(1)); l.setAttribute("y2", y2.toFixed(1));
       l.setAttribute("class", cls);
       svg.append(l);
+      return l;
     };
     const text = (x: number, y: number, s: string, anchor: "start" | "middle" | "end") => {
       const t = document.createElementNS(NS, "text");
@@ -1724,6 +1733,21 @@ export class App {
       const bar = rect(xPx(pos), yPx(n.degree) - 2.5, Math.max(3, n.lengthSteps * stepPx - 1), 5, "graph-note", 2.5);
       bar.setAttribute("fill", this.pcColor(semitoneForDegree(n.degree, node.scale) + node.root));
       pos += n.lengthSteps;
+    }
+
+    // Live playhead: a vertical line swept across the phrase while the loop plays,
+    // updated straight from the engine's playhead reports (see handlePlayhead).
+    if (phrasePos) {
+      const ph = line(L, T, L, T + plotH, "graph-playhead");
+      ph.style.display = "none";
+      this.graphPlayheadUpdate = (posStep) => {
+        const ps = posStep === null ? null : phrasePos(posStep);
+        if (ps === null) { ph.style.display = "none"; return; }
+        const x = xPx(Math.min(ps, steps));
+        ph.setAttribute("x1", x.toFixed(1));
+        ph.setAttribute("x2", x.toFixed(1));
+        ph.style.display = "";
+      };
     }
 
     const box = document.createElement("div");
