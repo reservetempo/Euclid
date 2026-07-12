@@ -428,6 +428,29 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .row-sweep { --vc: var(--accent); margin-top: 4px; }
 .row-sweep .transition-head { color: var(--vc); }
 
+/* Row panel sub-tabs (Loops / Transition / Mixer — and the melody list's twin). */
+.row-tabs { margin: 2px 0 6px; }
+
+/* The row's transition list: one glass card per placeable sweep. */
+.row-transitions { display: flex; flex-direction: column; gap: 12px; }
+.sweep-card {
+  margin-top: 0; padding: 12px 14px;
+  background: var(--panel-glass);
+  border: 1px solid var(--line-soft); border-radius: var(--r-md);
+  box-shadow: var(--card-shadow);
+}
+.sweep-card.off > *:not(.sweep-card-head) { opacity: 0.45; }
+.sweep-card-head { display: flex; align-items: center; gap: 8px; }
+.sweep-card-head .transition-head { flex: 1 1 auto; }
+.sweep-remove {
+  flex: none; width: 30px; padding: 6px 0; text-align: center; font-size: 15px; font-weight: 700;
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+}
+.sweep-remove:active { color: #ff6b6b; border-color: color-mix(in srgb, #ff6b6b 40%, transparent); }
+.sweep-bars-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sweep-bars-head .play-range-readout { flex: none; color: var(--vc); }
+.sweep-card .play-range-strip { height: 22px; }
+
 /* Whole-track overview: a bar ruler + per-colour lane timelines. */
 .track-overview { position: relative; display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 .bar-ruler { display: flex; gap: 2px; padding: 0 14px 0 18px; }
@@ -739,6 +762,31 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .fade-controls .placement-row { width: 100%; }
 .fade-modes { justify-content: flex-end; }
 .fade-toggle { min-width: 52px; }
+
+/* Graph melody generator (📈 tab): the function graph over the note lattice. */
+.melody-graph { display: flex; flex-direction: column; gap: 12px; }
+.graph-box {
+  padding: 8px 6px;
+  background: var(--field); border: 1px solid var(--line-soft); border-radius: var(--r-md);
+}
+.graph-svg { display: block; width: 100%; height: auto; }
+.graph-grid { stroke: rgba(154, 168, 204, 0.13); stroke-width: 1; }
+.graph-bar { stroke: rgba(154, 168, 204, 0.32); }
+.graph-band-x { fill: rgba(154, 168, 204, 0.09); }
+.graph-lattice { stroke: rgba(154, 168, 204, 0.2); stroke-width: 1; }
+.graph-root { stroke: color-mix(in srgb, var(--vc) 55%, transparent); }
+.graph-band-y { fill: rgba(154, 168, 204, 0.09); }
+.graph-band-y.root { fill: color-mix(in srgb, var(--vc) 10%, transparent); }
+.graph-lbl { fill: var(--muted); font-size: 8px; }
+.graph-curve {
+  fill: none; stroke: var(--vc); stroke-width: 1.8; stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--vc) 55%, transparent));
+}
+.graph-note { stroke: rgba(10, 12, 20, 0.5); stroke-width: 0.6; }
+.graph-apply { gap: 10px; }
+.graph-apply .placement-lbl { flex: 1 1 auto; text-align: left; }
+.graph-apply .seg-btn { flex: none; padding: 11px 16px; }
+.graph-apply .seg-btn:disabled { opacity: 0.4; }
 
 /* Transition curve visualization: the eased blend path + start/end value labels. */
 .curve-viz-box {

@@ -67,15 +67,19 @@ export function ruleLengths(rule: PlacementRule): number[] {
 }
 
 /** An overarching FX sweep across a whole coloured ROW, from bar `fromBar` to `toBar`
-    (1-indexed, inclusive): every loop on the row has the chosen style swept across that
-    window — the filter opens, reverb wells up, drive bites, etc. `side` "out" runs the
-    sound → the effect extreme; "in" runs the effect → the clean sound. `from`/`to` override
-    the swept param's near/far values; `curve`/`dir` bend the ramp (see engine bendT). */
+    (1-indexed, inclusive): every loop on the row has the chosen style(s) swept across that
+    window — the filter opens, reverb wells up, drive bites, etc. `modes` is the active
+    style SET (multi-select, composed together in the engine; `mode` mirrors its first
+    entry). `side` "out" runs the sound → the effect extreme; "in" runs the effect → the
+    clean sound. `from`/`to` override the swept param's near/far values; `curve`/`dir`
+    bend the ramp (see engine bendT). A row holds a LIST of these (ColorTrack.sweeps) —
+    overlapping windows stack, each morphing the result of the previous. */
 export interface RowSweep {
   on: boolean;
   fromBar: number;
   toBar: number;
   mode: TransitionMode;
+  modes?: TransitionMode[];
   side: "in" | "out";
   from?: number;
   to?: number;
@@ -83,9 +87,11 @@ export interface RowSweep {
   dir?: "in" | "out";
 }
 
-/** A fresh row sweep: a filter opening across the first 8 bars, off until enabled. */
-export function defaultRowSweep(): RowSweep {
-  return { on: false, fromBar: 1, toBar: 8, mode: "filter", side: "out", curve: 0, dir: "out" };
+/** A fresh row sweep: a filter opening across the first 8 bars (clamped to the track),
+    on from the start — it's explicitly added from the Transition tab. */
+export function defaultRowSweep(barLimit = 8): RowSweep {
+  const toBar = Math.max(1, Math.min(8, Math.round(barLimit)));
+  return { on: true, fromBar: 1, toBar, mode: "filter", side: "out", curve: 0, dir: "out" };
 }
 
 /** Convert a RowSweep (1-indexed bars, inclusive) into an engine SweepWindow (step range),
@@ -98,7 +104,17 @@ export function rowSweepWindow(sweep: RowSweep | undefined, barLimit: number): S
   const from = (fromBar - 1) * STEPS_PER_BAR;
   const to = toBar * STEPS_PER_BAR;
   if (to <= from) return null;
-  return { from, to, mode: sweep.mode, side: sweep.side, fromV: sweep.from, toV: sweep.to, curve: sweep.curve, dir: sweep.dir };
+  return { from, to, mode: sweep.mode, modes: sweep.modes, side: sweep.side, fromV: sweep.from, toV: sweep.to, curve: sweep.curve, dir: sweep.dir };
+}
+
+/** All of a row's live sweeps as engine windows (off / empty ones dropped). */
+export function rowSweepWindows(sweeps: RowSweep[] | undefined, barLimit: number): SweepWindow[] {
+  const out: SweepWindow[] = [];
+  for (const s of sweeps ?? []) {
+    const w = rowSweepWindow(s, barLimit);
+    if (w) out.push(w);
+  }
+  return out;
 }
 
 /** One loop: the sound/rhythm half of a VoiceNode plus its placement rule. `reps`/`wait`
@@ -129,7 +145,7 @@ export interface ColorTrack {
   loops: Loop[];
   mute?: boolean;
   solo?: boolean;
-  sweep?: RowSweep; // an overarching FX sweep across a bar range of the whole row
+  sweeps?: RowSweep[]; // overarching FX sweeps across bar ranges of the whole row (may overlap)
 }
 
 export const DEFAULT_BAR_LIMIT = 16;
@@ -147,10 +163,13 @@ export class Track {
   melodies: MelodyItem[] = [];
 
   /** Compile to engine lanes (see compile()). Each melody adds its own lane(s) on the last
-      colour: its generated phrase, placed across the track by its instrument's rule. */
+      colour: its generated phrase, placed across the track by its instrument's rule. The
+      melody COLOUR's row sweeps ride over every melody lane (on top of per-placement
+      fades — overlaps compose in the engine). */
   toLanes(): Lane[] {
     const lanes = compile(this.colors, this.barLimit);
-    lanes.push(...melodyLanes(this.melodies, this.barLimit));
+    const rowWins = rowSweepWindows(this.colors[MELODY_COLOR_INDEX]?.sweeps, this.barLimit);
+    lanes.push(...melodyLanes(this.melodies, this.barLimit, rowWins));
     return lanes;
   }
 }
@@ -178,8 +197,9 @@ export function newMelodyItem(): MelodyItem {
 
 /** Lay each melody into its own engine lane: generate the item's phrase (its own seeded
     recurring motif, `forBars` long), then drop a copy at every placement its instrument's
-    rule produces (gaps + the tail padded with rests), tuned to the item's own sound. */
-export function melodyLanes(melodies: MelodyItem[], barLimit: number): Lane[] {
+    rule produces (gaps + the tail padded with rests), tuned to the item's own sound.
+    `rowSweeps` (the melody colour's row-wide FX windows) ride over every lane. */
+export function melodyLanes(melodies: MelodyItem[], barLimit: number, rowSweeps: SweepWindow[] = []): Lane[] {
   const limit = Math.max(1, Math.round(barLimit));
   const limitSteps = limit * STEPS_PER_BAR;
   const lanes: Lane[] = [];
@@ -206,10 +226,11 @@ export function melodyLanes(melodies: MelodyItem[], barLimit: number): Lane[] {
       cursor += used;
     }
     if (cursor < limitSteps) nodes.push(restOf(limitSteps - cursor));
+    const allSweeps = [...sweeps, ...rowSweeps];
     lanes.push({
       color: MELODY_COLOR_INDEX,
       nodes: nodes.length ? nodes : [restOf(limitSteps)],
-      sweeps: sweeps.length ? sweeps : undefined,
+      sweeps: allSweeps.length ? allSweeps : undefined,
     });
   }
   return lanes;
@@ -225,12 +246,12 @@ function collectMelodySweeps(inst: Loop, startStep: number, usedSteps: number, o
   const end = startStep + usedSteps;
   if (inst.intro) {
     const bars = Math.max(1, Math.min(placeBars, Math.round(inst.intro.reps)));
-    out.push({ from: startStep, to: startStep + bars * STEPS_PER_BAR, mode: inst.intro.mode,
+    out.push({ from: startStep, to: startStep + bars * STEPS_PER_BAR, mode: inst.intro.mode, modes: inst.intro.modes,
       side: "in", fromV: inst.intro.from, toV: inst.intro.to, curve: inst.intro.curve, dir: inst.intro.dir });
   }
   if (inst.outro) {
     const bars = Math.max(1, Math.min(placeBars, Math.round(inst.outro.reps)));
-    out.push({ from: end - bars * STEPS_PER_BAR, to: end, mode: inst.outro.mode,
+    out.push({ from: end - bars * STEPS_PER_BAR, to: end, mode: inst.outro.mode, modes: inst.outro.modes,
       side: "out", fromV: inst.outro.from, toV: inst.outro.to, curve: inst.outro.curve, dir: inst.outro.dir });
   }
 }
@@ -344,8 +365,8 @@ export function loopToNode(loop: Loop, reps = 1): VoiceNode {
   n.split = loop.split;
   n.gain = loop.gain;
   n.reps = Math.max(1, Math.min(MAX_REPS, reps));
-  n.intro = loop.intro ? { ...loop.intro } : undefined;
-  n.outro = loop.outro ? { ...loop.outro } : undefined;
+  n.intro = loop.intro ? { ...loop.intro, modes: loop.intro.modes?.slice() } : undefined;
+  n.outro = loop.outro ? { ...loop.outro, modes: loop.outro.modes?.slice() } : undefined;
   n.accent = loop.accent ? { ...loop.accent } : undefined;
   n.ghost = loop.ghost ? { ...loop.ghost } : undefined;
   n.preset = loop.preset;
@@ -481,9 +502,10 @@ export function compile(colors: ColorTrack[], barLimit: number): Lane[] {
     if (c === MELODY_COLOR_INDEX) continue; // the last colour is the melody (see toLanes)
     const loops = colors[c]?.loops ?? [];
     if (loops.length === 0) continue;
-    // The whole row's optional FX sweep rides over every lane this colour compiles to.
-    const win = rowSweepWindow(colors[c]?.sweep, limit);
-    const sweeps = win ? [win] : undefined;
+    // The whole row's FX sweeps ride over every lane this colour compiles to. Windows may
+    // overlap — the engine composes them (each morphs the result of the previous).
+    const wins = rowSweepWindows(colors[c]?.sweeps, limit);
+    const sweeps = wins.length ? wins : undefined;
     const add = (nodes: VoiceNode[]) => lanes.push({ color: c, nodes, sweeps });
     // Dice loops form a shared pool regardless of their solo/overlap mode.
     const dice = loops.filter((l) => l.rule.every.kind === "dice");
@@ -526,8 +548,8 @@ export function cloneLoop(loop: Loop): Loop {
     rotation: loop.rotation,
     split: loop.split,
     gain: loop.gain,
-    intro: loop.intro ? { ...loop.intro } : undefined,
-    outro: loop.outro ? { ...loop.outro } : undefined,
+    intro: loop.intro ? { ...loop.intro, modes: loop.intro.modes?.slice() } : undefined,
+    outro: loop.outro ? { ...loop.outro, modes: loop.outro.modes?.slice() } : undefined,
     accent: loop.accent ? { ...loop.accent } : undefined,
     ghost: loop.ghost ? { ...loop.ghost } : undefined,
     preset: loop.preset,

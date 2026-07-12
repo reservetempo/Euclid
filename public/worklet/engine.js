@@ -1264,16 +1264,19 @@ class EngineProcessor extends AudioWorkletProcessor {
   // morph/fade sounds on (the node's OWN sound); `fromId`/`toId` name the channels used
   // when both voices play at once (crossfade/alternate/filter). Modes mirror the four
   // pair blends plus the silence-end fade styles (fade/filter/wash/thin/drive/crush/echo).
+  // `mode` may be an ARRAY of silence-end styles (a multi-select) — they compose via
+  // sweptSnap; pair blends only ever receive a single mode.
   // `ctx` is the per-hit Life context (accent/ghost placement) forwarded to perHit.
   fireBlend(ownId, fromId, from, toId, to, mode, t, ctx, gate, beat, fired, nearV, farV) {
     if (!from && !to) return;
+    const modes = Array.isArray(mode) ? mode : [mode];
+    mode = modes[0];
     if (!from || !to) {
-      // One end is silence: morph the real sound between its near variant (From) and its
-      // derived silent variant (To). `nearV`/`farV` are the optional From→To overrides.
+      // One end is silence: morph the real sound between its near variant (From) and each
+      // style's silent variant, composed in order. `nearV`/`farV` are the optional From→To
+      // overrides (primary style only). An intro (`to` set) rises effect → sound.
       const real = to || from;
-      const near = this.nearVariant(real.snap, mode, nearV);
-      const ghost = this.silentVariant(real.snap, mode, farV);
-      const snap = to ? this.lerpSnap(ghost, near, t) : this.lerpSnap(near, ghost, t);
+      const snap = this.sweptSnap(real.snap, modes, t, to ? "in" : "out", nearV, farV);
       const hit = this.perHit(snap, ctx);
       if (!hit) return;
       const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
@@ -1353,16 +1356,35 @@ class EngineProcessor extends AudioWorkletProcessor {
     }
   }
 
-  // The row-sweep window covering global loop position `pos` on line `ln`, or null (first
-  // match wins; windows aren't expected to overlap). See SweepWindow in lines.ts.
-  sweepAt(ln, pos) {
+  // ALL row-sweep windows covering global loop position `pos` on line `ln`, or null.
+  // Overlapping windows are allowed — the caller composes them in list order, each
+  // morphing the result of the previous. See SweepWindow in lines.ts.
+  sweepsAt(ln, pos) {
     const sweeps = ln && ln.sweeps;
     if (!sweeps) return null;
+    let out = null;
     for (let i = 0; i < sweeps.length; i++) {
       const s = sweeps[i];
-      if (pos >= s.from && pos < s.to) return s;
+      if (pos >= s.from && pos < s.to) (out || (out = [])).push(s);
     }
-    return null;
+    return out;
+  }
+
+  // Morph `snap` between its near variant and the silent/FX extreme of each style in
+  // `modes` at blend point t∈[0,1] — the one composition step behind every silence-end
+  // fade and row sweep. Styles CHAIN: each reads the previous result, so two styles both
+  // shape the hit (their level ducks compound — stacked extremes read as a deeper fade).
+  // `side` "out" runs sound → effect as t rises; "in" runs effect → sound. The optional
+  // From/To overrides (`nearV`/`farV`) apply to the PRIMARY (first) style only.
+  sweptSnap(snap, modes, t, side, nearV, farV) {
+    let v = snap;
+    for (let i = 0; i < modes.length; i++) {
+      const m = modes[i];
+      const near = this.nearVariant(v, m, i === 0 ? nearV : undefined);
+      const ghost = this.silentVariant(v, m, i === 0 ? farV : undefined);
+      v = side === "in" ? this.lerpSnap(ghost, near, t) : this.lerpSnap(near, ghost, t);
+    }
+    return v;
   }
 
   // Fire one step. The loop length is the LONGEST line's chain; every line reads its
@@ -1488,7 +1510,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (fromId < 0 || from) {
           const raw = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
           const t = bendT(raw, nd.intro.curve, nd.intro.dir);
-          this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.mode, t, life, gate, beat, fired, nd.intro.from, nd.intro.to);
+          this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.modes || nd.intro.mode, t, life, gate, beat, fired, nd.intro.from, nd.intro.to);
           continue;
         }
         // Source sound gone — fall through and play this node plainly.
@@ -1502,24 +1524,36 @@ class EngineProcessor extends AudioWorkletProcessor {
           const local = activeLocal - (activeLen - outroSteps);
           const raw = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
           const t = bendT(raw, nd.outro.curve, nd.outro.dir);
-          this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.mode, t, life, gate, beat, fired, nd.outro.from, nd.outro.to);
+          this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.modes || nd.outro.mode, t, life, gate, beat, fired, nd.outro.from, nd.outro.to);
           continue;
         }
         // Destination sound gone — play plainly.
       }
 
-      // Row FX sweep: a lane-wide window (see SweepWindow) that morphs the steady hit
-      // toward (side "out") or out of (side "in") the mode's FX extreme by the sweep's
-      // global progress across [from, to). Overrides the plain steady trigger; a node's
-      // own intro/outro (handled above with `continue`) still wins where they overlap.
-      const sw = this.sweepAt(ln, pos);
-      if (sw) {
-        const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
-        const t = bendT(raw, sw.curve, sw.dir);
+      // Row FX sweeps: lane-wide windows (see SweepWindow) that morph the steady hit
+      // toward (side "out") or out of (side "in") each style's FX extreme by the window's
+      // global progress across [from, to). Every window covering this position applies —
+      // overlaps COMPOSE, each morphing the result of the previous — and a window may
+      // itself carry several styles (sw.modes). Overrides the plain steady trigger; a
+      // node's own intro/outro (handled above with `continue`) still wins where they
+      // overlap.
+      const sws = this.sweepsAt(ln, pos);
+      if (sws) {
         // Melody notes carry their own pitch: sweep a pitched copy so the fade keeps the tune.
-        const swSnd = nd.pitchHz > 0 ? { snap: this.pitchedSnap(snd.snap, nd.pitchHz), tail: snd.tail } : snd;
-        if (sw.side === "in") this.fireBlend(nd.soundId, -1, null, nd.soundId, swSnd, sw.mode, t, life, gate, beat, fired, sw.fromV, sw.toV);
-        else this.fireBlend(nd.soundId, nd.soundId, swSnd, -1, null, sw.mode, t, life, gate, beat, fired, sw.fromV, sw.toV);
+        let snap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+        for (let si = 0; si < sws.length; si++) {
+          const sw = sws[si];
+          const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
+          const t = bendT(raw, sw.curve, sw.dir);
+          const modes = sw.modes && sw.modes.length ? sw.modes : [sw.mode];
+          snap = this.sweptSnap(snap, modes, t, sw.side, sw.fromV, sw.toV);
+        }
+        const hit = this.perHit(snap, life);
+        if (!hit) continue;
+        const voiceSnap = snap.slice();
+        this.jitterSnap(voiceSnap, hit.human);
+        this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat);
+        fired.push(nd.soundId);
         continue;
       }
 

@@ -25,7 +25,7 @@ import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { addReport, reportCount, exportReports, clearReports, ReportKind } from "../model/soundReports";
 import {
   LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
-  TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape,
+  TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape, envModes, setEnvModes,
 } from "../model/lines";
 import {
   Track, Loop, EveryRule, RowSweep, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
@@ -35,11 +35,14 @@ import { generateName, reshuffleNames } from "../model/name";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
   MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes, randomizeNotes,
-  generateMelody, chainNotes, isChain,
+  generateMelody, chainNotes, isChain, MAX_CHAIN,
 } from "../model/melody";
 import {
   ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree, semitoneForDegree,
 } from "../model/melodyScale";
+import {
+  GraphParams, GraphPresetId, GRAPH_PRESETS, graphY, graphHits, hitsToNotes,
+} from "../model/melodyGraph";
 import { detectPitchHz, SingTracker, SungNote, sungToMelodyNotes, midiName } from "../model/sing";
 import { EuclidView, RingState } from "./euclidView";
 import { SoundView } from "./soundView";
@@ -98,14 +101,29 @@ export class App {
   private view: View = "track";
   private lastViewKey = "";             // view identity at the previous render (scroll-preserve guard)
   private openColor = 0;               // which colour panel is open
+  // Colour-panel sub-tab (Loops / Transition / Mixer) and its melody-list twin.
+  private colorTab: "loops" | "transition" | "mixer" = "loops";
+  private melodyListTab: "melodies" | "transition" | "mixer" = "melodies";
   private melodyPath: MelodyNote[] = []; // notes descended into (branch drill-down); [] = root
   private melodyItemIndex = -1;          // which melody in the list is open (-1 = the list/menu)
   private melodyBranchMode = false;      // Add-branch mode: tapping a note square branches it
   private melodyGenCount = 4;            // desired note count for the Generate button
   private melodyNoteEdit: MelodyNote | null = null; // note whose settings popup is open
   private melodyOptionsPage = false;     // melody sub-page: the current item's loop options
-  // Melody item sub-tabs: notes editor / sing-to-notes / instrument sound / transition.
-  private melodyTab: "notes" | "sing" | "sound" | "transition" = "notes";
+  // Melody item sub-tabs: notes editor / sing-to-notes / graph generator / instrument
+  // sound / transition.
+  private melodyTab: "notes" | "sing" | "graph" | "sound" | "transition" = "notes";
+  // Graph-melody generator state (the 📈 Graph tab): the drawn function + how forgiving
+  // the note/time lattice is. Session-only — Apply writes actual notes into the melody.
+  private graph = {
+    preset: "line" as GraphPresetId,
+    rise: 7,       // degrees the shape spans (negative = downward)
+    offset: 0,     // starting degree (0 = the root)
+    bend: 50,      // curvature 0..100 (exp/log/s-curve/arch skew/wobble damping)
+    cycles: 2,     // wave count (sine/zigzag/wobble)
+    noteWidth: 25, // pitch tolerance, % of a scale step (how thick the note lines are)
+    timeWidth: 0,  // time tolerance, % of a 16th step (how thick the step lines are)
+  };
   private singSession: SingSession | null = null; // live mic recording (null = idle)
   private singTake: SungNote[] | null = null;     // last finished take, awaiting Apply
   private singError: string | null = null;        // mic/take status line for the Sing tab
@@ -479,6 +497,9 @@ export class App {
     let viewKey = this.view;
     // Each melody sub-tab is its own scroll context (distinct from the notes page).
     if (this.view === "melody" && this.currentMelodyItem() && !this.melodyOptionsPage) viewKey += ":" + this.melodyTab;
+    // Likewise the colour panel's and melody list's sub-tabs.
+    if (this.view === "color") viewKey += ":" + this.colorTab;
+    if (this.view === "melody" && !this.currentMelodyItem()) viewKey += ":list:" + this.melodyListTab;
     const sameView = this.lastViewKey === viewKey;
     this.lastViewKey = viewKey;
     this.root.innerHTML = "";
@@ -685,7 +706,84 @@ export class App {
     return mix;
   }
 
+  /** A segmented sub-tab nav (the loop popup's Sound/Loop/Transition look), tinted to the
+      row colour. Used by the colour panel and the melody list. */
+  private tabNav<T extends string>(
+    tabs: [T, string][], active: T, pick: (t: T) => void, color: string,
+  ): HTMLElement {
+    const nav = document.createElement("div");
+    nav.className = "placement-seg placement-nav row-tabs";
+    nav.style.setProperty("--vc", color);
+    for (const [t, text] of tabs) {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (active === t ? " on" : "");
+      b.textContent = text;
+      b.onclick = () => { if (active !== t) pick(t); };
+      nav.append(b);
+    }
+    return nav;
+  }
+
   // --- track view (colours + bar limit) --------------------------------
+  /** A draggable bar strip — the play-range gesture, shared with transition placement:
+      one faint cell per bar, ticked every 4, with a highlight band. Dragging sweeps a
+      from–to bar range; `write` fires live (only when the range actually changes) so the
+      engine can follow mid-drag. `read` returning null hides the band. */
+  private barStrip(
+    barLimit: number,
+    read: () => { from: number; to: number } | null,
+    write: (from: number, to: number) => void,
+  ): HTMLElement {
+    const strip = document.createElement("div");
+    strip.className = "play-range-strip";
+    for (let b = 0; b < barLimit; b++) {
+      const cell = document.createElement("span");
+      cell.className = "play-range-cell" + (b % 4 === 0 ? " tick" : "");
+      strip.append(cell);
+    }
+    const band = document.createElement("div");
+    band.className = "play-range-band";
+    strip.append(band);
+    const layout = () => {
+      const r = read();
+      band.style.display = r ? "block" : "none";
+      if (r) {
+        band.style.left = `${((r.from - 1) / barLimit) * 100}%`;
+        band.style.width = `${((r.to - r.from + 1) / barLimit) * 100}%`;
+      }
+    };
+    layout();
+
+    const barAt = (clientX: number) => {
+      const rect = strip.getBoundingClientRect();
+      const frac = Math.max(0, Math.min(0.9999, (clientX - rect.left) / Math.max(1, rect.width)));
+      return Math.max(1, Math.min(barLimit, Math.floor(frac * barLimit) + 1));
+    };
+    let anchor = 0;
+    const drag = (bar: number) => {
+      const from = Math.min(anchor, bar), to = Math.max(anchor, bar);
+      const cur = read();
+      if (!cur || cur.from !== from || cur.to !== to) { write(from, to); layout(); }
+    };
+    const onMove = (e: PointerEvent) => drag(barAt(e.clientX));
+    const onUp = (e: PointerEvent) => {
+      strip.removeEventListener("pointermove", onMove);
+      strip.removeEventListener("pointerup", onUp);
+      strip.removeEventListener("pointercancel", onUp);
+      try { strip.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+    };
+    strip.onpointerdown = (e) => {
+      e.preventDefault();
+      anchor = barAt(e.clientX);
+      drag(anchor);
+      try { strip.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
+      strip.addEventListener("pointermove", onMove);
+      strip.addEventListener("pointerup", onUp);
+      strip.addEventListener("pointercancel", onUp);
+    };
+    return strip;
+  }
+
   /** Play-range: DRAG across a bar strip to loop just bars n→m. A whole-track mini-timeline
       (one row, whatever the bar limit) with a highlight band, a readout, and a clear. Applied
       live to the engine while dragging. A rehearsal aid, kept in app state only (not saved). */
@@ -716,61 +814,21 @@ export class App {
     head.append(lbl, readout, clear);
     wrap.append(head);
 
-    // The draggable bar strip: one faint cell per bar, ticked every 4, with a band overlay.
-    const strip = document.createElement("div");
-    strip.className = "play-range-strip";
-    for (let b = 0; b < barLimit; b++) {
-      const cell = document.createElement("span");
-      cell.className = "play-range-cell" + (b % 4 === 0 ? " tick" : "");
-      strip.append(cell);
-    }
-    const band = document.createElement("div");
-    band.className = "play-range-band";
-    strip.append(band);
-    const layout = () => {
-      band.style.display = isOn() ? "block" : "none";
-      if (isOn()) {
-        band.style.left = `${((this.playFromBar - 1) / barLimit) * 100}%`;
-        band.style.width = `${((this.playToBar - this.playFromBar + 1) / barLimit) * 100}%`;
-      }
+    const syncHead = () => {
       readout.textContent = readoutText();
       clear.disabled = !isOn();
       wrap.classList.toggle("on", isOn());
     };
-    layout();
-
-    const barAt = (clientX: number) => {
-      const rect = strip.getBoundingClientRect();
-      const frac = Math.max(0, Math.min(0.9999, (clientX - rect.left) / Math.max(1, rect.width)));
-      return Math.max(1, Math.min(barLimit, Math.floor(frac * barLimit) + 1));
-    };
-    let anchor = 0;
-    const onMove = (e: PointerEvent) => {
-      const bar = barAt(e.clientX);
-      this.playFromBar = Math.min(anchor, bar);
-      this.playToBar = Math.max(anchor, bar);
-      layout();
-      this.applySection(); // follow the drag live while playing
-    };
-    const onUp = (e: PointerEvent) => {
-      strip.removeEventListener("pointermove", onMove);
-      strip.removeEventListener("pointerup", onUp);
-      strip.removeEventListener("pointercancel", onUp);
-      try { strip.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
-    };
-    strip.onpointerdown = (e) => {
-      e.preventDefault();
-      anchor = barAt(e.clientX);
-      this.playFromBar = anchor;
-      this.playToBar = anchor;
-      layout();
-      this.applySection();
-      try { strip.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
-      strip.addEventListener("pointermove", onMove);
-      strip.addEventListener("pointerup", onUp);
-      strip.addEventListener("pointercancel", onUp);
-    };
-    wrap.append(strip);
+    wrap.append(this.barStrip(
+      barLimit,
+      () => (isOn() ? { from: this.playFromBar, to: this.playToBar } : null),
+      (from, to) => {
+        this.playFromBar = from;
+        this.playToBar = to;
+        this.applySection(); // follow the drag live while playing
+        syncHead();
+      },
+    ));
     return wrap;
   }
 
@@ -857,7 +915,7 @@ export class App {
       row.append(strip);
       for (const l of ct.loops) if (l.soundId >= 0) this.voiceBtns.set(l.soundId, row);
 
-      row.onclick = () => { this.openColor = c; this.view = "color"; this.editLoop = null; this.render(); };
+      row.onclick = () => { this.openColor = c; this.colorTab = "loops"; this.view = "color"; this.editLoop = null; this.render(); };
       overview.append(row);
     }
     v.append(overview);
@@ -869,6 +927,7 @@ export class App {
     this.melodyItemIndex = -1;
     this.melodyPath = [];
     this.melodyOptionsPage = false;
+    this.melodyListTab = "melodies";
     this.resetSingTab();
     this.view = "melody";
     this.render();
@@ -995,8 +1054,27 @@ export class App {
     head.append(back, title);
     v.append(head);
 
+    // Sub-tabs mirroring a voice row's panel: the melody list, the row's transitions,
+    // and the mixer.
+    v.append(this.tabNav<"melodies" | "transition" | "mixer">(
+      [["melodies", "Melodies"], ["transition", "Transition"], ["mixer", "Mixer"]],
+      this.melodyListTab,
+      (t) => { this.melodyListTab = t; this.render(); },
+      VOICE_COLORS[c],
+    ));
+
+    if (this.melodyListTab === "mixer") {
+      v.append(this.mixerStripList());
+      return;
+    }
+
     const seq = this.melodyLanesPreview();
     if (seq) v.append(seq);
+
+    if (this.melodyListTab === "transition") {
+      v.append(this.rowTransitionEditor(c));
+      return;
+    }
 
     const list = document.createElement("div");
     list.className = "mixer-list melody-list";
@@ -1071,8 +1149,9 @@ export class App {
     const c = MELODY_COLOR_INDEX;
     const atRoot = this.melodyPath.length === 0;
     const node = this.currentMelodyNode();
-    // Sound / Transition are item-level (root only); drilling into a branch drops back to Notes.
-    if (!atRoot && (this.melodyTab === "sound" || this.melodyTab === "transition")) this.melodyTab = "notes";
+    // Sound / Graph / Transition are item-level (root only); drilling into a branch drops
+    // back to Notes.
+    if (!atRoot && (this.melodyTab === "sound" || this.melodyTab === "graph" || this.melodyTab === "transition")) this.melodyTab = "notes";
 
     const head = document.createElement("div");
     head.className = "mixer-head";
@@ -1113,11 +1192,16 @@ export class App {
       return b;
     };
     nav.append(mkTab("notes", "Notes"), mkTab("sing", "🎤 Sing"));
-    if (atRoot) nav.append(mkTab("sound", "🎛 Sound"), mkTab("transition", "Transition"));
+    if (atRoot) nav.append(mkTab("graph", "📈 Graph"), mkTab("sound", "🎛 Sound"), mkTab("transition", "Transition"));
     v.append(nav);
 
     if (this.melodyTab === "sing") { v.append(this.melodySingSection(node)); return; }
-    // Sound / Transition act on the item instrument (root only — a branch has no own sound).
+    // Graph / Sound / Transition act on the whole item (root only — a branch has no own
+    // sound, and the graph draws across the item's phrase).
+    if (atRoot && this.melodyTab === "graph") {
+      v.append(this.melodyGraphSection(item));
+      return;
+    }
     if (atRoot && this.melodyTab === "sound") {
       const instWrap = document.createElement("div");
       instWrap.className = "melody-inst";
@@ -1414,6 +1498,238 @@ export class App {
     this.singTake = null;
     this.melodyTab = "notes";
     this.melodyChanged();
+  }
+
+  // --- graph melody generator (📈 tab) ----------------------------------
+  /** The 📈 Graph tab: a graph-calculator generator. A function is drawn across the
+      phrase — y in scale degrees (0 = the root), x in time — and every pass close enough
+      to a lattice point (an integer degree at a 16th step) becomes a note. The note/time
+      widths fatten the lattice lines so curly shapes still land. Apply lays the hits down
+      as a verbatim chain (see chainNotes) — the shape IS the melody, looping. */
+  private melodyGraphSection(item: MelodyItem): HTMLElement {
+    const node = item.node;
+    const g = this.graph;
+    const rerender = () => this.render();
+    const wrap = document.createElement("div");
+    wrap.className = "melody-graph";
+    wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = "Draw a function over the phrase: y is notes on the scale (0 = the root), x is time. Wherever the curve touches a note line at a step, that note plays. Widen the note/time lines if a curly shape misses too much.";
+    wrap.append(hint);
+
+    // The lattice the curve lands on: scale / root / octave.
+    wrap.append(this.melodyScaleControls(node));
+
+    // Phrase length (the x axis) — the same Length as the Notes tab.
+    const phraseBars = Math.max(1, Math.round(item.inst.rule.forBars));
+    const lenBar = document.createElement("div");
+    lenBar.className = "placement-controls melody-genbar";
+    lenBar.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    lenBar.append(this.stepperRow("Length", phraseBars, 1, 64,
+      (nn) => { item.inst.rule.forBars = nn; this.melodyChanged(); }, (nn) => `${nn} bar${nn === 1 ? "" : "s"}`));
+    wrap.append(lenBar);
+
+    // The drawn function: preset + its tweakable parameters.
+    const controls = document.createElement("div");
+    controls.className = "placement-controls melody-graph-controls";
+    const presetRow = document.createElement("div");
+    presetRow.className = "placement-row fade-row";
+    const pLbl = document.createElement("span");
+    pLbl.className = "placement-lbl";
+    pLbl.textContent = "Shape";
+    const seg = document.createElement("div");
+    seg.className = "placement-seg fade-modes";
+    for (const preset of GRAPH_PRESETS) {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (g.preset === preset.id ? " on" : "");
+      b.textContent = preset.label;
+      b.onclick = () => { g.preset = preset.id; rerender(); };
+      seg.append(b);
+    }
+    presetRow.append(pLbl, seg);
+    controls.append(presetRow);
+
+    const spec = GRAPH_PRESETS.find((p) => p.id === g.preset)!;
+    const periodic = spec.uses.includes("cycles");
+    controls.append(this.numRow(periodic ? "Height ±" : "Rise", () => g.rise, (n) => {
+      g.rise = Math.max(-24, Math.min(24, Math.round(n)));
+    }, rerender, () => `${g.rise > 0 ? "+" : ""}${g.rise} degrees`));
+    controls.append(this.numRow("Start at", () => g.offset, (n) => {
+      g.offset = Math.max(-24, Math.min(24, Math.round(n)));
+    }, rerender, () => {
+      const name = this.noteLabelFor(node, { degree: g.offset, weight: 3, lengthSteps: 1, restSteps: 0 });
+      return g.offset === 0 ? `root · ${name}` : `${g.offset > 0 ? "+" : ""}${g.offset} · ${name}`;
+    }));
+    if (spec.uses.includes("bend")) {
+      const bendLbl = g.preset === "arch" ? "Skew" : g.preset === "wobble" ? "Damping" : "Bend";
+      controls.append(this.numRow(bendLbl, () => g.bend, (n) => {
+        g.bend = Math.max(0, Math.min(100, Math.round(n)));
+      }, rerender, () => `${g.bend}%`));
+    }
+    if (spec.uses.includes("cycles")) {
+      controls.append(this.numRow("Waves", () => g.cycles, (n) => {
+        g.cycles = Math.max(1, Math.min(12, Math.round(n)));
+      }, rerender, () => `${g.cycles} wave${g.cycles === 1 ? "" : "s"}`));
+    }
+    // How forgiving the lattice is: the thickness of the note (pitch) and step (time)
+    // lines — wider = more of the curve counts as a landing.
+    controls.append(this.numRow("Note width", () => g.noteWidth, (n) => {
+      g.noteWidth = Math.max(0, Math.min(50, Math.round(n)));
+    }, rerender, () => `${g.noteWidth}%`));
+    controls.append(this.numRow("Time width", () => g.timeWidth, (n) => {
+      g.timeWidth = Math.max(0, Math.min(50, Math.round(n)));
+    }, rerender, () => `${g.timeWidth}%`));
+    wrap.append(controls);
+
+    // The graph itself + the notes the curve currently lands on.
+    const params: GraphParams = { preset: g.preset, rise: g.rise, offset: g.offset, bend: g.bend / 100, cycles: g.cycles };
+    const phraseSteps = phraseBars * STEPS_PER_BAR;
+    const maxAbs = degreesPerOctave(node.scale) * 3;
+    const hits = graphHits(params, phraseSteps, g.noteWidth / 100, g.timeWidth / 100, maxAbs);
+    const notes = hitsToNotes(hits);
+    wrap.append(this.graphSvg(node, params, phraseSteps, notes, g.noteWidth / 100, g.timeWidth / 100));
+
+    // Apply: lay the landed notes down as the melody (a verbatim chain, like a kept take).
+    const apply = document.createElement("div");
+    apply.className = "placement-row sing-apply graph-apply";
+    const count = document.createElement("span");
+    count.className = "placement-lbl";
+    count.textContent = notes.length === 0
+      ? "no notes land — widen the lines"
+      : `${notes.length} note${notes.length === 1 ? "" : "s"} land${notes.length === 1 ? "s" : ""}${notes.length > MAX_CHAIN ? ` (first ${MAX_CHAIN} kept)` : ""}`;
+    const use = document.createElement("button");
+    use.className = "seg-btn sing-apply-order";
+    use.textContent = "✓ Use as my loop";
+    use.title = "Replace this melody's notes with the graph's — played in order, looping";
+    use.disabled = notes.length === 0;
+    use.onclick = () => {
+      if (!notes.length) return;
+      chainNotes(node, notes);
+      this.melodyChanged();
+      this.toast(`Graph applied — ${Math.min(notes.length, MAX_CHAIN)} note${notes.length === 1 ? "" : "s"}`);
+    };
+    apply.append(count, use);
+    wrap.append(apply);
+    return wrap;
+  }
+
+  /** Draw the graph: the note lattice (horizontal degree lines, fattened by the note
+      width; roots tinted + labelled), the time grid (beats/bars, steps fattened by the
+      time width), the curve, and a piano-roll bar for every landed note run. */
+  private graphSvg(
+    node: MelodyNode, p: GraphParams, phraseSteps: number, notes: MelodyNote[],
+    noteWidth: number, timeWidth: number,
+  ): HTMLElement {
+    const NS = "http://www.w3.org/2000/svg";
+    const W = 360, H = 216, L = 34, R = 6, T = 10, B = 18;
+    const plotW = W - L - R, plotH = H - T - B;
+    const steps = Math.max(1, Math.round(phraseSteps));
+
+    // Sample the curve (for drawing and the y range); include landed degrees and 0.
+    const N = Math.max(64, Math.min(512, steps * 4));
+    const ys: number[] = [];
+    for (let i = 0; i <= N; i++) ys.push(graphY(p, i / N));
+    let yMin = Math.min(0, ...ys), yMax = Math.max(0, ...ys);
+    for (const n of notes) { yMin = Math.min(yMin, n.degree); yMax = Math.max(yMax, n.degree); }
+    yMin = Math.floor(yMin) - 1;
+    yMax = Math.ceil(yMax) + 1;
+    if (yMax - yMin < 4) { yMin -= 1; yMax += 1; }
+
+    const xPx = (step: number) => L + (step / steps) * plotW;
+    const yPx = (deg: number) => T + ((yMax - deg) / (yMax - yMin)) * plotH;
+    const stepPx = plotW / steps;
+    const degPx = plotH / (yMax - yMin);
+
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "graph-svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const rect = (x: number, y: number, w: number, h: number, cls: string, rx = 0) => {
+      const r = document.createElementNS(NS, "rect");
+      r.setAttribute("x", x.toFixed(1)); r.setAttribute("y", y.toFixed(1));
+      r.setAttribute("width", Math.max(0.5, w).toFixed(1)); r.setAttribute("height", Math.max(0.5, h).toFixed(1));
+      if (rx) r.setAttribute("rx", String(rx));
+      r.setAttribute("class", cls);
+      svg.append(r);
+      return r;
+    };
+    const line = (x1: number, y1: number, x2: number, y2: number, cls: string) => {
+      const l = document.createElementNS(NS, "line");
+      l.setAttribute("x1", x1.toFixed(1)); l.setAttribute("y1", y1.toFixed(1));
+      l.setAttribute("x2", x2.toFixed(1)); l.setAttribute("y2", y2.toFixed(1));
+      l.setAttribute("class", cls);
+      svg.append(l);
+    };
+    const text = (x: number, y: number, s: string, anchor: "start" | "middle" | "end") => {
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("x", x.toFixed(1)); t.setAttribute("y", y.toFixed(1));
+      t.setAttribute("text-anchor", anchor);
+      t.setAttribute("class", "graph-lbl");
+      t.textContent = s;
+      svg.append(t);
+    };
+
+    // Time grid: fattened per-step snap bands (when time width is on), faint beat lines,
+    // stronger bar lines with numbers.
+    if (timeWidth > 0 && steps <= 128) {
+      for (let s = 0; s < steps; s++) {
+        rect(xPx(s) - timeWidth * stepPx, T, 2 * timeWidth * stepPx, plotH, "graph-band-x");
+      }
+    }
+    if (steps <= 256) {
+      for (let s = 4; s < steps; s += 4) {
+        if (s % STEPS_PER_BAR !== 0) line(xPx(s), T, xPx(s), T + plotH, "graph-grid");
+      }
+    }
+    const bars = Math.ceil(steps / STEPS_PER_BAR);
+    const barLabelEvery = bars <= 8 ? 1 : bars <= 32 ? 4 : 8;
+    for (let b = 0; b < bars; b++) {
+      const x = xPx(b * STEPS_PER_BAR);
+      if (b > 0) line(x, T, x, T + plotH, "graph-grid graph-bar");
+      if (b % barLabelEvery === 0) text(x + 2, H - 6, String(b + 1), "start");
+    }
+
+    // Note lattice: a line per scale degree, fattened by the note width; roots tinted
+    // and labelled (every line labelled when the range is small).
+    const perOct = Math.max(1, degreesPerOctave(node.scale));
+    const labelEvery = yMax - yMin <= 18 ? 1 : perOct;
+    for (let d = yMin; d <= yMax; d++) {
+      const isRoot = ((d % perOct) + perOct) % perOct === 0;
+      if (noteWidth > 0) {
+        rect(L, yPx(d) - noteWidth * degPx, plotW, 2 * noteWidth * degPx, "graph-band-y" + (isRoot ? " root" : ""));
+      }
+      line(L, yPx(d), L + plotW, yPx(d), "graph-lattice" + (isRoot ? " graph-root" : ""));
+      if (((d - yMin) % labelEvery === 0 && labelEvery === 1) || (labelEvery > 1 && isRoot)) {
+        text(L - 3, yPx(d) + 2.6, this.noteLabelFor(node, { degree: d, weight: 3, lengthSteps: 1, restSteps: 0 }), "end");
+      }
+    }
+
+    // The curve itself.
+    let d = "";
+    for (let i = 0; i <= N; i++) {
+      const x = L + (i / N) * plotW;
+      const y = yPx(ys[i]);
+      d += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1) + " ";
+    }
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d.trim());
+    path.setAttribute("class", "graph-curve");
+    svg.append(path);
+
+    // The landed notes, piano-roll style (colour = pitch class, matching the note squares).
+    let pos = 0;
+    for (const n of notes) {
+      pos += n.restSteps;
+      const bar = rect(xPx(pos), yPx(n.degree) - 2.5, Math.max(3, n.lengthSteps * stepPx - 1), 5, "graph-note", 2.5);
+      bar.setAttribute("fill", this.pcColor(semitoneForDegree(n.degree, node.scale) + node.root));
+      pos += n.lengthSteps;
+    }
+
+    const box = document.createElement("div");
+    box.className = "graph-box";
+    box.append(svg);
+    return box;
   }
 
   /** Per-frame DOM updates while recording (no full render): the tuner's note, cents
@@ -2093,14 +2409,32 @@ export class App {
     const title = document.createElement("h2");
     title.className = "mixer-title";
     title.textContent = `Voice ${c + 1}`;
-    head.append(back, title, this.mixerOpenBtn("color"));
+    head.append(back, title);
     v.append(head);
+
+    // Sub-tabs: the loop list, the row's transitions, and the mixer.
+    v.append(this.tabNav<"loops" | "transition" | "mixer">(
+      [["loops", "Loops"], ["transition", "Transition"], ["mixer", "Mixer"]],
+      this.colorTab,
+      (t) => { this.colorTab = t; this.render(); },
+      VOICE_COLORS[c],
+    ));
+
+    if (this.colorTab === "mixer") {
+      v.append(this.mixerStripList());
+      return;
+    }
 
     const loops = this.track.colors[c].loops;
 
     // Read-only timeline: the colour's compiled lanes across the whole track, so the
     // procedural placement is visible (one row per lane; a bar is lit where it sounds).
     if (loops.some((l) => l.soundId >= 0)) v.append(this.colorPreview(c));
+
+    if (this.colorTab === "transition") {
+      v.append(this.rowTransitionEditor(c));
+      return;
+    }
 
     const list = document.createElement("div");
     list.className = "loop-list";
@@ -2112,65 +2446,93 @@ export class App {
     add.textContent = "＋ Add loop";
     add.onclick = () => this.addLoop(c);
     v.append(add);
-
-    // Overarching FX sweep across the whole row over a bar range.
-    if (loops.some((l) => l.soundId >= 0)) v.append(this.rowSweepControls(c));
   }
 
-  /** The row transition: an overarching FX sweep across the whole colour over a bar range
-      (see RowSweep / the engine's line sweeps). On/off, the bar window, a style, its
-      direction into/out of the effect, and the ramp curve. */
-  private rowSweepControls(c: number): HTMLElement {
+  /** The row's Transition tab: a LIST of overarching FX sweeps, each across its own bar
+      range of the whole row (see RowSweep / the engine's line sweeps). Cards may overlap —
+      the engine composes them, each morphing the result of the previous. Also serves the
+      melody row (its sweeps ride every melody lane). */
+  private rowTransitionEditor(c: number): HTMLElement {
     const ct = this.track.colors[c];
     const wrap = document.createElement("div");
-    wrap.className = "placement-controls transition-controls row-sweep";
+    wrap.className = "row-transitions";
     wrap.style.setProperty("--vc", VOICE_COLORS[c]);
-    const head = document.createElement("span");
-    head.className = "placement-lbl transition-head";
-    head.textContent = "Row transition";
-    wrap.append(head);
 
-    const on = !!ct.sweep?.on;
-    const rerender = () => this.render();
-    const toggleRow = document.createElement("div");
-    toggleRow.className = "placement-row fade-row";
-    const lbl = document.createElement("span");
-    lbl.className = "placement-lbl";
-    lbl.textContent = "Sweep";
-    const controls = document.createElement("div");
-    controls.className = "fade-controls";
-    const toggle = document.createElement("button");
-    toggle.className = "seg-btn fade-toggle" + (on ? " on" : "");
-    toggle.textContent = on ? "On" : "Off";
-    toggle.onclick = () => {
-      if (!ct.sweep) ct.sweep = defaultRowSweep();
-      ct.sweep.on = !on;
-      this.recompile();
-      rerender();
-    };
-    controls.append(toggle);
-    if (!on) {
+    const sweeps = ct.sweeps ?? (ct.sweeps = []);
+    if (!sweeps.length) {
       const hint = document.createElement("p");
-      hint.className = "sing-hint";
-      hint.textContent = "An FX sweep across the whole row over a bar range — the filter opens, reverb wells up, drive bites… spanning every loop on the row.";
-      controls.append(hint);
+      hint.className = "hint";
+      hint.textContent = "An FX sweep across the whole row over a bar range — the filter opens, reverb wells up, drive bites… spanning every loop on the row. Transitions can overlap: where they do, they stack.";
+      wrap.append(hint);
     }
-    toggleRow.append(lbl, controls);
-    wrap.append(toggleRow);
+    sweeps.forEach((s, i) => wrap.append(this.sweepCard(c, s, i)));
 
-    const sweep = ct.sweep;
-    if (!on || !sweep) return wrap;
-
-    wrap.append(this.numRow("From bar", () => sweep.fromBar, (n) => {
-      sweep.fromBar = Math.max(1, Math.min(this.track.barLimit, Math.round(n)));
-      if (sweep.toBar < sweep.fromBar) sweep.toBar = sweep.fromBar;
+    const add = document.createElement("button");
+    add.className = "loop-add";
+    add.textContent = "＋ Add transition";
+    add.onclick = () => {
+      sweeps.push(defaultRowSweep(this.track.barLimit));
       this.recompile();
-    }, rerender, () => `bar ${sweep.fromBar}`));
-    wrap.append(this.numRow("To bar", () => sweep.toBar, (n) => {
-      sweep.toBar = Math.max(sweep.fromBar, Math.min(this.track.barLimit, Math.round(n)));
-      this.recompile();
-    }, rerender, () => `bar ${sweep.toBar}`));
+      this.render();
+    };
+    wrap.append(add);
+    return wrap;
+  }
 
+  /** One row-transition card: On/Off + remove, a draggable placement strip (the same
+      gesture as the play range), a MULTI-SELECT style row (active styles are lit and
+      sweep together), direction into/out of the effect, and the ramp curve + preview. */
+  private sweepCard(c: number, sweep: RowSweep, i: number): HTMLElement {
+    const ct = this.track.colors[c];
+    const barLimit = Math.max(1, this.track.barLimit);
+    const rerender = () => this.render();
+    const card = document.createElement("div");
+    card.className = "placement-controls row-sweep sweep-card" + (sweep.on ? "" : " off");
+    card.style.setProperty("--vc", VOICE_COLORS[c]);
+    card.style.setProperty("--accent", VOICE_COLORS[c]); // tints the placement band
+
+    // Header: name + On/Off + remove.
+    const head = document.createElement("div");
+    head.className = "sweep-card-head";
+    const title = document.createElement("span");
+    title.className = "placement-lbl transition-head";
+    title.textContent = `Transition ${i + 1}`;
+    const onBtn = document.createElement("button");
+    onBtn.className = "seg-btn fade-toggle" + (sweep.on ? " on" : "");
+    onBtn.textContent = sweep.on ? "On" : "Off";
+    onBtn.onclick = () => { sweep.on = !sweep.on; this.recompile(); rerender(); };
+    const rm = document.createElement("button");
+    rm.className = "sweep-remove";
+    rm.textContent = "×";
+    rm.title = "Remove this transition";
+    rm.onclick = () => { (ct.sweeps ?? []).splice(i, 1); this.recompile(); rerender(); };
+    head.append(title, onBtn, rm);
+    card.append(head);
+
+    // Placement: drag across the bar strip (applied live, like the play range).
+    const barsRow = document.createElement("div");
+    barsRow.className = "sweep-bars-head";
+    const bLbl = document.createElement("span");
+    bLbl.className = "placement-lbl";
+    bLbl.textContent = "Bars";
+    const readout = document.createElement("span");
+    readout.className = "play-range-readout";
+    const readoutText = () => `bars ${sweep.fromBar}–${sweep.toBar} — drag to move`;
+    readout.textContent = readoutText();
+    barsRow.append(bLbl, readout);
+    card.append(barsRow);
+    card.append(this.barStrip(
+      barLimit,
+      () => ({ from: Math.min(sweep.fromBar, barLimit), to: Math.min(sweep.toBar, barLimit) }),
+      (from, to) => {
+        sweep.fromBar = from;
+        sweep.toBar = to;
+        readout.textContent = readoutText();
+        this.recompile(); // hear the window move while playing
+      },
+    ));
+
+    // Style: a multi-select — every active style is lit; they sweep together.
     const styleRow = document.createElement("div");
     styleRow.className = "placement-row fade-row";
     const sLbl = document.createElement("span");
@@ -2179,15 +2541,16 @@ export class App {
     const styles = document.createElement("div");
     styles.className = "placement-seg fade-modes";
     const SWEEP_STYLES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo"];
+    const active = envModes(sweep);
     for (const m of SWEEP_STYLES) {
       const b = document.createElement("button");
-      b.className = "seg-btn" + (sweep.mode === m ? " on" : "");
+      b.className = "seg-btn" + (active.includes(m) ? " on" : "");
       b.textContent = this.fadeModeLabel(m, sweep.side === "out" ? "outro" : "intro");
-      b.onclick = () => { sweep.mode = m; this.recompile(); rerender(); };
+      b.onclick = () => { this.toggleModeIn(sweep, m); this.recompile(); rerender(); };
       styles.append(b);
     }
     styleRow.append(sLbl, styles);
-    wrap.append(styleRow);
+    card.append(styleRow);
 
     const dirRow = document.createElement("div");
     dirRow.className = "placement-row fade-row";
@@ -2205,9 +2568,9 @@ export class App {
     };
     dirSeg.append(mkSide("out", "Into effect"), mkSide("in", "Out of effect"));
     dirRow.append(dLbl, dirSeg);
-    wrap.append(dirRow);
+    card.append(dirRow);
 
-    wrap.append(this.numRow("Curve", () => Math.round((sweep.curve ?? 0) * 100), (n) => {
+    card.append(this.numRow("Curve", () => Math.round((sweep.curve ?? 0) * 100), (n) => {
       sweep.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
       this.recompile();
     }, rerender, () => `${Math.round((sweep.curve ?? 0) * 100)}%`));
@@ -2229,11 +2592,33 @@ export class App {
     };
     easeSeg.append(mkEase("out", "Ease out"), mkEase("in", "Ease in"));
     easeRow.append(eLbl, easeSeg);
-    wrap.append(easeRow);
+    card.append(easeRow);
 
     // Live preview of the sweep's blend curve.
-    wrap.append(this.rowSweepCurveViz(sweep));
-    return wrap;
+    card.append(this.rowSweepCurveViz(sweep));
+    return card;
+  }
+
+  /** Toggle one style in a transition's multi-select set. "Speed" is exclusive (it warps
+      timing, not tone), and the last active style can't be removed. */
+  private toggleModeIn(
+    env: { mode: TransitionMode; modes?: TransitionMode[]; rate?: number; curve?: number }, m: TransitionMode,
+  ): void {
+    let list = envModes(env);
+    if (list.includes(m)) {
+      if (list.length <= 1) return; // at least one style stays active
+      list = list.filter((x) => x !== m);
+    } else if (m === "speed") {
+      list = ["speed"];
+    } else {
+      list = [...list.filter((x) => x !== "speed"), m];
+    }
+    setEnvModes(env, list);
+    // Speed carries a far-end rate + glide curve; seed sensible defaults on switch.
+    if (env.mode === "speed") {
+      if (env.rate === undefined) env.rate = 2;
+      if (env.curve === undefined) env.curve = 0;
+    }
   }
 
   /** One row in a colour's loop list: priority reorder (solo), name + rule summary,
@@ -2881,14 +3266,15 @@ export class App {
       modes.className = "placement-seg fade-modes";
       // Melody fades are realised as row sweeps (no per-node speed warp), so drop "speed".
       const modeList = unit === "bar" ? FADE_MODES.filter((m) => m !== "speed") : FADE_MODES;
+      // A MULTI-SELECT: every active style is lit, and they sweep together (composed in
+      // the engine). Speed stays exclusive — it warps timing, not tone.
+      const active = envModes(env);
       for (const m of modeList) {
         const b = document.createElement("button");
-        b.className = "seg-btn" + (env.mode === m ? " on" : "");
+        b.className = "seg-btn" + (active.includes(m) ? " on" : "");
         b.textContent = this.fadeModeLabel(m, side);
         b.onclick = () => {
-          env.mode = m;
-          // Speed carries a far-end rate + glide curve; seed sensible defaults on switch.
-          if (m === "speed") { if (env.rate === undefined) env.rate = 2; if (env.curve === undefined) env.curve = 0; }
+          this.toggleModeIn(env, m);
           this.recompile();
           rerender();
         };
@@ -2908,9 +3294,10 @@ export class App {
           env.rate = Math.max(0.25, Math.min(4, Math.round(n) / 100));
           this.recompile();
         }, rerender, () => `${(env.rate ?? 2).toFixed(2)}×`));
-      } else {
-        // Every other style sweeps ONE parameter From → To (see TRANSITION_SWEEP). From
-        // defaults to the sound's own value, To to the style's built-in extreme.
+      } else if (active.length === 1) {
+        // A single tonal style sweeps ONE parameter From → To (see TRANSITION_SWEEP). From
+        // defaults to the sound's own value, To to the style's built-in extreme. With
+        // several styles active each uses its built-ins (no shared units to edit).
         const spec = TRANSITION_SWEEP[env.mode];
         if (spec) {
           controls.append(this.sweepRow(loop, env, "from", rerender));
@@ -2962,12 +3349,17 @@ export class App {
 
   /** A little graph of a transition's blend curve: the swept value's path across the span,
       bent by Curve/dir (mirrors bendT in engine.js), labelled with its start/end values. */
-  private curveViz(loop: Loop, env: TransitionShape & { mode: TransitionMode }, side: "intro" | "outro"): HTMLElement {
+  private curveViz(loop: Loop, env: TransitionShape & { mode: TransitionMode; modes?: TransitionMode[] }, side: "intro" | "outro"): HTMLElement {
+    const active = envModes(env);
     const spec = TRANSITION_SWEEP[env.mode];
     // Start/end labels for the span (left = span start, right = span end). An intro rises
     // from the far end into the near sound; an outro leaves the near sound for the far end.
     let startLabel: string, endLabel: string;
-    if (env.mode === "speed") {
+    if (active.length > 1) {
+      // Several styles sweep together — name the composed far end, no shared units.
+      const far = active.map((m) => this.fadeModeLabel(m, side)).join(" + ");
+      [startLabel, endLabel] = side === "intro" ? [far, "sound"] : ["sound", far];
+    } else if (env.mode === "speed") {
       const rate = (env.rate ?? 2).toFixed(2) + "×";
       [startLabel, endLabel] = side === "intro" ? [rate, "1×"] : ["1×", rate];
     } else if (spec) {
@@ -2985,11 +3377,17 @@ export class App {
       snapshot), so the ends are labelled generically — the clean "sound" vs the effect (or
       the From/To overrides when set). Left = window start, right = window end. */
   private rowSweepCurveViz(sweep: RowSweep): HTMLElement {
+    const active = envModes(sweep);
     const spec = TRANSITION_SWEEP[sweep.mode];
-    const near = spec && sweep.from !== undefined ? spec.format(sweep.from) : "sound";
-    const far = spec
-      ? (sweep.to !== undefined ? spec.format(sweep.to) : this.fadeModeLabel(sweep.mode, "outro"))
-      : "";
+    let near = "sound", far = "";
+    if (active.length > 1) {
+      far = active.map((m) => this.fadeModeLabel(m, "outro")).join(" + ");
+    } else {
+      near = spec && sweep.from !== undefined ? spec.format(sweep.from) : "sound";
+      far = spec
+        ? (sweep.to !== undefined ? spec.format(sweep.to) : this.fadeModeLabel(sweep.mode, "outro"))
+        : "";
+    }
     const [startLabel, endLabel] = sweep.side === "in" ? [far, near] : [near, far];
     return this.curveVizBox(sweep.curve ?? 0, sweep.dir ?? "out", startLabel, endLabel);
   }
@@ -3532,15 +3930,21 @@ export class App {
     title.textContent = "Mixer";
     head.append(back, title);
     v.append(head);
+    v.append(this.mixerStripList());
+  }
 
+  /** The mixer strips — one per sounding colour plus the melody row (or a hint when the
+      track is empty). Shared by the mixer view and the row panels' Mixer tab. Requires
+      this.mixerLeds to be a fresh Map (render() nulls it; renderMixer / the tabs re-init). */
+  private mixerStripList(): HTMLElement {
+    this.mixerLeds = new Map();
     const active = this.track.colors.map((_, i) => i).filter((i) => this.track.colors[i].loops.some((l) => l.soundId >= 0));
     const melodySounds = this.track.melodies.map((m) => m.inst).filter((l) => l.soundId >= 0);
     if (active.length === 0 && melodySounds.length === 0) {
       const hint = document.createElement("p");
       hint.className = "hint";
       hint.textContent = "No loops yet. Add loops to the colours, then mix them here.";
-      v.append(hint);
-      return;
+      return hint;
     }
     const list = document.createElement("div");
     list.className = "mixer-list";
@@ -3551,7 +3955,7 @@ export class App {
       const c = MELODY_COLOR_INDEX;
       list.append(this.buildMixStrip("Melody", VOICE_COLORS[c], this.track.colors[c], melodySounds));
     }
-    v.append(list);
+    return list;
   }
 
   /** A single mixer strip for one colour (all its loops move together). */

@@ -10,7 +10,7 @@
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
-import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
+import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, DEFAULT_BAR_LIMIT, randomSeed,
   MelodyItem, newMelodyItem,
@@ -39,8 +39,8 @@ export interface LoopJSON {
   rotation: number;
   split?: number;
   gain?: number;
-  intro?: { reps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
-  outro?: { reps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
+  intro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
+  outro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
   accent?: LifePlacement;
   ghost?: LifePlacement;
   preset?: string;
@@ -53,6 +53,7 @@ export interface RowSweepJSON {
   fromBar: number;
   toBar: number;
   mode: TransitionMode;
+  modes?: TransitionMode[];
   side: "in" | "out";
   from?: number;
   to?: number;
@@ -64,7 +65,8 @@ export interface ColorJSON {
   loops: LoopJSON[];
   mute?: boolean;
   solo?: boolean;
-  sweep?: RowSweepJSON;
+  sweep?: RowSweepJSON;    // legacy single sweep (pre-list saves; migrated into sweeps[0])
+  sweeps?: RowSweepJSON[]; // the row's transition list
 }
 
 export interface ProjectJSON {
@@ -113,8 +115,8 @@ const cloneLoop = (l: Loop): LoopJSON => ({
   soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name, label: l.label,
   pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
   split: l.split, gain: l.gain,
-  intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir } : undefined,
-  outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir } : undefined,
+  intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, modes: l.intro.modes?.slice(), fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir } : undefined,
+  outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, modes: l.outro.modes?.slice(), toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir } : undefined,
   accent: l.accent ? { ...l.accent } : undefined,
   ghost: l.ghost ? { ...l.ghost } : undefined,
   preset: l.preset,
@@ -131,7 +133,7 @@ const cloneLoop = (l: Loop): LoopJSON => ({
 });
 
 const cloneSweep = (s: RowSweep): RowSweepJSON => ({
-  on: s.on, fromBar: s.fromBar, toBar: s.toBar, mode: s.mode, side: s.side,
+  on: s.on, fromBar: s.fromBar, toBar: s.toBar, mode: s.mode, modes: s.modes?.slice(), side: s.side,
   from: s.from, to: s.to, curve: s.curve, dir: s.dir,
 });
 
@@ -154,7 +156,7 @@ export function serialize(
     scale: track.scale,
     colors: track.colors.map((c) => ({
       mute: c.mute, solo: c.solo,
-      sweep: c.sweep ? cloneSweep(c.sweep) : undefined,
+      sweeps: c.sweeps && c.sweeps.length ? c.sweeps.map(cloneSweep) : undefined,
       loops: c.loops.map(cloneLoop),
     })),
     drums: drumSnaps,
@@ -167,6 +169,16 @@ export function serialize(
 
 const KNOWN_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter", "fade", "wash", "thin", "drive", "crush", "echo", "speed"];
 
+/** Validate a stored multi-select style set against `allowed`: keep canonical order,
+    dedupe, and "speed" stays exclusive. Returns [] when nothing valid is stored (the
+    single `mode` field then stands alone). */
+function readModes(mv: unknown, allowed: TransitionMode[]): TransitionMode[] {
+  if (!Array.isArray(mv)) return [];
+  let out = allowed.filter((m) => (mv as unknown[]).includes(m));
+  if (out.includes("speed")) out = ["speed"];
+  return out;
+}
+
 function readEnv(ev: unknown, side: "intro"): IntroEnv | undefined;
 function readEnv(ev: unknown, side: "outro"): OutroEnv | undefined;
 function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | undefined {
@@ -175,9 +187,12 @@ function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | un
   const idKey = side === "intro" ? "fromId" : "toId";
   const id = typeof e[idKey] === "number" ? (e[idKey] as number) : -1;
   const reps = typeof e.reps === "number" ? Math.max(1, Math.min(MAX_REPS, Math.round(e.reps as number))) : 1;
-  const mode: TransitionMode = KNOWN_MODES.includes(e.mode as TransitionMode)
-    ? (e.mode as TransitionMode)
-    : (id < 0 ? "fade" : "morph");
+  // A multi-select style set only exists on silence-end fades; its first entry is the mode.
+  const modes = id < 0 ? readModes(e.modes, FADE_MODES) : [];
+  const mode: TransitionMode = modes[0]
+    ?? (KNOWN_MODES.includes(e.mode as TransitionMode)
+      ? (e.mode as TransitionMode)
+      : (id < 0 ? "fade" : "morph"));
   // Speed mode carries a far-end rate multiple (clamped ~0.25..4). The glide curve (0..1)
   // and its direction apply to EVERY mode now (speed bends its timing, the rest their
   // snapshot morph); the From→To sweep endpoints are raw param values (native units,
@@ -190,9 +205,10 @@ function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | un
   const dir = e.dir === "in" || e.dir === "out" ? e.dir : undefined;
   const from = num(e.from);
   const to = num(e.to);
+  const modeSet = modes.length > 1 ? modes : undefined;
   return side === "intro"
-    ? { reps, mode, fromId: id, rate, curve, from, to, dir }
-    : { reps, mode, toId: id, rate, curve, from, to, dir };
+    ? { reps, mode, modes: modeSet, fromId: id, rate, curve, from, to, dir }
+    : { reps, mode, modes: modeSet, toId: id, rate, curve, from, to, dir };
 }
 
 /** Validate a stored per-loop accent/ghost LifePlacement (see lines.ts); returns
@@ -261,18 +277,29 @@ function readSweep(sv: unknown): RowSweep | undefined {
   if (!sv || typeof sv !== "object") return undefined;
   const s = sv as Record<string, unknown>;
   const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : undefined);
-  const mode = SWEEP_MODES.includes(s.mode as TransitionMode) ? (s.mode as TransitionMode) : "filter";
+  const modes = readModes(s.modes, SWEEP_MODES);
+  const mode = modes[0]
+    ?? (SWEEP_MODES.includes(s.mode as TransitionMode) ? (s.mode as TransitionMode) : "filter");
   return {
     on: s.on === true,
     fromBar: Math.max(1, Math.round(Number(s.fromBar) || 1)),
     toBar: Math.max(1, Math.round(Number(s.toBar) || 8)),
     mode,
+    modes: modes.length > 1 ? modes : undefined,
     side: s.side === "in" ? "in" : "out",
     from: num(s.from),
     to: num(s.to),
     curve: typeof s.curve === "number" && isFinite(s.curve) ? Math.max(0, Math.min(1, s.curve)) : undefined,
     dir: s.dir === "in" || s.dir === "out" ? s.dir : undefined,
   };
+}
+
+/** A row's transition list: the stored `sweeps` array, or a legacy single `sweep`
+    migrated into a one-entry list. Undefined when the row has none. */
+function readSweeps(cj: ColorJSON): RowSweep[] | undefined {
+  const raw = Array.isArray(cj.sweeps) ? cj.sweeps : (cj.sweep ? [cj.sweep] : []);
+  const out = raw.map(readSweep).filter((s): s is RowSweep => !!s);
+  return out.length ? out : undefined;
 }
 
 function readLoop(lv: unknown, colorIndex: number): Loop {
@@ -367,7 +394,7 @@ export function deserialize(
         const ct: ColorTrack = track.colors[ci];
         ct.mute = !!cj.mute;
         ct.solo = !!cj.solo;
-        ct.sweep = readSweep(cj.sweep);
+        ct.sweeps = readSweeps(cj);
         ct.loops = (Array.isArray(cj.loops) ? cj.loops : []).map((lj) => readLoop(lj, ci));
       });
     }

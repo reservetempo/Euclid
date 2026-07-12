@@ -59,6 +59,24 @@ export type TransitionMode =
 /** All modes a silence↔sound transition can take (the loop fade picker's options). */
 export const FADE_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo", "speed"];
 
+/** The active style SET of a transition: `modes` when present (a multi-select — several
+    styles swept together, composed in the engine), else the single `mode`. `mode` always
+    mirrors the first entry so old readers and single-mode paths keep working. */
+export function envModes(env: { mode: TransitionMode; modes?: TransitionMode[] }): TransitionMode[] {
+  return env.modes && env.modes.length ? env.modes : [env.mode];
+}
+
+/** Normalize + store a transition's style set: dedupe, canonical FADE_MODES order, and
+    "speed" stays EXCLUSIVE (it warps timing, not tone — it can't compose with the tonal
+    styles). Falls back to "fade" when empty. `mode` is kept = the first entry. */
+export function setEnvModes(env: { mode: TransitionMode; modes?: TransitionMode[] }, list: TransitionMode[]): void {
+  let norm = FADE_MODES.filter((m) => list.includes(m));
+  if (norm.includes("speed")) norm = ["speed"];
+  if (!norm.length) norm = ["fade"];
+  env.modes = norm.length > 1 ? norm : undefined;
+  env.mode = norm[0];
+}
+
 /** Deterministic accent/ghost placement for a loop — a per-loop LIFE layer that
     overrides the sound's own random accent/ghost (see engine perHit). `everyN` marks
     every Nth hit (1-based, running continuously across the loop, not per pattern
@@ -95,6 +113,7 @@ export interface SweepWindow {
   from: number; // inclusive start step
   to: number;   // exclusive end step
   mode: TransitionMode;
+  modes?: TransitionMode[]; // multi-select style set (see envModes); mode = its first entry
   side: "in" | "out";
   fromV?: number;
   toV?: number;
@@ -103,11 +122,13 @@ export interface SweepWindow {
 }
 
 /** An intro fade folded into a node's start: covers the first `reps` of its window,
-    rising from silence (fromId < 0) or morphing from another sound (fromId = its id). */
-export interface IntroEnv extends TransitionShape { reps: number; mode: TransitionMode; fromId: number; }
+    rising from silence (fromId < 0) or morphing from another sound (fromId = its id).
+    `modes`, when present, is a multi-select style set composed together in the engine
+    (silence-end fades only); `mode` mirrors its first entry. */
+export interface IntroEnv extends TransitionShape { reps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; }
 /** An outro fade folded into a node's end: covers the last `reps` of its window,
     falling to silence (toId < 0) or morphing into another sound (toId = its id). */
-export interface OutroEnv extends TransitionShape { reps: number; mode: TransitionMode; toId: number; }
+export interface OutroEnv extends TransitionShape { reps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; }
 
 /** Per-fade-mode description of the ONE parameter each silence-end fade sweeps, and the
     UI range/format for its From→To endpoints. The `farDefault` mirrors the engine's
@@ -304,8 +325,8 @@ export interface LineMessage {
     // Intro/outro fade spans, in STEPS within the sounding window (after any lead-in).
     // For the "speed" mode, `warp` holds the precomputed re-timed hit onsets (fractional
     // step offsets within the sounding window) that replace the grid pattern in the span.
-    intro?: { steps: number; mode: TransitionMode; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; warp?: number[] };
-    outro?: { steps: number; mode: TransitionMode; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; warp?: number[] };
+    intro?: { steps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; warp?: number[] };
+    outro?: { steps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; warp?: number[] };
     pitchHz?: number; // melody notes only — absolute pitch the engine tunes to
     // Per-loop deterministic accent / ghost placement (see LifePlacement); the engine
     // uses these instead of the sound's random accent/ghost when present.
@@ -379,7 +400,7 @@ export class LineArrangement {
           pattern,
           intro: n.intro
             ? {
-                steps: iSteps, mode: n.intro.mode, fromId: n.intro.fromId,
+                steps: iSteps, mode: n.intro.mode, modes: n.intro.modes, fromId: n.intro.fromId,
                 curve: n.intro.curve, from: n.intro.from, to: n.intro.to, dir: n.intro.dir,
                 ...(n.intro.mode === "speed"
                   ? { rate: n.intro.rate,
@@ -389,7 +410,7 @@ export class LineArrangement {
             : undefined,
           outro: n.outro
             ? {
-                steps: oSteps, mode: n.outro.mode, toId: n.outro.toId,
+                steps: oSteps, mode: n.outro.mode, modes: n.outro.modes, toId: n.outro.toId,
                 curve: n.outro.curve, from: n.outro.from, to: n.outro.to, dir: n.outro.dir,
                 ...(n.outro.mode === "speed"
                   ? { rate: n.outro.rate,
