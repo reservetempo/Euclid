@@ -22,7 +22,7 @@ import {
   VoiceNode, IntroEnv, OutroEnv, LifePlacement, SweepWindow, TransitionMode,
   emptyNode, clampEnvelopes, STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
-import { MelodyNode, emptyMelody, melodyNoteNode, generateMelody, EmittedNote, MELODY_COLOR_INDEX } from "./melody";
+import { MelodyNode, emptyMelody, melodyNoteNode, generateMelody, regatePhrase, EmittedNote, MELODY_COLOR_INDEX } from "./melody";
 import { rng01, randomSeed } from "./rng";
 
 export { randomSeed }; // re-export: a rule's seed is minted here and in the UI
@@ -130,6 +130,10 @@ export interface Loop {
   steps: number;
   rotation: number;
   split?: number;
+  rhythm?: boolean;        // melody instrument only: re-time the phrase's notes onto the
+                           // Euclid pattern above (see regatePhrase); unset = the notes'
+                           // own lengths/rests. Voice loops ignore it (their pattern
+                           // always sounds).
   gain?: number;
   intro?: IntroEnv;
   outro?: OutroEnv;
@@ -207,7 +211,9 @@ export function melodyLanes(melodies: MelodyItem[], barLimit: number, rowSweeps:
     const inst = item.inst;
     if (inst.soundId < 0 || !inst.snapshot.length || item.node.notes.length === 0) continue;
     const phraseBars = Math.max(1, Math.round(inst.rule.forBars));
-    const phrase = generateMelody(item.node, phraseBars);
+    // The generated phrase, optionally re-timed onto the instrument's Euclid rhythm
+    // (its hits/steps circles) — see regatePhrase.
+    const phrase = regatePhrase(generateMelody(item.node, phraseBars), inst, phraseBars * STEPS_PER_BAR);
     if (!phrase.length) continue;
     const intervals = placementsFor(inst, limit).sort((a, b) => a.startBar - b.startBar);
     const nodes: VoiceNode[] = [];
@@ -547,6 +553,7 @@ export function cloneLoop(loop: Loop): Loop {
     steps: loop.steps,
     rotation: loop.rotation,
     split: loop.split,
+    rhythm: loop.rhythm,
     gain: loop.gain,
     intro: loop.intro ? { ...loop.intro, modes: loop.intro.modes?.slice() } : undefined,
     outro: loop.outro ? { ...loop.outro, modes: loop.outro.modes?.slice() } : undefined,

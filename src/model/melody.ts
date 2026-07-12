@@ -12,6 +12,7 @@
 
 import { ScaleType, degreeHz, degreesPerOctave } from "./melodyScale";
 import { VoiceNode, emptyNode, STEPS_PER_BAR } from "./lines";
+import { voicePattern } from "./euclid";
 import { rng01, randomSeed as melodySeed } from "./rng";
 import type { Loop } from "./track";
 
@@ -235,6 +236,28 @@ export function generateMelody(melody: MelodyNode, barLimit: number): EmittedNot
   // Loop the walk until the track is full (a shallow melody just repeats to fill).
   let guard = 0;
   while (budget.left > 0 && guard++ < 2000) walk(melody, rng, out, budget, 0);
+  return out;
+}
+
+/** Re-time a generated phrase onto the instrument's Euclidean RHYTHM (its
+    hits/steps/rotation/split — the same circles a voice loop has). The pattern cycles
+    across the phrase; each pattern onset takes the NEXT note of the stream (in order,
+    wrapping if the rhythm wants more notes than the walk emitted) and holds it until the
+    following onset — the notes' own lengths/rests are ignored, so the Euclid groove IS
+    the phrase's timing. Off (`inst.rhythm` unset, or a degenerate pattern) = the phrase
+    unchanged. Returns [] when the pattern never fires. */
+export function regatePhrase(phrase: EmittedNote[], inst: Loop, phraseSteps: number): EmittedNote[] {
+  if (!inst.rhythm || inst.steps < 1 || inst.hits < 1 || phrase.length === 0) return phrase;
+  const pat = voicePattern(inst.hits, inst.steps, inst.rotation, inst.split);
+  const onsets: number[] = [];
+  for (let i = 0; i < Math.max(1, Math.round(phraseSteps)); i++) if (pat[i % inst.steps]) onsets.push(i);
+  if (!onsets.length) return [];
+  const out: EmittedNote[] = [];
+  for (let k = 0; k < onsets.length; k++) {
+    const start = onsets[k];
+    const end = k + 1 < onsets.length ? onsets[k + 1] : Math.round(phraseSteps);
+    out.push({ hz: phrase[k % phrase.length].hz, lengthSteps: end - start, restSteps: k === 0 ? start : 0 });
+  }
   return out;
 }
 

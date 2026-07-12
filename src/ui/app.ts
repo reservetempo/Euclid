@@ -35,7 +35,7 @@ import { generateName, reshuffleNames } from "../model/name";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
   MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes, randomizeNotes,
-  generateMelody, chainNotes, isChain, MAX_CHAIN,
+  generateMelody, regatePhrase, chainNotes, isChain, MAX_CHAIN,
 } from "../model/melody";
 import {
   ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree, semitoneForDegree,
@@ -1214,8 +1214,10 @@ export class App {
     }
     if (atRoot && this.melodyTab === "loop") {
       // The placement rule — the same Loop menu a voice row's loops get (Repeat every /
-      // For n bars / overlap-solo); "For" doubles as the phrase Length.
+      // For n bars / overlap-solo); "For" doubles as the phrase Length. Below it, the
+      // same rhythm circles voices have: an optional Euclid gate over the phrase.
       v.append(this.placementControls(item.inst, () => this.render()));
+      v.append(this.melodyRhythmControls(item));
       return;
     }
     if (atRoot && this.melodyTab === "transition") {
@@ -1224,7 +1226,7 @@ export class App {
     }
 
     if (atRoot) {
-      const seqView = this.melodySequenceView(node, Math.max(1, Math.round(item.inst.rule.forBars)));
+      const seqView = this.melodySequenceView(node, Math.max(1, Math.round(item.inst.rule.forBars)), item.inst);
       if (seqView) v.append(seqView);
       v.append(this.melodyGenerateRow(node));
 
@@ -1480,6 +1482,57 @@ export class App {
     this.singTake = null;
     this.melodyTab = "notes";
     this.melodyChanged();
+  }
+
+  /** The melody's RHYTHM section (Loop tab): the same Hits/Steps/Start/Split circles a
+      voice loop has, gating WHEN the phrase's notes fire. Off = each note keeps its own
+      length/rest from the tree; on = the notes fire in order on the Euclid pattern's
+      hits, each held until the next (see regatePhrase). */
+  private melodyRhythmControls(item: MelodyItem): HTMLElement {
+    const inst = item.inst;
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls transition-controls melody-rhythm";
+    wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const head = document.createElement("span");
+    head.className = "placement-lbl transition-head";
+    head.textContent = "Rhythm";
+    wrap.append(head);
+
+    const on = !!inst.rhythm;
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Euclid gate";
+    const controls = document.createElement("div");
+    controls.className = "fade-controls";
+    const toggle = document.createElement("button");
+    toggle.className = "seg-btn fade-toggle" + (on ? " on" : "");
+    toggle.textContent = on ? "On" : "Off";
+    toggle.onclick = () => {
+      inst.rhythm = on ? undefined : true;
+      // First switch-on: seed a sensible groove (the minted default is a lone downbeat).
+      if (inst.rhythm && inst.hits < 2) { inst.hits = 4; inst.steps = Math.max(16, inst.steps); inst.rotation = 0; }
+      this.recompile();
+      this.render();
+    };
+    controls.append(toggle);
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = on
+      ? "The notes fire in order on the pattern's hits, each held until the next — the groove below IS the phrase's timing."
+      : "Off — each note keeps its own length and pause. Turn on to play the notes on a Euclidean rhythm instead (hits · steps, like a voice loop).";
+    controls.append(hint);
+    row.append(lbl, controls);
+    wrap.append(row);
+
+    if (on) {
+      const detail = document.createElement("div");
+      detail.className = "euclid-detail";
+      detail.append(this.rhythmCircles(inst, () => this.render()));
+      wrap.append(detail);
+    }
+    return wrap;
   }
 
   // --- graph melody generator (📈 tab) ----------------------------------
@@ -2227,8 +2280,11 @@ export class App {
   }
 
   /** A piano roll of ONE item's generated phrase (`bars` long). */
-  private melodySequenceView(node: MelodyNode, bars: number): HTMLElement | null {
-    const seq = generateMelody(node, bars);
+  private melodySequenceView(node: MelodyNode, bars: number, inst?: Loop): HTMLElement | null {
+    // The phrase as it will actually play: re-timed onto the instrument's Euclid rhythm
+    // when its gate is on (see regatePhrase).
+    let seq = generateMelody(node, bars);
+    if (inst) seq = regatePhrase(seq, inst, bars * STEPS_PER_BAR);
     const events: { start: number; len: number; hz: number }[] = [];
     let cursor = 0;
     for (const e of seq) {

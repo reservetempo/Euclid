@@ -38,6 +38,7 @@ export interface LoopJSON {
   steps: number;
   rotation: number;
   split?: number;
+  rhythm?: boolean; // melody instrument: re-time notes onto the Euclid pattern
   gain?: number;
   intro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
   outro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
@@ -114,7 +115,7 @@ function cloneMelody(m: MelodyNode): MelodyJSON {
 const cloneLoop = (l: Loop): LoopJSON => ({
   soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name, label: l.label,
   pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
-  split: l.split, gain: l.gain,
+  split: l.split, rhythm: l.rhythm, gain: l.gain,
   intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, modes: l.intro.modes?.slice(), fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir } : undefined,
   outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, modes: l.outro.modes?.slice(), toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir } : undefined,
   accent: l.accent ? { ...l.accent } : undefined,
@@ -315,6 +316,7 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     steps: s.steps ?? 0,
     rotation: s.rotation ?? 0,
     split: typeof s.split === "number" ? s.split : undefined,
+    rhythm: s.rhythm === true ? true : undefined,
     gain: typeof s.gain === "number" && isFinite(s.gain) ? Math.max(0.2, Math.min(4, s.gain)) : undefined,
     intro: readEnv(s.intro, "intro"),
     outro: readEnv(s.outro, "outro"),
