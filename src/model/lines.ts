@@ -66,15 +66,25 @@ export function envModes(env: { mode: TransitionMode; modes?: TransitionMode[] }
   return env.modes && env.modes.length ? env.modes : [env.mode];
 }
 
-/** Normalize + store a transition's style set: dedupe, canonical FADE_MODES order, and
-    "speed" stays EXCLUSIVE (it warps timing, not tone — it can't compose with the tonal
-    styles). Falls back to "fade" when empty. `mode` is kept = the first entry. */
+/** Normalize + store a transition's style set: dedupe, canonical FADE_MODES order.
+    "speed" stacks with the tonal styles (it warps the TIMING while they morph the tone),
+    and sorts last — so `mode` (kept = the first entry) is always the primary TONAL style
+    of a mixed set. Falls back to "fade" when empty. */
 export function setEnvModes(env: { mode: TransitionMode; modes?: TransitionMode[] }, list: TransitionMode[]): void {
   let norm = FADE_MODES.filter((m) => list.includes(m));
-  if (norm.includes("speed")) norm = ["speed"];
   if (!norm.length) norm = ["fade"];
   env.modes = norm.length > 1 ? norm : undefined;
   env.mode = norm[0];
+}
+
+/** True when a transition's style set includes the SPEED timing warp. */
+export function envHasSpeed(env: { mode: TransitionMode; modes?: TransitionMode[] }): boolean {
+  return envModes(env).includes("speed");
+}
+
+/** A transition's TONAL styles (the snapshot-morphing set — everything but "speed"). */
+export function envTonalModes(env: { mode: TransitionMode; modes?: TransitionMode[] }): TransitionMode[] {
+  return envModes(env).filter((m) => m !== "speed");
 }
 
 /** Deterministic accent/ghost placement for a loop — a per-loop LIFE layer that
@@ -402,7 +412,7 @@ export class LineArrangement {
             ? {
                 steps: iSteps, mode: n.intro.mode, modes: n.intro.modes, fromId: n.intro.fromId,
                 curve: n.intro.curve, from: n.intro.from, to: n.intro.to, dir: n.intro.dir,
-                ...(n.intro.mode === "speed"
+                ...(envHasSpeed(n.intro)
                   ? { rate: n.intro.rate,
                       warp: warpOnsets(pattern, n.steps, iSteps, activeLen, n.intro.rate ?? 2, n.intro.curve ?? 0, "intro") }
                   : {}),
@@ -412,7 +422,7 @@ export class LineArrangement {
             ? {
                 steps: oSteps, mode: n.outro.mode, modes: n.outro.modes, toId: n.outro.toId,
                 curve: n.outro.curve, from: n.outro.from, to: n.outro.to, dir: n.outro.dir,
-                ...(n.outro.mode === "speed"
+                ...(envHasSpeed(n.outro)
                   ? { rate: n.outro.rate,
                       warp: warpOnsets(pattern, n.steps, oSteps, activeLen, n.outro.rate ?? 2, n.outro.curve ?? 0, "outro") }
                   : {}),

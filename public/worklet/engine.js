@@ -1333,25 +1333,39 @@ class EngineProcessor extends AudioWorkletProcessor {
     }
   }
 
-  // Fire the re-timed hits of a SPEED transition for the current step. `onsets` are the
-  // span's precomputed warped onset offsets (fractional steps within the sounding window,
-  // see warpOnsets in lines.ts). Those whose integer step equals `activeLocal` fire now,
-  // held off the grid by their fractional part (startDelay samples) so the hits rush /
-  // drag smoothly. The node keeps its own sound — speed warps timing, not tone.
-  fireSpeedStep(nd, snd, onsets, activeLocal, activeLen, gate, beat, fired) {
+  // Fire the re-timed hits of a SPEED transition for the current step. `env` is the
+  // intro/outro carrying the span's precomputed warped onsets (`env.warp` — fractional
+  // steps within the sounding window, see warpOnsets in lines.ts). Those whose integer
+  // step equals `activeLocal` fire now, held off the grid by their fractional part
+  // (startDelay samples) so the hits rush / drag smoothly.
+  // Speed STACKS with tonal styles: any other modes in `env.modes` morph each hit's
+  // snapshot at its own blend position through the span (sweptSnap — an intro rises
+  // effect → sound as its onsets settle onto the grid, an outro the reverse), so a
+  // "Rush + Filter" intro rushes in WHILE the filter opens. Speed alone keeps the plain
+  // sound — timing only.
+  fireSpeedStep(nd, snd, env, side, span, activeLocal, activeLen, gate, beat, fired) {
+    const onsets = env.warp;
     if (!onsets || !onsets.length) return;
     const spb = this.samplesPerStep();
     const baseSnap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+    const tonal = (env.modes || [env.mode]).filter((m) => m !== "speed");
+    const spanStart = side === "intro" ? 0 : activeLen - span;
     for (let k = 0; k < onsets.length; k++) {
       const o = onsets[k];
       if (Math.floor(o) !== activeLocal) continue; // not this step's onset(s)
       const delay = Math.round((o - activeLocal) * spb);
       const pos01 = activeLen > 1 ? clamp(o / (activeLen - 1), 0, 1) : 1;
       const life = { isAccent: k === 0, hitIndex: k, pos01, accent: nd.accent, ghost: nd.ghost };
-      const hit = this.perHit(baseSnap, life);
+      let snap = baseSnap;
+      if (tonal.length) {
+        const raw = clamp((o - spanStart) / Math.max(1, span), 0, 1);
+        const t = bendT(raw, env.curve, env.dir);
+        snap = this.sweptSnap(baseSnap, tonal, t, side === "intro" ? "in" : "out", env.from, env.to);
+      }
+      const hit = this.perHit(snap, life);
       if (!hit) continue;
-      const voiceSnap = baseSnap.slice(); this.jitterSnap(voiceSnap, hit.human);
-      this.triggerSound(nd.soundId, baseSnap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, delay);
+      const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
+      this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, delay);
       fired.push(nd.soundId);
     }
   }
@@ -1453,8 +1467,11 @@ class EngineProcessor extends AudioWorkletProcessor {
       // a precomputed onset list (fractional steps, off the grid) replaces the pattern's
       // grid hits. Handled BEFORE the pattern gate below so onsets can land on steps the
       // grid pattern would skip. Outside the span the node plays its pattern normally.
-      const speedIntro = nd.intro && nd.intro.mode === "speed" && nd.intro.warp;
-      const speedOutro = nd.outro && nd.outro.mode === "speed" && nd.outro.warp;
+      // Speed may STACK with tonal styles (env.modes) — fireSpeedStep morphs each re-timed
+      // hit through them at its own blend position. (`warp` is only shipped when the
+      // env's style set includes "speed" — see linesMessage.)
+      const speedIntro = nd.intro && nd.intro.warp;
+      const speedOutro = nd.outro && nd.outro.warp;
       if (speedIntro || speedOutro) {
         const snd2 = this.sounds.get(nd.soundId);
         if (snd2) {
@@ -1463,11 +1480,11 @@ class EngineProcessor extends AudioWorkletProcessor {
           const iSpan = speedIntro ? Math.min(aLen, Math.max(1, nd.intro.steps | 0)) : 0;
           const oSpan = speedOutro ? Math.min(aLen, Math.max(1, nd.outro.steps | 0)) : 0;
           if (iSpan > 0 && activeLocal < iSpan) {
-            this.fireSpeedStep(nd, snd2, nd.intro.warp, activeLocal, aLen, gate, beat2, fired);
+            this.fireSpeedStep(nd, snd2, nd.intro, "intro", iSpan, activeLocal, aLen, gate, beat2, fired);
             continue;
           }
           if (oSpan > 0 && activeLocal >= aLen - oSpan) {
-            this.fireSpeedStep(nd, snd2, nd.outro.warp, activeLocal, aLen, gate, beat2, fired);
+            this.fireSpeedStep(nd, snd2, nd.outro, "outro", oSpan, activeLocal, aLen, gate, beat2, fired);
             continue;
           }
         }

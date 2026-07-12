@@ -170,13 +170,12 @@ export function serialize(
 const KNOWN_MODES: TransitionMode[] = ["morph", "crossfade", "alternate", "filter", "fade", "wash", "thin", "drive", "crush", "echo", "speed"];
 
 /** Validate a stored multi-select style set against `allowed`: keep canonical order,
-    dedupe, and "speed" stays exclusive. Returns [] when nothing valid is stored (the
-    single `mode` field then stands alone). */
+    dedupe. ("speed" stacks like any other style — it warps timing while the tonal set
+    morphs tone.) Returns [] when nothing valid is stored (the single `mode` field then
+    stands alone). */
 function readModes(mv: unknown, allowed: TransitionMode[]): TransitionMode[] {
   if (!Array.isArray(mv)) return [];
-  let out = allowed.filter((m) => (mv as unknown[]).includes(m));
-  if (out.includes("speed")) out = ["speed"];
-  return out;
+  return allowed.filter((m) => (mv as unknown[]).includes(m));
 }
 
 function readEnv(ev: unknown, side: "intro"): IntroEnv | undefined;
@@ -193,11 +192,12 @@ function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | un
     ?? (KNOWN_MODES.includes(e.mode as TransitionMode)
       ? (e.mode as TransitionMode)
       : (id < 0 ? "fade" : "morph"));
-  // Speed mode carries a far-end rate multiple (clamped ~0.25..4). The glide curve (0..1)
-  // and its direction apply to EVERY mode now (speed bends its timing, the rest their
-  // snapshot morph); the From→To sweep endpoints are raw param values (native units,
-  // undefined = use the sound's own value / the mode's built-in extreme).
-  const rate = mode === "speed"
+  // Speed carries a far-end rate multiple (clamped ~0.25..4) whenever it's in the set
+  // (alone or stacked with tonal styles). The glide curve (0..1) and its direction apply
+  // to EVERY mode (speed bends its timing, the rest their snapshot morph); the From→To
+  // sweep endpoints are raw param values (native units, undefined = use the sound's own
+  // value / the mode's built-in extreme).
+  const rate = mode === "speed" || modes.includes("speed")
     ? (typeof e.rate === "number" && isFinite(e.rate) ? Math.max(0.25, Math.min(4, e.rate)) : 2)
     : undefined;
   const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : undefined);

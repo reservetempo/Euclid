@@ -25,7 +25,7 @@ import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { addReport, reportCount, exportReports, clearReports, ReportKind } from "../model/soundReports";
 import {
   LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
-  TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape, envModes, setEnvModes,
+  TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape, envModes, setEnvModes, envHasSpeed,
 } from "../model/lines";
 import {
   Track, Loop, EveryRule, RowSweep, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
@@ -2599,8 +2599,9 @@ export class App {
     return card;
   }
 
-  /** Toggle one style in a transition's multi-select set. "Speed" is exclusive (it warps
-      timing, not tone), and the last active style can't be removed. */
+  /** Toggle one style in a transition's multi-select set. Every style stacks — "speed"
+      included (it warps the timing while the tonal styles morph the tone) — and the last
+      active style can't be removed. */
   private toggleModeIn(
     env: { mode: TransitionMode; modes?: TransitionMode[]; rate?: number; curve?: number }, m: TransitionMode,
   ): void {
@@ -2608,14 +2609,12 @@ export class App {
     if (list.includes(m)) {
       if (list.length <= 1) return; // at least one style stays active
       list = list.filter((x) => x !== m);
-    } else if (m === "speed") {
-      list = ["speed"];
     } else {
-      list = [...list.filter((x) => x !== "speed"), m];
+      list = [...list, m];
     }
     setEnvModes(env, list);
-    // Speed carries a far-end rate + glide curve; seed sensible defaults on switch.
-    if (env.mode === "speed") {
+    // Speed carries a far-end rate + glide curve; seed sensible defaults when it joins.
+    if (envHasSpeed(env)) {
       if (env.rate === undefined) env.rate = 2;
       if (env.curve === undefined) env.curve = 0;
     }
@@ -3288,16 +3287,19 @@ export class App {
         ? `${env.reps} bar${env.reps === 1 ? "" : "s"}`
         : `${env.reps} rep${env.reps === 1 ? "" : "s"}`));
 
-      if (env.mode === "speed") {
-        // Speed is timing, not a swept param: the far end's hit rate (× tempo).
+      // Speed (stacked or alone) is timing, not a swept param: the far end's hit rate.
+      const tonal = active.filter((m) => m !== "speed");
+      if (active.includes("speed")) {
         controls.append(this.numRow("Rate", () => Math.round((env.rate ?? 2) * 100), (n) => {
           env.rate = Math.max(0.25, Math.min(4, Math.round(n) / 100));
           this.recompile();
         }, rerender, () => `${(env.rate ?? 2).toFixed(2)}×`));
-      } else if (active.length === 1) {
-        // A single tonal style sweeps ONE parameter From → To (see TRANSITION_SWEEP). From
+      }
+      if (tonal.length === 1) {
+        // A single tonal style sweeps ONE parameter From → To (see TRANSITION_SWEEP; with
+        // speed stacked, env.mode is still that tonal style — speed sorts last). From
         // defaults to the sound's own value, To to the style's built-in extreme. With
-        // several styles active each uses its built-ins (no shared units to edit).
+        // several tonal styles active each uses its built-ins (no shared units to edit).
         const spec = TRANSITION_SWEEP[env.mode];
         if (spec) {
           controls.append(this.sweepRow(loop, env, "from", rerender));
@@ -3305,13 +3307,13 @@ export class App {
         }
       }
 
-      // Curve (all styles) + its ease direction (snapshot styles only — Speed's glide is
+      // Curve (all styles) + its ease direction (tonal styles only — Speed's glide is
       // oriented by the intro/outro side itself).
       controls.append(this.numRow("Curve", () => Math.round((env.curve ?? 0) * 100), (n) => {
         env.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
         this.recompile();
       }, rerender, () => `${Math.round((env.curve ?? 0) * 100)}%`));
-      if (env.mode !== "speed") {
+      if (tonal.length > 0) {
         const dirSeg = document.createElement("div");
         dirSeg.className = "placement-seg fade-modes";
         const mkDir = (d: "out" | "in", text: string) => {
