@@ -57,6 +57,12 @@ const PROJECT_KEY = "msq010.project";
 // only picks parameter specs — Full Range opens all ranges so any character is reachable.
 const REF_DRUM = DrumType.Kick;
 
+// Default "Max len" (the shuffle's audible-length cap) per voice row, as an index into
+// MAXLEN_OPTIONS: Voice 1 off, then 0.2s / 0.3s / 0.5s / 0.75s down the rows; the melody
+// row (index 5) is off. A newly generated sound on that row is trimmed to this length
+// unless the user overrides Max len in the shuffle menu.
+const ROW_MAXLEN_IDX = [0, 2, 3, 4, 5, 0];
+
 // Overview timeline wraps to a new row ("line") every this many bars, so a long track
 // stays legible; the playhead loops back at each wrap and a badge names the active line.
 const BARS_PER_ROW = 32;
@@ -684,14 +690,27 @@ export class App {
 
   private topLeftControl(): HTMLElement {
     if (this.view === "track") {
-      const b = document.createElement("button");
-      b.className = "loop-view-btn loop-time-btn on";
-      b.title = "Loop length";
-      b.setAttribute("aria-label", "Loop length");
+      // Track length (scrub or tap to edit), with the loop's total seconds beside it in
+      // small type — replaces the old seconds-only pill and the body "Track length" row.
+      const wrap = document.createElement("div");
+      wrap.className = "loop-meta";
+      const bars = document.createElement("input");
+      bars.type = "text";
+      bars.readOnly = true;
+      bars.inputMode = "none";
+      bars.className = "loop-meta-bars";
+      bars.title = "Track length";
+      bars.value = `${this.track.barLimit} bars`;
+      this.attachScrub(bars, {
+        label: "Track length (bars)",
+        read: () => this.track.barLimit,
+        write: (n) => { this.track.barLimit = Math.max(1, Math.min(512, Math.round(n))); this.recompile(); },
+        show: () => `${this.track.barLimit} bars`,
+      });
       this.loopTimeEl = document.createElement("span");
-      this.loopTimeEl.className = "loop-time-btn-val";
-      b.append(this.loopTimeEl);
-      return b;
+      this.loopTimeEl.className = "loop-meta-secs";
+      wrap.append(bars, this.loopTimeEl);
+      return wrap;
     }
     const b = document.createElement("button");
     b.className = "loop-view-btn";
@@ -700,6 +719,56 @@ export class App {
     b.append(this.chainIcon());
     b.onclick = () => { this.view = "track"; this.editLoop = null; this.render(); };
     return b;
+  }
+
+  /** A |—| bracket icon for the play-range button (a span with two end caps). */
+  private rangeIcon(): SVGSVGElement {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "18");
+    svg.setAttribute("height", "18");
+    const mk = (x1: number, y1: number, x2: number, y2: number) => {
+      const l = document.createElementNS(NS, "line");
+      l.setAttribute("x1", String(x1)); l.setAttribute("y1", String(y1));
+      l.setAttribute("x2", String(x2)); l.setAttribute("y2", String(y2));
+      l.setAttribute("stroke", "currentColor");
+      l.setAttribute("stroke-width", "2");
+      l.setAttribute("stroke-linecap", "round");
+      svg.append(l);
+    };
+    mk(6, 6, 6, 18);
+    mk(18, 6, 18, 18);
+    mk(6, 12, 18, 12);
+    return svg;
+  }
+
+  /** The small button at the rings' top-left that opens the play-range popup; lit when a
+      range is active. */
+  private playRangeOpenBtn(): HTMLElement {
+    const on = this.playFromBar >= 1 && this.playToBar >= this.playFromBar;
+    const b = document.createElement("button");
+    b.className = "playrange-open-btn" + (on ? " on" : "");
+    b.title = "Play range";
+    b.setAttribute("aria-label", "Play range");
+    b.append(this.rangeIcon());
+    b.onclick = () => this.openPlayRangePopup();
+    return b;
+  }
+
+  /** Pop up the play-range strip (drag to loop bars n→m) over the rings — kept out of the
+      main column so the track view stays compact. */
+  private openPlayRangePopup(): void {
+    document.querySelector(".playrange-overlay")?.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "playrange-overlay";
+    // Closing re-renders so the rings' play-range button reflects the new on/off state.
+    overlay.onclick = (e) => { if (e.target === overlay) this.render(); };
+    const card = document.createElement("div");
+    card.className = "playrange-card";
+    card.append(this.playRangeStrip());
+    overlay.append(card);
+    this.root.append(overlay);
   }
 
   private mixerOpenBtn(from: View): HTMLElement {
@@ -842,32 +911,12 @@ export class App {
     const v = this.viewRoot;
     const rings = document.createElement("div");
     rings.className = "loop-rings";
-    rings.append(this.euclidView.canvas, this.mixerOpenBtn("track"));
+    // Play-range button (top-left) + Mixer button (top-right) float over the rings; the
+    // track length lives in the top bar's top-left control (see topLeftControl).
+    rings.append(this.euclidView.canvas, this.playRangeOpenBtn(), this.mixerOpenBtn("track"));
     v.append(rings);
     this.euclidView.layout();
     requestAnimationFrame(() => this.euclidView.layout());
-
-    // Bar limit for the whole track.
-    const barRow = document.createElement("div");
-    barRow.className = "track-barlimit";
-    const lbl = document.createElement("span");
-    lbl.textContent = "Track length";
-    const inp = document.createElement("input");
-    inp.type = "text";
-    inp.readOnly = true;
-    inp.inputMode = "none";
-    inp.value = `${this.track.barLimit} bars`;
-    this.attachScrub(inp, {
-      label: "Track length (bars)",
-      read: () => this.track.barLimit,
-      write: (n) => { this.track.barLimit = Math.max(1, Math.min(512, Math.round(n))); this.recompile(); },
-      show: () => `${this.track.barLimit} bars`,
-    });
-    barRow.append(lbl, inp);
-    v.append(barRow);
-
-    // Play-range: drag across the bar strip to loop just bars n→m (a rehearsal region).
-    v.append(this.playRangeStrip());
 
     // Whole-track overview: every colour's compiled lanes laid out across the full bar
     // limit (zoomed out — the entire loop at once). Tap a colour to open its loop list.
@@ -898,23 +947,11 @@ export class App {
       const row = document.createElement("button");
       row.className = "track-color-row";
       row.style.setProperty("--vc", VOICE_COLORS[c]);
+      row.title = `Voice ${c + 1}`;
 
-      const head = document.createElement("div");
-      head.className = "track-color-head";
-      const dot = document.createElement("span");
-      dot.className = "track-color-dot";
-      const name = document.createElement("span");
-      name.className = "track-color-name";
-      name.textContent = `Voice ${c + 1}`;
-      const count = document.createElement("span");
-      count.className = "track-color-count";
-      const n = ct.loops.length;
-      count.textContent = n === 0 ? "no loops" : n === 1 ? "1 loop" : `${n} loops`;
-      head.append(dot, name, count);
-      row.append(head);
-
-      // Lane timeline(s) for this colour, wrapped into 32-bar lines; the active line is
-      // highlighted while playing (segRows collects each sub-row for the playhead).
+      // No "Voice n / n loops" header — the row is just its lane timeline, identified by
+      // its colour (the left border + lane hue), so the rows stay skinny. An empty row
+      // still shows one faint lane strip (a tap target to add loops).
       const strip = document.createElement("div");
       strip.className = "track-color-lanes";
       this.appendLanes(strip, this.colorLaneNumbers(c), c, this.segRows);
@@ -3739,6 +3776,7 @@ export class App {
     if (loop.ranges) p.restoreRanges(loop.ranges.lo, loop.ranges.hi);
     if (loop.snapshot.length) p.restore(loop.snapshot);
     ed = { kit, ...defaultShuffleSettings() };
+    ed.maxLenIdx = ROW_MAXLEN_IDX[this.colorOf(loop)] ?? 0; // per-row default sound-length cap
     this.voiceEditors.set(loop, ed);
     return ed;
   }
