@@ -82,13 +82,17 @@ export function newBranch(parent: MelodyNode): MelodyNode {
   };
 }
 
+/** Longest run chainNotes lays down (kept under the walk's recursion guard). */
+export const MAX_CHAIN = 48;
+
 /** Lay an ordered run of notes into `node` as a sequential CHAIN: the first note becomes
     the context's only note and each later note nests in a single-note branch under the
-    one before, so the walk plays the run exactly in order (then repeats to fill the
-    track). Used by the Sing tab's "keep my order" apply. Capped under the walk's depth
-    limit; any branches on the incoming notes are dropped. */
-export function chainNotes(node: MelodyNode, notes: MelodyNote[]): void {
-  const run = notes.slice(0, 24).map((n): MelodyNote => ({
+    one before, so playback follows the run exactly in order (a strict chain loops
+    verbatim — see generateMelody). Used by the Sing tab's "keep my order" apply. Any
+    branches on the incoming notes are dropped. Returns the laid run's total length in
+    16th steps (rests + notes), for sizing the phrase around one pass. */
+export function chainNotes(node: MelodyNode, notes: MelodyNote[]): number {
+  const run = notes.slice(0, MAX_CHAIN).map((n): MelodyNote => ({
     degree: n.degree, weight: n.weight, lengthSteps: n.lengthSteps, restSteps: n.restSteps,
   }));
   node.notes = run.length ? [run[0]] : [];
@@ -98,6 +102,7 @@ export function chainNotes(node: MelodyNode, notes: MelodyNote[]): void {
       notes: [run[i]], seed: melodySeed(), seedHistory: [],
     };
   }
+  return run.reduce((s, n) => s + Math.max(0, Math.round(n.restSteps)) + Math.max(1, Math.round(n.lengthSteps)), 0);
 }
 
 /** Total notes in a melody tree (root + every branch), for summaries. */
@@ -112,6 +117,8 @@ export function countNotes(node: MelodyNode): number {
 // to fill the track. Deterministic per seed, so "Generate again" = mint a new seed. A
 // note's rest+length advances the timeline; a branch (sequential sub-phrase) is played
 // out in full after its parent note, then the walk returns to the parent context.
+// EXCEPTION: a strict chain (every context one note — a recorded take kept "in my
+// order") skips the walk and plays verbatim, looping whole passes (see emitChain).
 
 /** One emitted note on the flattened timeline: its absolute pitch degree (in ITS context's
     scale/root/octave) plus its length and the rest before it, all in 16th steps. */
@@ -133,11 +140,12 @@ function pickNote(notes: MelodyNote[], rng: () => number): number {
 // Walk one context, appending EmittedNotes until `budget.left` steps run out. A note may
 // descend into its branch (played in full) before the walk continues in this context.
 function walk(node: MelodyNode, rng: () => number, out: EmittedNote[], budget: { left: number }, depth: number): void {
-  if (node.notes.length === 0 || budget.left <= 0 || depth > 32) return;
+  if (node.notes.length === 0 || budget.left <= 0 || depth > MAX_CHAIN + 16) return;
   // Cap how many notes one context contributes before yielding, so a branch can't hog
-  // the whole track and the parent context still gets played.
+  // the whole track and the parent context still gets played. A single-note context is
+  // a chain link (see chainNotes): it plays its note ONCE per visit, never stuttered.
   let placed = 0;
-  const cap = 4 + node.notes.length * 4;
+  const cap = node.notes.length === 1 ? 1 : 4 + node.notes.length * 4;
   while (budget.left > 0 && placed < cap) {
     const note = node.notes[pickNote(node.notes, rng)];
     const rest = Math.max(0, Math.round(note.restSteps));
@@ -161,10 +169,66 @@ function walk(node: MelodyNode, rng: () => number, out: EmittedNote[], budget: {
   }
 }
 
+/** The melody read as a strict CHAIN — every context exactly one note, linked branch to
+    branch (what the Sing tab's "in my order" apply lays down). Returns the ordered
+    (context, note) pairs, or null when any context is a weighted pool (those keep the
+    seeded walk). */
+function chainPairs(melody: MelodyNode): { ctx: MelodyNode; note: MelodyNote }[] | null {
+  const pairs: { ctx: MelodyNode; note: MelodyNote }[] = [];
+  let ctx: MelodyNode | undefined = melody;
+  while (ctx) {
+    if (ctx.notes.length !== 1) return null;
+    const note: MelodyNote = ctx.notes[0];
+    pairs.push({ ctx, note });
+    ctx = note.branch;
+  }
+  return pairs;
+}
+
+/** True when the melody from this context down is a strict chain — playback is verbatim
+    (in order, looping), so seeded re-ordering doesn't apply. For the UI. */
+export function isChain(node: MelodyNode): boolean {
+  return chainPairs(node) !== null;
+}
+
+/** Emit a strict chain VERBATIM: the run plays front to back, loops again while another
+    full pass fits, and leaves the remainder silent — never a mid-run cut, so a recorded
+    take loops cleanly with nothing added. (A budget smaller than one pass still
+    truncates the pass, matching the walk's fill behaviour.) */
+function emitChain(pairs: { ctx: MelodyNode; note: MelodyNote }[], limitSteps: number): EmittedNote[] {
+  const out: EmittedNote[] = [];
+  let left = limitSteps;
+  let passSteps = 0;
+  for (const { note } of pairs) {
+    passSteps += Math.max(0, Math.round(note.restSteps)) + Math.max(1, Math.round(note.lengthSteps));
+  }
+  do {
+    for (const { ctx, note } of pairs) {
+      const hz = degreeHz(note.degree, ctx.root, ctx.scale, ctx.octave);
+      const rest = Math.max(0, Math.round(note.restSteps));
+      const len = Math.max(1, Math.round(note.lengthSteps));
+      if (rest + len > left) {
+        // Doesn't fit whole: rest first, then fill whatever's left with the note.
+        const r = Math.min(rest, left);
+        left -= r;
+        out.push({ hz, lengthSteps: left, restSteps: r });
+        return out;
+      }
+      out.push({ hz, lengthSteps: len, restSteps: rest });
+      left -= rest + len;
+    }
+  } while (left >= passSteps);
+  return out;
+}
+
 /** Generate the melody's note stream for a track `barLimit` long (returns [] if empty). */
 export function generateMelody(melody: MelodyNode, barLimit: number): EmittedNote[] {
   const limitSteps = Math.max(1, Math.round(barLimit)) * STEPS_PER_BAR;
   if (melody.notes.length === 0) return [];
+  // A strict chain (e.g. a recorded take applied "in my order") plays verbatim — in
+  // order, looping, nothing added — no seeded walk at all.
+  const chain = chainPairs(melody);
+  if (chain) return emitChain(chain, limitSteps);
   const rng = rng01(melody.seed);
   const out: EmittedNote[] = [];
   const budget = { left: limitSteps };

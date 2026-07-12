@@ -12,7 +12,7 @@ import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
-  Track, ColorTrack, Loop, PlacementRule, EveryRule, DEFAULT_BAR_LIMIT, randomSeed,
+  Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, DEFAULT_BAR_LIMIT, randomSeed,
   MelodyItem, newMelodyItem,
 } from "./track";
 import { MelodyNode, MelodyNote, emptyMelody, melodySeed, MELODY_COLOR_INDEX } from "./melody";
@@ -20,6 +20,8 @@ import { MelodyNode, MelodyNote, emptyMelody, melodySeed, MELODY_COLOR_INDEX } f
 export interface RuleJSON {
   every: EveryRule;
   forBars: number;
+  lengths?: number[];
+  retrigger?: boolean;
   mode: "overlap" | "solo";
   seed: number;
   seedHistory: number[];
@@ -45,16 +47,30 @@ export interface LoopJSON {
   rule: RuleJSON;
 }
 
+export interface RowSweepJSON {
+  on: boolean;
+  fromBar: number;
+  toBar: number;
+  mode: TransitionMode;
+  side: "in" | "out";
+  from?: number;
+  to?: number;
+  curve?: number;
+  dir?: "in" | "out";
+}
+
 export interface ColorJSON {
   loops: LoopJSON[];
   mute?: boolean;
   solo?: boolean;
+  sweep?: RowSweepJSON;
 }
 
 export interface ProjectJSON {
   version: number; // 11 = procedural track; 1–10 = legacy (load blank)
   tempo: number;
   barLimit?: number;
+  name?: string;   // the track's generated coined name
   root?: number;
   scale?: number;
   colors?: ColorJSON[];
@@ -106,10 +122,17 @@ const cloneLoop = (l: Loop): LoopJSON => ({
   rule: {
     every: l.rule.every,
     forBars: l.rule.forBars,
+    lengths: l.rule.lengths ? l.rule.lengths.slice() : undefined,
+    retrigger: l.rule.retrigger,
     mode: l.rule.mode,
     seed: l.rule.seed,
     seedHistory: l.rule.seedHistory.slice(),
   },
+});
+
+const cloneSweep = (s: RowSweep): RowSweepJSON => ({
+  on: s.on, fromBar: s.fromBar, toBar: s.toBar, mode: s.mode, side: s.side,
+  from: s.from, to: s.to, curve: s.curve, dir: s.dir,
 });
 
 export function serialize(
@@ -127,10 +150,12 @@ export function serialize(
     version: 11,
     tempo,
     barLimit: track.barLimit,
+    name: track.name,
     root: track.root,
     scale: track.scale,
     colors: track.colors.map((c) => ({
       mute: c.mute, solo: c.solo,
+      sweep: c.sweep ? cloneSweep(c.sweep) : undefined,
       loops: c.loops.map(cloneLoop),
     })),
     drums: drumSnaps,
@@ -215,12 +240,39 @@ function readEvery(ev: unknown): EveryRule {
 function readRule(rv: unknown): PlacementRule {
   const r = (rv && typeof rv === "object" ? rv : {}) as Record<string, unknown>;
   const hist = Array.isArray(r.seedHistory) ? (r.seedHistory as unknown[]).map((x) => (Number(x) >>> 0)) : [];
+  const lens = Array.isArray(r.lengths)
+    ? (r.lengths as unknown[]).map((x) => Math.max(1, Math.round(Number(x) || 1))).filter((n) => n >= 1)
+    : [];
+  const forBars = lens.length ? lens[0] : Math.max(1, Math.round(Number(r.forBars) || 1));
   return {
     every: readEvery(r.every),
-    forBars: Math.max(1, Math.round(Number(r.forBars) || 1)),
+    forBars,
+    lengths: lens.length > 1 ? lens : undefined, // a single length is just forBars
+    retrigger: r.retrigger === true ? true : undefined,
     mode: r.mode === "overlap" ? "overlap" : "solo",
     seed: typeof r.seed === "number" ? (r.seed >>> 0) : randomSeed(),
     seedHistory: hist,
+  };
+}
+
+const SWEEP_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo"];
+
+/** Validate a stored per-row RowSweep; returns undefined for anything malformed. */
+function readSweep(sv: unknown): RowSweep | undefined {
+  if (!sv || typeof sv !== "object") return undefined;
+  const s = sv as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : undefined);
+  const mode = SWEEP_MODES.includes(s.mode as TransitionMode) ? (s.mode as TransitionMode) : "filter";
+  return {
+    on: s.on === true,
+    fromBar: Math.max(1, Math.round(Number(s.fromBar) || 1)),
+    toBar: Math.max(1, Math.round(Number(s.toBar) || 8)),
+    mode,
+    side: s.side === "in" ? "in" : "out",
+    from: num(s.from),
+    to: num(s.to),
+    curve: typeof s.curve === "number" && isFinite(s.curve) ? Math.max(0, Math.min(1, s.curve)) : undefined,
+    dir: s.dir === "in" || s.dir === "out" ? s.dir : undefined,
   };
 }
 
@@ -302,6 +354,7 @@ export function deserialize(
   // Reset to a blank track so partial / legacy loads leave a sane state.
   track.colors = Array.from({ length: NUM_LINES }, () => ({ loops: [] as Loop[] }));
   track.barLimit = DEFAULT_BAR_LIMIT;
+  track.name = "";
   track.root = 0;
   track.scale = 0;
   track.melodies = [];
@@ -315,10 +368,12 @@ export function deserialize(
         const ct: ColorTrack = track.colors[ci];
         ct.mute = !!cj.mute;
         ct.solo = !!cj.solo;
+        ct.sweep = readSweep(cj.sweep);
         ct.loops = (Array.isArray(cj.loops) ? cj.loops : []).map((lj) => readLoop(lj, ci));
       });
     }
     track.barLimit = typeof json.barLimit === "number" ? Math.max(1, Math.round(json.barLimit)) : DEFAULT_BAR_LIMIT;
+    track.name = typeof json.name === "string" ? json.name : "";
     track.root = typeof json.root === "number" ? ((json.root % 12) + 12) % 12 : 0;
     track.scale = typeof json.scale === "number" ? json.scale : 0;
   }

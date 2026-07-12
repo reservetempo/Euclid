@@ -19,8 +19,8 @@
 // those lanes exactly as it did on the old 6 voice lines. See lines.ts / project.ts.
 
 import {
-  VoiceNode, IntroEnv, OutroEnv, LifePlacement, emptyNode, clampEnvelopes,
-  STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
+  VoiceNode, IntroEnv, OutroEnv, LifePlacement, SweepWindow, TransitionMode,
+  emptyNode, clampEnvelopes, STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
 import { MelodyNode, emptyMelody, melodyNoteNode, generateMelody, EmittedNote, MELODY_COLOR_INDEX } from "./melody";
 import { rng01, randomSeed } from "./rng";
@@ -46,10 +46,59 @@ export type EveryRule =
     `seed` fixes a weighted roll (kept until re-rolled); `seedHistory` is the Back stack. */
 export interface PlacementRule {
   every: EveryRule;
-  forBars: number;               // sounding length of each placement, in bars (>= 1)
+  forBars: number;               // sounding length of each placement, in bars (>= 1). When
+                                 // `lengths` is set, this mirrors lengths[0] (kept in sync
+                                 // for old readers / the fade budget).
+  lengths?: number[];            // optional CYCLE of placement lengths (bars): successive
+                                 // placements use lengths[0], lengths[1], … then repeat. A
+                                 // single value (or absent) = the classic fixed forBars.
+  retrigger?: boolean;           // repeat the intro/outro fade on EVERY placement instead
+                                 // of once across a merged run (see buildLane).
   mode: "overlap" | "solo";
   seed: number;                  // current RNG seed (weighted rule only, but always kept)
   seedHistory: number[];         // previous seeds, for the Back button (most recent last)
+}
+
+/** The cycle of placement lengths in bars (all ≥ 1): `lengths` when it holds ≥ 1 entry,
+    else the single `forBars`. Successive placements step through it (see placementsFor). */
+export function ruleLengths(rule: PlacementRule): number[] {
+  const ls = (rule.lengths ?? []).map((n) => Math.max(1, Math.round(n))).filter((n) => n >= 1);
+  return ls.length ? ls : [Math.max(1, Math.round(rule.forBars))];
+}
+
+/** An overarching FX sweep across a whole coloured ROW, from bar `fromBar` to `toBar`
+    (1-indexed, inclusive): every loop on the row has the chosen style swept across that
+    window — the filter opens, reverb wells up, drive bites, etc. `side` "out" runs the
+    sound → the effect extreme; "in" runs the effect → the clean sound. `from`/`to` override
+    the swept param's near/far values; `curve`/`dir` bend the ramp (see engine bendT). */
+export interface RowSweep {
+  on: boolean;
+  fromBar: number;
+  toBar: number;
+  mode: TransitionMode;
+  side: "in" | "out";
+  from?: number;
+  to?: number;
+  curve?: number;
+  dir?: "in" | "out";
+}
+
+/** A fresh row sweep: a filter opening across the first 8 bars, off until enabled. */
+export function defaultRowSweep(): RowSweep {
+  return { on: false, fromBar: 1, toBar: 8, mode: "filter", side: "out", curve: 0, dir: "out" };
+}
+
+/** Convert a RowSweep (1-indexed bars, inclusive) into an engine SweepWindow (step range),
+    clamped to the track. Returns null when the range is empty or the sweep is off. */
+export function rowSweepWindow(sweep: RowSweep | undefined, barLimit: number): SweepWindow | null {
+  if (!sweep || !sweep.on) return null;
+  const limit = Math.max(1, Math.round(barLimit));
+  const fromBar = Math.max(1, Math.min(limit, Math.round(sweep.fromBar)));
+  const toBar = Math.max(fromBar, Math.min(limit, Math.round(sweep.toBar)));
+  const from = (fromBar - 1) * STEPS_PER_BAR;
+  const to = toBar * STEPS_PER_BAR;
+  if (to <= from) return null;
+  return { from, to, mode: sweep.mode, side: sweep.side, fromV: sweep.from, toV: sweep.to, curve: sweep.curve, dir: sweep.dir };
 }
 
 /** One loop: the sound/rhythm half of a VoiceNode plus its placement rule. `reps`/`wait`
@@ -79,6 +128,7 @@ export interface ColorTrack {
   loops: Loop[];
   mute?: boolean;
   solo?: boolean;
+  sweep?: RowSweep; // an overarching FX sweep across a bar range of the whole row
 }
 
 export const DEFAULT_BAR_LIMIT = 16;
@@ -88,6 +138,7 @@ export const DEFAULT_BAR_LIMIT = 16;
 export class Track {
   colors: ColorTrack[] = emptyColors();
   barLimit = DEFAULT_BAR_LIMIT;
+  name = "";  // a generated coined name for the track (see model/name.ts)
   root = 0;  // 0 = C
   scale = 0; // 0 = Major
   // The last coloured row is a LIST of melodies (each a placeable phrase with its own
@@ -140,6 +191,7 @@ export function melodyLanes(melodies: MelodyItem[], barLimit: number): Lane[] {
     if (!phrase.length) continue;
     const intervals = placementsFor(inst, limit).sort((a, b) => a.startBar - b.startBar);
     const nodes: VoiceNode[] = [];
+    const sweeps: SweepWindow[] = [];
     let cursor = 0;
     for (const iv of intervals) {
       const start = iv.startBar * STEPS_PER_BAR;
@@ -147,12 +199,40 @@ export function melodyLanes(melodies: MelodyItem[], barLimit: number): Lane[] {
       if (start > cursor) { nodes.push(restOf(start - cursor)); cursor = start; }
       const budget = Math.min(phraseBars * STEPS_PER_BAR, limitSteps - cursor);
       if (budget <= 0) break;
-      cursor += emitPhrase(phrase, inst, budget, nodes);
+      const used = emitPhrase(phrase, inst, budget, nodes);
+      // A melody transition (item.inst.intro/outro) fades EACH placement in/out — realised
+      // as row-sweep windows over this placement (env.reps read as a length in BARS).
+      collectMelodySweeps(inst, start, used, sweeps);
+      cursor += used;
     }
     if (cursor < limitSteps) nodes.push(restOf(limitSteps - cursor));
-    lanes.push({ color: MELODY_COLOR_INDEX, nodes: nodes.length ? nodes : [restOf(limitSteps)] });
+    lanes.push({
+      color: MELODY_COLOR_INDEX,
+      nodes: nodes.length ? nodes : [restOf(limitSteps)],
+      sweeps: sweeps.length ? sweeps : undefined,
+    });
   }
   return lanes;
+}
+
+/** Add a melody placement's fade-in / fade-out windows (from item.inst.intro/outro) to
+    `out`. A melody has no pattern reps, so the envelope's `reps` is read as a length in
+    BARS, capped to the placement. Intro = fade IN (effect → sound, side "in") at the
+    placement start; outro = fade OUT (sound → effect, side "out") at its end. */
+function collectMelodySweeps(inst: Loop, startStep: number, usedSteps: number, out: SweepWindow[]): void {
+  if (usedSteps <= 0) return;
+  const placeBars = Math.max(1, Math.round(usedSteps / STEPS_PER_BAR));
+  const end = startStep + usedSteps;
+  if (inst.intro) {
+    const bars = Math.max(1, Math.min(placeBars, Math.round(inst.intro.reps)));
+    out.push({ from: startStep, to: startStep + bars * STEPS_PER_BAR, mode: inst.intro.mode,
+      side: "in", fromV: inst.intro.from, toV: inst.intro.to, curve: inst.intro.curve, dir: inst.intro.dir });
+  }
+  if (inst.outro) {
+    const bars = Math.max(1, Math.min(placeBars, Math.round(inst.outro.reps)));
+    out.push({ from: end - bars * STEPS_PER_BAR, to: end, mode: inst.outro.mode,
+      side: "out", fromV: inst.outro.from, toV: inst.outro.to, curve: inst.outro.curve, dir: inst.outro.dir });
+  }
 }
 
 /** Emit a generated phrase's notes/rests into `out`, consuming up to `budget` steps (the
@@ -180,10 +260,12 @@ export function defaultRule(): PlacementRule {
   return { every: { kind: "nth", n: 4 }, forBars: 1, mode: "solo", seed: randomSeed(), seedHistory: [] };
 }
 
-// A compiled lane: a node chain (as the old voice lines) plus the colour it belongs to.
+// A compiled lane: a node chain (as the old voice lines) plus the colour it belongs to,
+// and any row-wide FX sweeps (bar-range windows) that ride over its steady hits.
 export interface Lane {
   color: number;
   nodes: VoiceNode[];
+  sweeps?: SweepWindow[];
 }
 
 // A placement on the timeline, in whole bars: [startBar, startBar + forBars).
@@ -193,35 +275,44 @@ interface Interval {
   loop: Loop;
 }
 
-/** Where a loop lands across [0, barLimit) bars, as a list of intervals. */
+/** Where a loop lands across [0, barLimit) bars, as a list of intervals. Each placement's
+    length steps through the rule's length CYCLE (ruleLengths) in placement order, so a
+    "2, 4" loop lays 2 bars, then 4, then 2 … The cadence (which bar a placement STARTS on)
+    still comes from the `every` kind; only the length varies. */
 export function placementsFor(loop: Loop, barLimit: number): Interval[] {
   const out: Interval[] = [];
-  const forBars = Math.max(1, Math.round(loop.rule.forBars));
-  const push = (startBar: number) => {
-    if (startBar >= 0 && startBar < barLimit) out.push({ startBar, forBars, loop });
+  const lengths = ruleLengths(loop.rule);
+  const lenAt = (i: number) => lengths[i % lengths.length];
+  // A placement never sounds past the track end (the bar limit IS the loop length), so its
+  // length clamps to what's left — matching dicePoolLane. Keeps a long final length from
+  // stretching the loop beyond its bar limit.
+  const push = (startBar: number, forBars: number) => {
+    if (startBar >= 0 && startBar < barLimit) out.push({ startBar, forBars: Math.min(forBars, barLimit - startBar), loop });
   };
   const every = loop.rule.every;
   if (every.kind === "nth") {
     const n = Math.max(1, Math.round(every.n));
     const start0 = Math.max(0, Math.round((every.start ?? 1) - 1)); // 1-indexed bar → 0-indexed
-    for (let b = start0; b < barLimit; b += n) push(b);
+    let i = 0;
+    for (let b = start0; b < barLimit; b += n) push(b, lenAt(i++));
   } else if (every.kind === "pow2") {
     // Bars 1, 2, 4, 8, 16 … (1-indexed for the musician; stored 0-indexed).
-    for (let p = 1; p - 1 < barLimit; p *= 2) push(p - 1);
+    let i = 0;
+    for (let p = 1; p - 1 < barLimit; p *= 2) push(p - 1, lenAt(i++));
   } else if (every.kind === "at") {
     // Explicit 1-indexed bar numbers the user typed; stored 0-indexed here.
-    for (const b of every.bars) push(Math.round(b) - 1);
+    every.bars.forEach((b, i) => push(Math.round(b) - 1, lenAt(i)));
   } else if (every.kind === "fill" || every.kind === "dice") {
-    // Every bar (tiled by forBars). "fill" masks behind higher-priority solo loops; a
-    // stray "dice" loop (its pool resolved elsewhere by dicePoolLane) tiles as a fallback.
-    for (let b = 0; b < barLimit; b += forBars) push(b);
+    // Every bar (tiled by the length cycle). "fill" masks behind higher-priority solo
+    // loops; a stray "dice" loop (its pool resolved by dicePoolLane) tiles as a fallback.
+    let i = 0;
+    for (let b = 0; b < barLimit; ) { const len = lenAt(i++); push(b, len); b += len; }
   } else {
-    // Weighted: walk the track in forBars slots, placing when the seeded roll passes.
+    // Weighted: walk the track in length-cycle slots, placing when the seeded roll passes.
     const w = Math.max(0, Math.min(1, every.weight));
     const rng = rng01(loop.rule.seed);
-    for (let b = 0; b < barLimit; b += forBars) {
-      if (rng() < w) push(b);
-    }
+    let i = 0;
+    for (let b = 0; b < barLimit; ) { const len = lenAt(i++); if (rng() < w) push(b, len); b += len; }
   }
   return out;
 }
@@ -263,10 +354,22 @@ export function loopToNode(loop: Loop, reps = 1): VoiceNode {
   return n;
 }
 
+/** Split a run of `totalBars` into chunks of at most `stepBars` (the last chunk takes the
+    remainder). Used by the retrigger option so a merged placement re-fades every stepBars. */
+function chunkBars(totalBars: number, stepBars: number): number[] {
+  const step = Math.max(1, Math.round(stepBars));
+  const out: number[] = [];
+  let remaining = Math.max(1, Math.round(totalBars));
+  while (remaining > 0) { const c = Math.min(step, remaining); out.push(c); remaining -= c; }
+  return out;
+}
+
 /** Turn a lane's non-overlapping, start-sorted intervals into a padded node chain that
     spans exactly `barLimit` bars: a rest for each gap, then a sound node per placement
     (its pattern cycling for `forBars`), with a short rest padding any partial final
-    cycle so the next placement stays on the bar grid. */
+    cycle so the next placement stays on the bar grid. A `retrigger` loop splits each
+    placement into `forBars`-length chunks, each its OWN node carrying the loop's
+    intro/outro — so the fade repeats on every chunk instead of once across a merged run. */
 function buildLane(intervals: Interval[], barLimit: number): VoiceNode[] {
   const nodes: VoiceNode[] = [];
   const limit = barLimit * STEPS_PER_BAR;
@@ -276,13 +379,21 @@ function buildLane(intervals: Interval[], barLimit: number): VoiceNode[] {
     if (start > cursor) { nodes.push(restOf(start - cursor)); cursor = start; }
     if (start < cursor) continue; // guard: overlapping input (shouldn't happen per lane)
     const unit = iv.loop.steps >= 1 ? iv.loop.steps : STEPS_PER_BAR;
-    const lenSteps = iv.forBars * STEPS_PER_BAR;
-    const reps = Math.max(1, Math.floor(lenSteps / unit));
-    nodes.push(loopToNode(iv.loop, reps));
-    const consumed = reps * unit;
-    cursor += consumed;
-    const intendedEnd = start + Math.max(lenSteps, consumed); // extend if one cycle overran
-    if (cursor < intendedEnd) { nodes.push(restOf(intendedEnd - cursor)); cursor = intendedEnd; }
+    // One chunk (the whole placement), or forBars-length chunks when the loop retriggers
+    // its fade on each placement (see the doc above).
+    const chunks = iv.loop.rule.retrigger
+      ? chunkBars(iv.forBars, ruleLengths(iv.loop.rule)[0])
+      : [iv.forBars];
+    for (const cb of chunks) {
+      const chunkStart = cursor;
+      const lenSteps = cb * STEPS_PER_BAR;
+      const reps = Math.max(1, Math.floor(lenSteps / unit));
+      nodes.push(loopToNode(iv.loop, reps));
+      const consumed = reps * unit;
+      cursor += consumed;
+      const intendedEnd = chunkStart + Math.max(lenSteps, consumed); // extend if a cycle overran
+      if (cursor < intendedEnd) { nodes.push(restOf(intendedEnd - cursor)); cursor = intendedEnd; }
+    }
   }
   if (cursor < limit) nodes.push(restOf(limit - cursor));
   return nodes.length ? nodes : [restOf(limit)];
@@ -370,22 +481,24 @@ export function compile(colors: ColorTrack[], barLimit: number): Lane[] {
     if (c === MELODY_COLOR_INDEX) continue; // the last colour is the melody (see toLanes)
     const loops = colors[c]?.loops ?? [];
     if (loops.length === 0) continue;
+    // The whole row's optional FX sweep rides over every lane this colour compiles to.
+    const win = rowSweepWindow(colors[c]?.sweep, limit);
+    const sweeps = win ? [win] : undefined;
+    const add = (nodes: VoiceNode[]) => lanes.push({ color: c, nodes, sweeps });
     // Dice loops form a shared pool regardless of their solo/overlap mode.
     const dice = loops.filter((l) => l.rule.every.kind === "dice");
     const solo = loops.filter((l) => l.rule.every.kind !== "dice" && l.rule.mode === "solo");
     const overlap = loops.filter((l) => l.rule.every.kind !== "dice" && l.rule.mode === "overlap");
 
     const soloIvs = soloLane(solo, limit);
-    if (soloIvs.length) lanes.push({ color: c, nodes: buildLane(soloIvs, limit) });
+    if (soloIvs.length) add(buildLane(soloIvs, limit));
 
     const diceIvs = dicePoolLane(dice, limit);
-    if (diceIvs.length) lanes.push({ color: c, nodes: buildLane(diceIvs, limit) });
+    if (diceIvs.length) add(buildLane(diceIvs, limit));
 
     const overlapIvs: Interval[] = [];
     for (const lp of overlap) overlapIvs.push(...placementsFor(lp, limit));
-    for (const laneIvs of packOverlap(overlapIvs)) {
-      lanes.push({ color: c, nodes: buildLane(laneIvs, limit) });
-    }
+    for (const laneIvs of packOverlap(overlapIvs)) add(buildLane(laneIvs, limit));
   }
   return lanes;
 }
@@ -421,6 +534,8 @@ export function cloneLoop(loop: Loop): Loop {
     rule: {
       every,
       forBars: loop.rule.forBars,
+      lengths: loop.rule.lengths ? loop.rule.lengths.slice() : undefined,
+      retrigger: loop.rule.retrigger,
       mode: loop.rule.mode,
       seed: loop.rule.seed,
       seedHistory: loop.rule.seedHistory.slice(),

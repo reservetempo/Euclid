@@ -85,6 +85,23 @@ export interface LifePlacement {
     - `rate` (speed only) is the FAR end's hit-rate multiple of the tempo (near end = 1×). */
 export interface TransitionShape { rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; }
 
+/** A row-wide FX SWEEP window, in engine STEP positions over the loop: while the global
+    loop position is within [from, to), every steady hit on the lane is morphed toward (or
+    out of) the mode's FX extreme by the window's global progress. `side` "out" runs the
+    sound → the effect, "in" runs the effect → the sound. `fromV`/`toV` optionally override
+    the swept param's near/far values; `curve`/`dir` bend the ramp (see engine bendT). Rides
+    over the node chain without splitting it — a whole-row automation, not a per-node fade. */
+export interface SweepWindow {
+  from: number; // inclusive start step
+  to: number;   // exclusive end step
+  mode: TransitionMode;
+  side: "in" | "out";
+  fromV?: number;
+  toV?: number;
+  curve?: number;
+  dir?: "in" | "out";
+}
+
 /** An intro fade folded into a node's start: covers the first `reps` of its window,
     rising from silence (fromId < 0) or morphing from another sound (fromId = its id). */
 export interface IntroEnv extends TransitionShape { reps: number; mode: TransitionMode; fromId: number; }
@@ -271,6 +288,7 @@ function warpOnsets(
 export interface VoiceLine {
   nodes: VoiceNode[]; // always at least one
   color?: number;     // which colour (0..NUM_LINES-1) this lane belongs to
+  sweeps?: SweepWindow[]; // row-wide FX sweep windows riding over this lane's steady hits
 }
 
 // Engine-shaped line: per node the sound id, its own step count, its length in
@@ -294,6 +312,7 @@ export interface LineMessage {
     accent?: LifePlacement;
     ghost?: LifePlacement;
   }[];
+  sweeps?: SweepWindow[]; // row-wide FX sweep windows over this lane (step positions)
 }
 
 export class LineArrangement {
@@ -309,8 +328,8 @@ export class LineArrangement {
 
   /** Replace the lanes with a freshly compiled set. `lanes` come straight from
       compile(); each is padded to `barLimit` bars. */
-  setLanes(lanes: { color: number; nodes: VoiceNode[] }[], barLimit: number): void {
-    this.lines = lanes.map((l) => ({ nodes: l.nodes.length ? l.nodes : [emptyNode()], color: l.color }));
+  setLanes(lanes: { color: number; nodes: VoiceNode[]; sweeps?: SweepWindow[] }[], barLimit: number): void {
+    this.lines = lanes.map((l) => ({ nodes: l.nodes.length ? l.nodes : [emptyNode()], color: l.color, sweeps: l.sweeps }));
     this.barLimit = Math.max(0, Math.round(barLimit));
   }
 
@@ -342,6 +361,7 @@ export class LineArrangement {
       worklet stays pattern-only). Every node ships, including silent rests. */
   linesMessage(): LineMessage[] {
     return this.lines.map((ln) => ({
+      sweeps: ln.sweeps && ln.sweeps.length ? ln.sweeps : undefined,
       nodes: ln.nodes.map((n) => {
         const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
         const reps = Math.max(1, n.reps | 0);

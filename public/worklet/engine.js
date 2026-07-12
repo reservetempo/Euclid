@@ -1353,6 +1353,18 @@ class EngineProcessor extends AudioWorkletProcessor {
     }
   }
 
+  // The row-sweep window covering global loop position `pos` on line `ln`, or null (first
+  // match wins; windows aren't expected to overlap). See SweepWindow in lines.ts.
+  sweepAt(ln, pos) {
+    const sweeps = ln && ln.sweeps;
+    if (!sweeps) return null;
+    for (let i = 0; i < sweeps.length; i++) {
+      const s = sweeps[i];
+      if (pos >= s.from && pos < s.to) return s;
+    }
+    return null;
+  }
+
   // Fire one step. The loop length is the LONGEST line's chain; every line reads its
   // position as `absStep % loopTotal`, plays its chain once (active NODE by cumulative
   // lenSteps, the node's pattern cycling inside its window via `activeLocal % steps`),
@@ -1392,7 +1404,8 @@ class EngineProcessor extends AudioWorkletProcessor {
     const fired = [];
     const states = []; // per line: { node, step } for the playhead (-1 = resting)
     for (let li = 0; li < lines.length; li++) {
-      const nodes = (lines[li] && lines[li].nodes) || [];
+      const ln = lines[li];
+      const nodes = (ln && ln.nodes) || [];
       const total = totals[li];
       // Past this line's own length (or empty): the line rests until the loop wraps.
       if (total <= 0 || pos >= total) { states.push({ node: -1, step: -1 }); continue; }
@@ -1493,6 +1506,21 @@ class EngineProcessor extends AudioWorkletProcessor {
           continue;
         }
         // Destination sound gone — play plainly.
+      }
+
+      // Row FX sweep: a lane-wide window (see SweepWindow) that morphs the steady hit
+      // toward (side "out") or out of (side "in") the mode's FX extreme by the sweep's
+      // global progress across [from, to). Overrides the plain steady trigger; a node's
+      // own intro/outro (handled above with `continue`) still wins where they overlap.
+      const sw = this.sweepAt(ln, pos);
+      if (sw) {
+        const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
+        const t = bendT(raw, sw.curve, sw.dir);
+        // Melody notes carry their own pitch: sweep a pitched copy so the fade keeps the tune.
+        const swSnd = nd.pitchHz > 0 ? { snap: this.pitchedSnap(snd.snap, nd.pitchHz), tail: snd.tail } : snd;
+        if (sw.side === "in") this.fireBlend(nd.soundId, -1, null, nd.soundId, swSnd, sw.mode, t, life, gate, beat, fired, sw.fromV, sw.toV);
+        else this.fireBlend(nd.soundId, nd.soundId, swSnd, -1, null, sw.mode, t, life, gate, beat, fired, sw.fromV, sw.toV);
+        continue;
       }
 
       // Steady middle: the node's own sound. A melody note carries its own pitch

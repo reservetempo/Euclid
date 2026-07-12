@@ -28,13 +28,14 @@ import {
   TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape,
 } from "../model/lines";
 import {
-  Track, Loop, EveryRule, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
-  MelodyItem, newMelodyItem,
+  Track, Loop, EveryRule, RowSweep, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
+  ruleLengths, defaultRowSweep, MelodyItem, newMelodyItem,
 } from "../model/track";
+import { generateTrackName, reshuffleNames } from "../model/name";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
   MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes, randomizeNotes,
-  generateMelody, chainNotes,
+  generateMelody, chainNotes, isChain,
 } from "../model/melody";
 import {
   ALL_SCALES, ALL_ROOTS, degreesPerOctave, noteNameForDegree, semitoneForDegree,
@@ -102,12 +103,15 @@ export class App {
   private melodyBranchMode = false;      // Add-branch mode: tapping a note square branches it
   private melodyGenCount = 4;            // desired note count for the Generate button
   private melodyNoteEdit: MelodyNote | null = null; // note whose settings popup is open
-  private melodyInstrumentPage = false;  // melody sub-page: the current item's sound params
   private melodyOptionsPage = false;     // melody sub-page: the current item's loop options
-  private melodyTab: "notes" | "sing" = "notes"; // melody item sub-tab (notes editor / sing-to-notes)
+  // Melody item sub-tabs: notes editor / sing-to-notes / instrument sound / transition.
+  private melodyTab: "notes" | "sing" | "sound" | "transition" = "notes";
   private singSession: SingSession | null = null; // live mic recording (null = idle)
   private singTake: SungNote[] | null = null;     // last finished take, awaiting Apply
   private singError: string | null = null;        // mic/take status line for the Sing tab
+  // Headphone-solo: hear ONLY this melody (all other voices + melodies muted) while
+  // shaping its instrument. Transient — never saved; cleared on navigating away.
+  private melodySoloItem: MelodyItem | null = null;
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private placementTab: "loop" | "transition" | "sound" = "loop"; // which sub-page of the loop popup
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
@@ -115,6 +119,10 @@ export class App {
   private soundName = "";
   private playing = false;
   private tempo = 120;
+  // Play-range loop region (1-indexed bars, inclusive); 0/0 = loop the whole track. A
+  // transient playback aid (see applySection) — not saved with the project.
+  private playFromBar = 0;
+  private playToBar = 0;
   private nextSoundId = 0;             // monotonic id for loop sounds
 
   private soundReturn: View = "color"; // where the deep sound view's Back returns to
@@ -153,6 +161,9 @@ export class App {
   }
   /** A colour is heard unless it's muted or another colour has stolen solo. */
   private colorAudible(c: number): boolean {
+    // Headphone-soloing a melody: only the melody row is heard (buildSounds narrows it
+    // further, to the one soloed instrument).
+    if (this.melodySoloItem) return c === MELODY_COLOR_INDEX;
     const ct = this.track.colors[c];
     if (!ct) return false;
     return !ct.mute && (!this.anySolo() || !!ct.solo);
@@ -253,13 +264,15 @@ export class App {
       }
     });
     // Each melody's own re-pitched instrument (its notes override P.Pitch in the engine).
+    // A headphone-soloed melody mutes its siblings too — only its instrument sounds.
+    const soloInst = this.melodySoloItem?.inst ?? null;
     const melodyAudible = this.colorAudible(MELODY_COLOR_INDEX);
     for (const m of this.track.melodies) {
       const inst = m.inst;
       if (inst.soundId < 0 || !inst.snapshot.length || seen.has(inst.soundId)) continue;
       seen.add(inst.soundId);
       const snap = inst.snapshot.slice();
-      if (!melodyAudible) snap[ParamId.Volume] = 0;
+      if (soloInst ? inst !== soloInst : !melodyAudible) snap[ParamId.Volume] = 0;
       else if (inst.gain && inst.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * inst.gain;
       sounds.push({ id: inst.soundId, snap, lo: inst.pitch[0], hi: inst.pitch[1], tail: estimateLength(snap, this.tempo) });
     }
@@ -338,7 +351,11 @@ export class App {
   private async exportWav(loops: number): Promise<void> {
     const loopLen = this.arr.loopSteps();
     if (loopLen <= 0) { alert("Nothing to export yet — give some colours a loop first."); return; }
+    // The melody headphone-solo is an editing aid — exports honour the mixer state only.
+    const hs = this.melodySoloItem;
+    this.melodySoloItem = null;
     const sounds = this.buildSounds();
+    this.melodySoloItem = hs;
     const maxTail = sounds.reduce((m, s) => Math.max(m, s.tail || 0), 0);
     const tailSec = Math.min(8, Math.max(1.5, maxTail + 0.5));
     const buffer = await this.engine.renderToBuffer({
@@ -382,7 +399,12 @@ export class App {
     this.editLoop = null;
     this.soundLoop = null;
     this.openColor = 0;
+    this.playFromBar = 0;
+    this.playToBar = 0;
     this.view = "track";
+    // A fresh project re-shuffles the name pools (a whole new draw order) and coins a name.
+    reshuffleNames();
+    this.track.name = generateTrackName();
     this.afterProjectChange();
   }
 
@@ -394,6 +416,7 @@ export class App {
     for (const c of this.track.colors) {
       for (const l of c.loops) if (l.soundId > maxId) maxId = l.soundId;
     }
+    for (const m of this.track.melodies) if (m.inst.soundId > maxId) maxId = m.inst.soundId;
     this.nextSoundId = maxId + 1;
     this.editLoop = null;
     this.soundLoop = null;
@@ -436,6 +459,17 @@ export class App {
 
   // --- main render ------------------------------------------------------
   private render(): void {
+    // A melody's headphone-solo lives only while EDITING that melody (its pages, or its
+    // instrument's deep sound view); navigating anywhere else restores the full mix.
+    const hs = this.melodySoloItem;
+    if (hs) {
+      const onItem = this.view === "melody" && this.currentMelodyItem() === hs;
+      const onSound = this.view === "sound" && this.soundLoop === hs.inst;
+      if (!this.track.melodies.includes(hs) || (!onItem && !onSound)) {
+        this.melodySoloItem = null;
+        this.pushSounds();
+      }
+    }
     // Preserve the scroll position across an in-view re-render: render() rebuilds the
     // whole view (a fresh .viewroot scroller), which would otherwise snap back to the
     // top on every edit. Only restore when the view is unchanged — a genuine navigation
@@ -444,10 +478,8 @@ export class App {
     // The melody instrument sub-page and Sing tab are distinct scroll contexts from the
     // notes page.
     let viewKey = this.view;
-    if (this.view === "melody") {
-      if (this.melodyInstrumentPage) viewKey += ":inst";
-      else if (this.melodyTab === "sing") viewKey += ":sing";
-    }
+    // Each melody sub-tab is its own scroll context (distinct from the notes page).
+    if (this.view === "melody" && this.currentMelodyItem() && !this.melodyOptionsPage) viewKey += ":" + this.melodyTab;
     const sameView = this.lastViewKey === viewKey;
     this.lastViewKey = viewKey;
     this.root.innerHTML = "";
@@ -567,6 +599,7 @@ export class App {
         } catch { /* best effort */ }
         this.playing = true;
         this.engine.play();
+        this.applySection();
       } else {
         this.playing = false;
         this.engine.stop();
@@ -591,6 +624,19 @@ export class App {
 
     t.append(play, tempo);
     return t;
+  }
+
+  /** Push the play-range loop region to the engine (1-indexed bars, inclusive). An unset /
+      invalid range clears it (loops the whole track). Called on play and on range edits. */
+  private applySection(): void {
+    const barLimit = Math.max(1, this.track.barLimit);
+    const from = this.playFromBar, to = this.playToBar;
+    if (from >= 1 && to >= from && from <= barLimit) {
+      const f = Math.min(from, barLimit), t = Math.min(to, barLimit);
+      this.engine.setSection((f - 1) * STEPS_PER_BAR, (t - f + 1) * STEPS_PER_BAR);
+    } else {
+      this.engine.setSection(0, 0);
+    }
   }
 
   private chainIcon(): SVGSVGElement {
@@ -641,8 +687,116 @@ export class App {
   }
 
   // --- track view (colours + bar limit) --------------------------------
+  /** The track's coined name (see model/name.ts) with a die to re-generate it. */
+  private trackNameBlock(): HTMLElement {
+    if (!this.track.name) { this.track.name = generateTrackName(); this.persist(); }
+    const wrap = document.createElement("div");
+    wrap.className = "track-name";
+    const name = document.createElement("span");
+    name.className = "track-name-text";
+    name.textContent = this.track.name;
+    const dice = document.createElement("button");
+    dice.className = "track-name-dice";
+    dice.textContent = "🎲";
+    dice.title = "Coin a new name";
+    dice.onclick = () => { this.track.name = generateTrackName(); this.persist(); this.render(); };
+    wrap.append(name, dice);
+    return wrap;
+  }
+
+  /** Play-range: DRAG across a bar strip to loop just bars n→m. A whole-track mini-timeline
+      (one row, whatever the bar limit) with a highlight band, a readout, and a clear. Applied
+      live to the engine while dragging. A rehearsal aid, kept in app state only (not saved). */
+  private playRangeStrip(): HTMLElement {
+    const barLimit = Math.max(1, this.track.barLimit);
+    const isOn = () => this.playFromBar >= 1 && this.playToBar >= this.playFromBar;
+
+    const wrap = document.createElement("div");
+    wrap.className = "track-barlimit play-range" + (isOn() ? " on" : "");
+
+    const head = document.createElement("div");
+    head.className = "play-range-head";
+    const lbl = document.createElement("span");
+    lbl.className = "play-range-lbl";
+    lbl.textContent = "Play range";
+    const readout = document.createElement("span");
+    readout.className = "play-range-readout";
+    const readoutText = () => isOn()
+      ? `bars ${this.playFromBar}–${this.playToBar}`
+      : "whole track — drag to loop a section";
+    readout.textContent = readoutText();
+    const clear = document.createElement("button");
+    clear.className = "play-range-clear";
+    clear.textContent = "✕";
+    clear.title = "Clear the play range";
+    clear.disabled = !isOn();
+    clear.onclick = () => { this.playFromBar = 0; this.playToBar = 0; this.applySection(); this.render(); };
+    head.append(lbl, readout, clear);
+    wrap.append(head);
+
+    // The draggable bar strip: one faint cell per bar, ticked every 4, with a band overlay.
+    const strip = document.createElement("div");
+    strip.className = "play-range-strip";
+    for (let b = 0; b < barLimit; b++) {
+      const cell = document.createElement("span");
+      cell.className = "play-range-cell" + (b % 4 === 0 ? " tick" : "");
+      strip.append(cell);
+    }
+    const band = document.createElement("div");
+    band.className = "play-range-band";
+    strip.append(band);
+    const layout = () => {
+      band.style.display = isOn() ? "block" : "none";
+      if (isOn()) {
+        band.style.left = `${((this.playFromBar - 1) / barLimit) * 100}%`;
+        band.style.width = `${((this.playToBar - this.playFromBar + 1) / barLimit) * 100}%`;
+      }
+      readout.textContent = readoutText();
+      clear.disabled = !isOn();
+      wrap.classList.toggle("on", isOn());
+    };
+    layout();
+
+    const barAt = (clientX: number) => {
+      const rect = strip.getBoundingClientRect();
+      const frac = Math.max(0, Math.min(0.9999, (clientX - rect.left) / Math.max(1, rect.width)));
+      return Math.max(1, Math.min(barLimit, Math.floor(frac * barLimit) + 1));
+    };
+    let anchor = 0;
+    const onMove = (e: PointerEvent) => {
+      const bar = barAt(e.clientX);
+      this.playFromBar = Math.min(anchor, bar);
+      this.playToBar = Math.max(anchor, bar);
+      layout();
+      this.applySection(); // follow the drag live while playing
+    };
+    const onUp = (e: PointerEvent) => {
+      strip.removeEventListener("pointermove", onMove);
+      strip.removeEventListener("pointerup", onUp);
+      strip.removeEventListener("pointercancel", onUp);
+      try { strip.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+    };
+    strip.onpointerdown = (e) => {
+      e.preventDefault();
+      anchor = barAt(e.clientX);
+      this.playFromBar = anchor;
+      this.playToBar = anchor;
+      layout();
+      this.applySection();
+      try { strip.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
+      strip.addEventListener("pointermove", onMove);
+      strip.addEventListener("pointerup", onUp);
+      strip.addEventListener("pointercancel", onUp);
+    };
+    wrap.append(strip);
+    return wrap;
+  }
+
   private renderTrackPanel(): void {
     const v = this.viewRoot;
+    // Generated track name + a die to re-coin it.
+    v.append(this.trackNameBlock());
+
     const rings = document.createElement("div");
     rings.className = "loop-rings";
     rings.append(this.euclidView.canvas, this.mixerOpenBtn("track"));
@@ -668,6 +822,9 @@ export class App {
     });
     barRow.append(lbl, inp);
     v.append(barRow);
+
+    // Play-range: drag across the bar strip to loop just bars n→m (a rehearsal region).
+    v.append(this.playRangeStrip());
 
     // Whole-track overview: every colour's compiled lanes laid out across the full bar
     // limit (zoomed out — the entire loop at once). Tap a colour to open its loop list.
@@ -732,7 +889,6 @@ export class App {
   private openMelody(): void {
     this.melodyItemIndex = -1;
     this.melodyPath = [];
-    this.melodyInstrumentPage = false;
     this.melodyOptionsPage = false;
     this.resetSingTab();
     this.view = "melody";
@@ -758,7 +914,6 @@ export class App {
   private openMelodyItem(i: number): void {
     this.melodyItemIndex = i;
     this.melodyPath = [];
-    this.melodyInstrumentPage = false;
     this.melodyOptionsPage = false;
     this.resetSingTab();
     const item = this.currentMelodyItem();
@@ -784,6 +939,32 @@ export class App {
   private melodyChanged(): void {
     this.recompile();
     this.render();
+  }
+
+  /** The 🎧 headphone-solo toggle for a melody item's pages: hear ONLY this melody (every
+      other voice and melody muted) while trying out its instrument. */
+  private melodySoloBtn(item: MelodyItem): HTMLElement {
+    const on = this.melodySoloItem === item;
+    const b = document.createElement("button");
+    b.className = "melody-tree-btn melody-solo-btn" + (on ? " on" : "");
+    b.textContent = "🎧 Solo";
+    b.title = on
+      ? "Back to the full mix"
+      : "Hear only this melody — mutes every other voice and melody while you try sounds";
+    b.onclick = () => {
+      this.melodySoloItem = on ? null : item;
+      this.pushSounds();
+      this.render();
+    };
+    return b;
+  }
+
+  /** The banner shown while a melody is headphone-soloed. */
+  private melodySoloNote(): HTMLElement {
+    const p = document.createElement("p");
+    p.className = "melody-solo-note";
+    p.textContent = "🎧 Solo — hearing only this melody; everything else is muted until you leave or toggle it off.";
+    return p;
   }
 
   /** The last overview row: the melody list summary + generated lane, tapping to its menu. */
@@ -813,7 +994,6 @@ export class App {
   private renderMelodyPanel(): void {
     const item = this.currentMelodyItem();
     if (!item) { this.renderMelodyList(); return; }
-    if (this.melodyInstrumentPage) { this.renderMelodyInstrumentPage(item); return; }
     if (this.melodyOptionsPage) { this.renderMelodyOptionsPage(item); return; }
     this.renderMelodyItemParams(item);
   }
@@ -881,7 +1061,7 @@ export class App {
     nm.textContent = `Melody ${i + 1}`;
     const sum = document.createElement("span");
     sum.className = "loop-summary";
-    const n = item.node.notes.length;
+    const n = countNotes(item.node);
     sum.textContent = `${ALL_SCALES[item.node.scale]} · ${n} note${n === 1 ? "" : "s"} · ${this.ruleSummary(item.inst)}`;
     body.append(nm, sum);
     body.onclick = () => this.openMelodyItem(i);
@@ -912,6 +1092,8 @@ export class App {
     const c = MELODY_COLOR_INDEX;
     const atRoot = this.melodyPath.length === 0;
     const node = this.currentMelodyNode();
+    // Sound / Transition are item-level (root only); drilling into a branch drops back to Notes.
+    if (!atRoot && (this.melodyTab === "sound" || this.melodyTab === "transition")) this.melodyTab = "notes";
 
     const head = document.createElement("div");
     head.className = "mixer-head";
@@ -932,16 +1114,19 @@ export class App {
     tree.textContent = "⤢ Tree";
     tree.title = "Zoomed-out tree of this melody";
     tree.onclick = () => this.openMelodyTree(item);
-    head.append(back, title, tree);
+    head.append(back, title, this.melodySoloBtn(item), tree);
     v.append(head);
 
+    if (this.melodySoloItem === item) v.append(this.melodySoloNote());
     if (!atRoot) v.append(this.melodyBreadcrumb(item));
 
-    // Notes / Sing tab nav. Sing records into the context being edited (root or branch).
+    // Tab nav: Notes / Sing / Sound / Transition — mirroring a voice loop's popup. Sing
+    // records into the context being edited (root or branch); Sound and Transition act on
+    // the whole item's instrument, so they're only offered at the item root.
     const nav = document.createElement("div");
     nav.className = "placement-seg placement-nav melody-tabs";
     nav.style.setProperty("--vc", VOICE_COLORS[c]);
-    const mkTab = (tab: "notes" | "sing", text: string) => {
+    const mkTab = (tab: typeof this.melodyTab, text: string) => {
       const b = document.createElement("button");
       b.className = "seg-btn" + (this.melodyTab === tab ? " on" : "");
       b.textContent = text;
@@ -949,10 +1134,20 @@ export class App {
       return b;
     };
     nav.append(mkTab("notes", "Notes"), mkTab("sing", "🎤 Sing"));
+    if (atRoot) nav.append(mkTab("sound", "🎛 Sound"), mkTab("transition", "Transition"));
     v.append(nav);
 
-    if (this.melodyTab === "sing") {
-      v.append(this.melodySingSection(node));
+    if (this.melodyTab === "sing") { v.append(this.melodySingSection(node)); return; }
+    // Sound / Transition act on the item instrument (root only — a branch has no own sound).
+    if (atRoot && this.melodyTab === "sound") {
+      const instWrap = document.createElement("div");
+      instWrap.className = "melody-inst";
+      instWrap.append(this.melodyInstrumentMenu(item.inst));
+      v.append(instWrap);
+      return;
+    }
+    if (atRoot && this.melodyTab === "transition") {
+      v.append(this.transitionControls(item.inst, () => this.render(), { unit: "bar" }));
       return;
     }
 
@@ -961,7 +1156,7 @@ export class App {
       if (seqView) v.append(seqView);
       v.append(this.melodyGenerateRow(node));
 
-      // Length (phrase bars) + Loop options + Instrument sound.
+      // Length (phrase bars) + Loop options.
       const lenBar = document.createElement("div");
       lenBar.className = "placement-controls melody-genbar";
       lenBar.style.setProperty("--vc", VOICE_COLORS[c]);
@@ -969,20 +1164,12 @@ export class App {
         (nn) => { item.inst.rule.forBars = nn; this.melodyChanged(); }, (nn) => `${nn} bar${nn === 1 ? "" : "s"}`));
       v.append(lenBar);
 
-      const btns = document.createElement("div");
-      btns.className = "placement-row melody-genbtns";
       const optBtn = document.createElement("button");
       optBtn.className = "seg-btn melody-inst-btn";
       optBtn.style.setProperty("--vc", VOICE_COLORS[c]);
       optBtn.textContent = "⚙ Loop options ›";
       optBtn.onclick = () => { this.melodyOptionsPage = true; this.render(); };
-      const instBtn = document.createElement("button");
-      instBtn.className = "seg-btn melody-inst-btn";
-      instBtn.style.setProperty("--vc", VOICE_COLORS[c]);
-      instBtn.textContent = "🎛 Instrument sound ›";
-      instBtn.onclick = () => { this.melodyInstrumentPage = true; this.render(); };
-      btns.append(optBtn, instBtn);
-      v.append(btns);
+      v.append(optBtn);
     }
 
     v.append(this.melodyScaleControls(node));
@@ -1024,28 +1211,6 @@ export class App {
     v.append(this.placementControls(item.inst, () => this.render()));
   }
 
-  /** The melody instrument's sound-params sub-page: a Back header + the shuffle menu on
-      its own scrollable page (so it's always reachable, not buried under the notes). */
-  private renderMelodyInstrumentPage(item: MelodyItem): void {
-    const v = this.viewRoot;
-    const head = document.createElement("div");
-    head.className = "mixer-head";
-    head.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
-    const back = document.createElement("button");
-    back.className = "mixer-back";
-    back.textContent = "‹ Melody";
-    back.onclick = () => { this.melodyInstrumentPage = false; this.render(); };
-    const title = document.createElement("h2");
-    title.className = "mixer-title";
-    title.textContent = "Instrument sound";
-    head.append(back, title);
-    v.append(head);
-
-    const instWrap = document.createElement("div");
-    instWrap.className = "melody-inst";
-    instWrap.append(this.melodyInstrumentMenu(item.inst));
-    v.append(instWrap);
-  }
 
   /** Scale-driven generation controls: how many notes to draw, a Generate button that
       fills the grid with fresh random notes, and the Add-branch mode toggle. */
@@ -1206,9 +1371,21 @@ export class App {
       apply.className = "placement-row sing-apply";
       const inOrder = document.createElement("button");
       inOrder.className = "seg-btn sing-apply-order";
-      inOrder.textContent = "✓ Use in my order";
-      inOrder.title = "Replace this context's notes with a chain that plays exactly what you sang";
-      inOrder.onclick = () => { chainNotes(node, mapped); this.afterSingApply(); };
+      inOrder.textContent = "✓ Use as my loop";
+      inOrder.title = "Loop exactly what you sang — the melody plays your take on repeat, in order, nothing added";
+      inOrder.onclick = () => {
+        const steps = chainNotes(node, mapped);
+        const atRoot = this.melodyPath.length === 0;
+        let bars = 0;
+        if (atRoot) {
+          // Size the phrase to ONE pass of the take, so the fill placement loops it
+          // back-to-back across the track.
+          bars = Math.max(1, Math.min(64, Math.ceil(steps / STEPS_PER_BAR)));
+          this.currentMelodyItem()!.inst.rule.forBars = bars;
+        }
+        this.afterSingApply();
+        if (bars) this.toast(`Looping your take — Length set to ${bars} bar${bars === 1 ? "" : "s"}`);
+      };
       const asPool = document.createElement("button");
       asPool.className = "seg-btn";
       asPool.textContent = "⚄ Use as dice pool";
@@ -1224,7 +1401,7 @@ export class App {
 
       const hint = document.createElement("p");
       hint.className = "sing-hint";
-      hint.textContent = "In my order chains the notes so playback follows the take exactly; dice pool lets the seeded walk shuffle them. Lengths and pauses are quantized to 16ths at the current tempo.";
+      hint.textContent = "Use as my loop plays the take verbatim — your notes, your order, on repeat, nothing added (Length is set to one pass). Dice pool lets the seeded walk shuffle the sung notes instead. Lengths and pauses are quantized to 16ths at the current tempo.";
       wrap.append(hint);
       return wrap;
     }
@@ -1411,11 +1588,13 @@ export class App {
     return oct === 0 ? nm : `${nm}${oct > 0 ? "+" : ""}${oct}`;
   }
 
-  /** Generate-again / Back for the melody's seeded note order, plus a note-count read-out. */
+  /** Generate-again / Back for the melody's seeded note order, plus a note-count read-out.
+      A strict chain (a take kept in order) plays verbatim, so its roll buttons are hidden. */
   private melodyGenerateRow(node: MelodyNode): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "placement-controls melody-generate";
     wrap.style.setProperty("--vc", VOICE_COLORS[MELODY_COLOR_INDEX]);
+    const chain = isChain(node);
     const row = document.createElement("div");
     row.className = "placement-row";
     const lbl = document.createElement("span");
@@ -1423,9 +1602,12 @@ export class App {
     lbl.textContent = "Order";
     const hint = document.createElement("span");
     hint.className = "melody-gen-hint";
-    hint.textContent = node.notes.length === 0 ? "add notes to generate" : "seeded — same weights, new order";
+    hint.textContent = node.notes.length === 0 ? "add notes to generate"
+      : chain ? "your order — plays verbatim, looping"
+      : "seeded — same weights, new order";
     row.append(lbl, hint);
-    wrap.append(row, this.rollRow(node, () => this.render()));
+    wrap.append(row);
+    if (!chain) wrap.append(this.rollRow(node, () => this.render()));
     return wrap;
   }
 
@@ -1951,6 +2133,128 @@ export class App {
     add.textContent = "＋ Add loop";
     add.onclick = () => this.addLoop(c);
     v.append(add);
+
+    // Overarching FX sweep across the whole row over a bar range.
+    if (loops.some((l) => l.soundId >= 0)) v.append(this.rowSweepControls(c));
+  }
+
+  /** The row transition: an overarching FX sweep across the whole colour over a bar range
+      (see RowSweep / the engine's line sweeps). On/off, the bar window, a style, its
+      direction into/out of the effect, and the ramp curve. */
+  private rowSweepControls(c: number): HTMLElement {
+    const ct = this.track.colors[c];
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls transition-controls row-sweep";
+    wrap.style.setProperty("--vc", VOICE_COLORS[c]);
+    const head = document.createElement("span");
+    head.className = "placement-lbl transition-head";
+    head.textContent = "Row transition";
+    wrap.append(head);
+
+    const on = !!ct.sweep?.on;
+    const rerender = () => this.render();
+    const toggleRow = document.createElement("div");
+    toggleRow.className = "placement-row fade-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Sweep";
+    const controls = document.createElement("div");
+    controls.className = "fade-controls";
+    const toggle = document.createElement("button");
+    toggle.className = "seg-btn fade-toggle" + (on ? " on" : "");
+    toggle.textContent = on ? "On" : "Off";
+    toggle.onclick = () => {
+      if (!ct.sweep) ct.sweep = defaultRowSweep();
+      ct.sweep.on = !on;
+      this.recompile();
+      rerender();
+    };
+    controls.append(toggle);
+    if (!on) {
+      const hint = document.createElement("p");
+      hint.className = "sing-hint";
+      hint.textContent = "An FX sweep across the whole row over a bar range — the filter opens, reverb wells up, drive bites… spanning every loop on the row.";
+      controls.append(hint);
+    }
+    toggleRow.append(lbl, controls);
+    wrap.append(toggleRow);
+
+    const sweep = ct.sweep;
+    if (!on || !sweep) return wrap;
+
+    wrap.append(this.numRow("From bar", () => sweep.fromBar, (n) => {
+      sweep.fromBar = Math.max(1, Math.min(this.track.barLimit, Math.round(n)));
+      if (sweep.toBar < sweep.fromBar) sweep.toBar = sweep.fromBar;
+      this.recompile();
+    }, rerender, () => `bar ${sweep.fromBar}`));
+    wrap.append(this.numRow("To bar", () => sweep.toBar, (n) => {
+      sweep.toBar = Math.max(sweep.fromBar, Math.min(this.track.barLimit, Math.round(n)));
+      this.recompile();
+    }, rerender, () => `bar ${sweep.toBar}`));
+
+    const styleRow = document.createElement("div");
+    styleRow.className = "placement-row fade-row";
+    const sLbl = document.createElement("span");
+    sLbl.className = "placement-lbl";
+    sLbl.textContent = "Style";
+    const styles = document.createElement("div");
+    styles.className = "placement-seg fade-modes";
+    const SWEEP_STYLES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo"];
+    for (const m of SWEEP_STYLES) {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (sweep.mode === m ? " on" : "");
+      b.textContent = this.fadeModeLabel(m, sweep.side === "out" ? "outro" : "intro");
+      b.onclick = () => { sweep.mode = m; this.recompile(); rerender(); };
+      styles.append(b);
+    }
+    styleRow.append(sLbl, styles);
+    wrap.append(styleRow);
+
+    const dirRow = document.createElement("div");
+    dirRow.className = "placement-row fade-row";
+    const dLbl = document.createElement("span");
+    dLbl.className = "placement-lbl";
+    dLbl.textContent = "Direction";
+    const dirSeg = document.createElement("div");
+    dirSeg.className = "placement-seg fade-modes";
+    const mkSide = (s: "out" | "in", text: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (sweep.side === s ? " on" : "");
+      b.textContent = text;
+      b.onclick = () => { sweep.side = s; this.recompile(); rerender(); };
+      return b;
+    };
+    dirSeg.append(mkSide("out", "Into effect"), mkSide("in", "Out of effect"));
+    dirRow.append(dLbl, dirSeg);
+    wrap.append(dirRow);
+
+    wrap.append(this.numRow("Curve", () => Math.round((sweep.curve ?? 0) * 100), (n) => {
+      sweep.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
+      this.recompile();
+    }, rerender, () => `${Math.round((sweep.curve ?? 0) * 100)}%`));
+
+    // Ease direction of the curve (toward the window's start or end).
+    const easeRow = document.createElement("div");
+    easeRow.className = "placement-row fade-row";
+    const eLbl = document.createElement("span");
+    eLbl.className = "placement-lbl";
+    eLbl.textContent = "Ease";
+    const easeSeg = document.createElement("div");
+    easeSeg.className = "placement-seg fade-modes";
+    const mkEase = (d: "out" | "in", text: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + ((sweep.dir ?? "out") === d ? " on" : "");
+      b.textContent = text;
+      b.onclick = () => { sweep.dir = d; this.recompile(); rerender(); };
+      return b;
+    };
+    easeSeg.append(mkEase("out", "Ease out"), mkEase("in", "Ease in"));
+    easeRow.append(eLbl, easeSeg);
+    wrap.append(easeRow);
+
+    // Live preview of the sweep's blend curve.
+    wrap.append(this.rowSweepCurveViz(sweep));
+    return wrap;
   }
 
   /** One row in a colour's loop list: priority reorder (solo), name + rule summary,
@@ -2118,8 +2422,9 @@ export class App {
     else if (r.every.kind === "fill") every = "fill the blanks";
     else if (r.every.kind === "dice") every = `dice ${r.every.weight} of the pool`;
     else every = `${Math.round(r.every.weight * 100)}% chance`;
-    const forB = r.forBars === 1 ? "1 bar" : `${r.forBars} bars`;
-    return `${every} · for ${forB} · ${r.mode}`;
+    const lens = ruleLengths(r);
+    const forB = lens.length > 1 ? `${lens.join("/")} bars` : (r.forBars === 1 ? "1 bar" : `${r.forBars} bars`);
+    return `${every} · for ${forB} · ${r.mode}${r.retrigger ? " · re-fade" : ""}`;
   }
 
   private addLoop(c: number): void {
@@ -2422,11 +2727,41 @@ export class App {
       wrap.append(chanceRow, this.rollRow(r, rerender));
     }
 
-    // For: n bars.
-    wrap.append(this.numRow("For (bars)", () => r.forBars, (n) => {
-      r.forBars = Math.max(1, Math.round(n));
-      this.recompile();
-    }, rerender, () => `${r.forBars}`));
+    // For: bar length(s). A single value, or a comma list that CYCLES across successive
+    // placements (2, 4 → 2 bars, then 4, then 2 …). The native keypad has no comma, so this
+    // opens our list numpad.
+    const forRow = document.createElement("div");
+    forRow.className = "placement-row placement-atbars";
+    const forLbl = document.createElement("span");
+    forLbl.className = "placement-lbl";
+    forLbl.textContent = "For (bars)";
+    const forInp = document.createElement("input");
+    forInp.type = "text";
+    forInp.readOnly = true;
+    forInp.inputMode = "none";
+    const shownLen = () => ruleLengths(r).join(", ");
+    forInp.value = shownLen();
+    forInp.onclick = () => this.openNumpad({
+      title: "For — bar length(s)",
+      value: shownLen(),
+      color: loop.soundId >= 0 ? loop.color : undefined,
+      list: true,
+      onSubmitList: (raw) => {
+        const nums = (raw.match(/\d+/g) ?? []).map((s) => Math.max(1, parseInt(s, 10))).filter((n) => n >= 1);
+        if (nums.length <= 1) { r.forBars = nums[0] ?? r.forBars; r.lengths = undefined; }
+        else { r.lengths = nums; r.forBars = nums[0]; }
+        this.recompile();
+        rerender();
+      },
+    });
+    forRow.append(forLbl, forInp);
+    wrap.append(forRow);
+    if (ruleLengths(r).length > 1) {
+      const hint = document.createElement("p");
+      hint.className = "hint placement-hint";
+      hint.textContent = `Placements cycle through ${ruleLengths(r).join(", ")} bars in turn.`;
+      wrap.append(hint);
+    }
 
     // Overlap / Solo.
     const modeRow = document.createElement("div");
@@ -2453,24 +2788,67 @@ export class App {
       (see lines.ts — they add no length, covering the loop's first/last reps). Each side:
       an On/Off toggle, a fade-style picker, and a length in reps capped so the two never
       overrun a single placement. */
-  private transitionControls(loop: Loop, rerender: () => void): HTMLElement {
+  private transitionControls(loop: Loop, rerender: () => void, opts?: { unit: "bar" }): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "placement-controls transition-controls";
     const head = document.createElement("span");
     head.className = "placement-lbl transition-head";
     head.textContent = "Transitions";
     wrap.append(head);
+
+    const forBars = Math.max(1, Math.round(loop.rule.forBars));
+    if (opts?.unit === "bar") {
+      // Melody instrument: no pattern reps, so the fade length is measured in BARS, capped
+      // to the phrase length. Realised as per-placement row sweeps (see melodyLanes).
+      const hint = document.createElement("p");
+      hint.className = "sing-hint";
+      hint.textContent = "Fade each placement of this melody in and/or out — the chosen style sweeps across the fade length (in bars).";
+      wrap.append(hint);
+      wrap.append(this.fadeRow(loop, "intro", forBars, rerender, "bar"));
+      wrap.append(this.fadeRow(loop, "outro", forBars, rerender, "bar"));
+      return wrap;
+    }
+
+    // Repeat the fade on every placement (see PlacementRule.retrigger / buildLane).
+    wrap.append(this.retriggerRow(loop, rerender));
     // Reps a single placement spans (pattern cycles per forBars) — the fade budget.
     const unit = loop.steps >= 1 ? loop.steps : STEPS_PER_BAR;
-    const forBars = Math.max(1, Math.round(loop.rule.forBars));
     const maxReps = Math.max(1, Math.floor((forBars * STEPS_PER_BAR) / unit));
     wrap.append(this.fadeRow(loop, "intro", maxReps, rerender));
     wrap.append(this.fadeRow(loop, "outro", maxReps, rerender));
     return wrap;
   }
 
-  /** One fade side (intro/outro) of a loop: toggle + style + length. */
-  private fadeRow(loop: Loop, side: "intro" | "outro", maxReps: number, rerender: () => void): HTMLElement {
+  /** The "Repeat each placement" toggle: when on, a merged run of contiguous placements
+      re-fades every placement instead of once across the whole block (see buildLane). */
+  private retriggerRow(loop: Loop, rerender: () => void): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Repeat each";
+    const controls = document.createElement("div");
+    controls.className = "fade-controls";
+    const toggle = document.createElement("button");
+    const on = !!loop.rule.retrigger;
+    toggle.className = "seg-btn fade-toggle" + (on ? " on" : "");
+    toggle.textContent = on ? "On" : "Off";
+    toggle.title = "Repeat the fade on every placement (e.g. re-fade each 4 bars) instead of once across a merged run";
+    toggle.onclick = () => { loop.rule.retrigger = on ? undefined : true; this.recompile(); rerender(); };
+    controls.append(toggle);
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = on
+      ? "The fade repeats on every placement."
+      : "The fade runs once across a merged run of placements. Turn on to re-fade each one.";
+    controls.append(hint);
+    row.append(lbl, controls);
+    return row;
+  }
+
+  /** One fade side (intro/outro) of a loop: toggle + style + length. `unit` "bar" (melody)
+      measures the length in bars instead of pattern reps. */
+  private fadeRow(loop: Loop, side: "intro" | "outro", maxReps: number, rerender: () => void, unit: "rep" | "bar" = "rep"): HTMLElement {
     const row = document.createElement("div");
     row.className = "placement-row fade-row";
     const lbl = document.createElement("span");
@@ -2503,7 +2881,9 @@ export class App {
     if (env) {
       const modes = document.createElement("div");
       modes.className = "placement-seg fade-modes";
-      for (const m of FADE_MODES) {
+      // Melody fades are realised as row sweeps (no per-node speed warp), so drop "speed".
+      const modeList = unit === "bar" ? FADE_MODES.filter((m) => m !== "speed") : FADE_MODES;
+      for (const m of modeList) {
         const b = document.createElement("button");
         b.className = "seg-btn" + (env.mode === m ? " on" : "");
         b.textContent = this.fadeModeLabel(m, side);
@@ -2520,7 +2900,9 @@ export class App {
       controls.append(this.numRow("Length", () => env.reps, (n) => {
         env.reps = Math.max(1, Math.min(cap, Math.round(n)));
         this.recompile();
-      }, rerender, () => `${env.reps} rep${env.reps === 1 ? "" : "s"}`));
+      }, rerender, () => unit === "bar"
+        ? `${env.reps} bar${env.reps === 1 ? "" : "s"}`
+        : `${env.reps} rep${env.reps === 1 ? "" : "s"}`));
 
       if (env.mode === "speed") {
         // Speed is timing, not a swept param: the far end's hit rate (× tempo).
@@ -2583,7 +2965,6 @@ export class App {
   /** A little graph of a transition's blend curve: the swept value's path across the span,
       bent by Curve/dir (mirrors bendT in engine.js), labelled with its start/end values. */
   private curveViz(loop: Loop, env: TransitionShape & { mode: TransitionMode }, side: "intro" | "outro"): HTMLElement {
-    const W = 200, H = 56;
     const spec = TRANSITION_SWEEP[env.mode];
     // Start/end labels for the span (left = span start, right = span end). An intro rises
     // from the far end into the near sound; an outro leaves the near sound for the far end.
@@ -2599,13 +2980,30 @@ export class App {
     } else {
       [startLabel, endLabel] = ["", ""];
     }
+    return this.curveVizBox(env.curve ?? 0, env.dir ?? "out", startLabel, endLabel);
+  }
 
+  /** The blend-curve graph for a ROW SWEEP: it applies to every loop on the row (no single
+      snapshot), so the ends are labelled generically — the clean "sound" vs the effect (or
+      the From/To overrides when set). Left = window start, right = window end. */
+  private rowSweepCurveViz(sweep: RowSweep): HTMLElement {
+    const spec = TRANSITION_SWEEP[sweep.mode];
+    const near = spec && sweep.from !== undefined ? spec.format(sweep.from) : "sound";
+    const far = spec
+      ? (sweep.to !== undefined ? spec.format(sweep.to) : this.fadeModeLabel(sweep.mode, "outro"))
+      : "";
+    const [startLabel, endLabel] = sweep.side === "in" ? [far, near] : [near, far];
+    return this.curveVizBox(sweep.curve ?? 0, sweep.dir ?? "out", startLabel, endLabel);
+  }
+
+  /** Draw a bend curve (0 linear .. 1 exponential, eased by `dir`; mirrors bendT) into a
+      little SVG box, with left/right end labels. Shared by the loop and row-sweep editors. */
+  private curveVizBox(curve: number, dir: "in" | "out", startLabel: string, endLabel: string): HTMLElement {
+    const W = 200, H = 56;
     const NS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(NS, "svg");
     svg.setAttribute("class", "curve-viz");
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-    // The eased blend progress, sampled across the span (y up = toward the end value).
-    const curve = env.curve ?? 0, dir = env.dir ?? "out";
     let d = "";
     const N = 32;
     for (let i = 0; i <= N; i++) {

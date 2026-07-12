@@ -123,6 +123,12 @@ export class EngineHost {
     this.node?.port.postMessage({ type: "tempo", bpm });
   }
 
+  /** Loop just a section of the track: `start`..`start+len` in 16th steps (every lane
+      still plays its own content there). `len` 0 clears it and loops the whole track. */
+  setSection(start: number, len: number): void {
+    this.node?.port.postMessage({ type: "section", start: Math.max(0, start | 0), len: Math.max(0, len | 0) });
+  }
+
   play(): void {
     this.node?.port.postMessage({ type: "play" });
   }
