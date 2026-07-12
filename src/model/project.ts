@@ -32,6 +32,7 @@ export interface LoopJSON {
   snapshot: number[];
   color: string;
   name: string;
+  label?: string;
   pitch: [number, number];
   hits: number;
   steps: number;
@@ -70,7 +71,6 @@ export interface ProjectJSON {
   version: number; // 11 = procedural track; 1–10 = legacy (load blank)
   tempo: number;
   barLimit?: number;
-  name?: string;   // the track's generated coined name
   root?: number;
   scale?: number;
   colors?: ColorJSON[];
@@ -110,7 +110,7 @@ function cloneMelody(m: MelodyNode): MelodyJSON {
 }
 
 const cloneLoop = (l: Loop): LoopJSON => ({
-  soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name,
+  soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name, label: l.label,
   pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
   split: l.split, gain: l.gain,
   intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir } : undefined,
@@ -150,7 +150,6 @@ export function serialize(
     version: 11,
     tempo,
     barLimit: track.barLimit,
-    name: track.name,
     root: track.root,
     scale: track.scale,
     colors: track.colors.map((c) => ({
@@ -283,6 +282,7 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     snapshot: Array.isArray(s.snapshot) ? s.snapshot.slice() : [],
     color: typeof s.color === "string" ? s.color : VOICE_COLORS[colorIndex % VOICE_COLORS.length],
     name: String(s.name ?? ""),
+    label: typeof s.label === "string" && s.label ? s.label : undefined,
     pitch: Array.isArray(s.pitch) && s.pitch.length === 2 ? [s.pitch[0], s.pitch[1]] : [60, 1000],
     hits: s.hits ?? 0,
     steps: s.steps ?? 0,
@@ -354,7 +354,6 @@ export function deserialize(
   // Reset to a blank track so partial / legacy loads leave a sane state.
   track.colors = Array.from({ length: NUM_LINES }, () => ({ loops: [] as Loop[] }));
   track.barLimit = DEFAULT_BAR_LIMIT;
-  track.name = "";
   track.root = 0;
   track.scale = 0;
   track.melodies = [];
@@ -373,7 +372,6 @@ export function deserialize(
       });
     }
     track.barLimit = typeof json.barLimit === "number" ? Math.max(1, Math.round(json.barLimit)) : DEFAULT_BAR_LIMIT;
-    track.name = typeof json.name === "string" ? json.name : "";
     track.root = typeof json.root === "number" ? ((json.root % 12) + 12) % 12 : 0;
     track.scale = typeof json.scale === "number" ? json.scale : 0;
   }

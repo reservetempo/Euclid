@@ -31,7 +31,7 @@ import {
   Track, Loop, EveryRule, RowSweep, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
   ruleLengths, defaultRowSweep, MelodyItem, newMelodyItem,
 } from "../model/track";
-import { generateTrackName, reshuffleNames } from "../model/name";
+import { generateName, reshuffleNames } from "../model/name";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
 import {
   MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes, randomizeNotes,
@@ -402,9 +402,8 @@ export class App {
     this.playFromBar = 0;
     this.playToBar = 0;
     this.view = "track";
-    // A fresh project re-shuffles the name pools (a whole new draw order) and coins a name.
+    // A fresh project re-shuffles the name pools, so its loops draw from a new order.
     reshuffleNames();
-    this.track.name = generateTrackName();
     this.afterProjectChange();
   }
 
@@ -687,23 +686,6 @@ export class App {
   }
 
   // --- track view (colours + bar limit) --------------------------------
-  /** The track's coined name (see model/name.ts) with a die to re-generate it. */
-  private trackNameBlock(): HTMLElement {
-    if (!this.track.name) { this.track.name = generateTrackName(); this.persist(); }
-    const wrap = document.createElement("div");
-    wrap.className = "track-name";
-    const name = document.createElement("span");
-    name.className = "track-name-text";
-    name.textContent = this.track.name;
-    const dice = document.createElement("button");
-    dice.className = "track-name-dice";
-    dice.textContent = "🎲";
-    dice.title = "Coin a new name";
-    dice.onclick = () => { this.track.name = generateTrackName(); this.persist(); this.render(); };
-    wrap.append(name, dice);
-    return wrap;
-  }
-
   /** Play-range: DRAG across a bar strip to loop just bars n→m. A whole-track mini-timeline
       (one row, whatever the bar limit) with a highlight band, a readout, and a clear. Applied
       live to the engine while dragging. A rehearsal aid, kept in app state only (not saved). */
@@ -794,9 +776,6 @@ export class App {
 
   private renderTrackPanel(): void {
     const v = this.viewRoot;
-    // Generated track name + a die to re-coin it.
-    v.append(this.trackNameBlock());
-
     const rings = document.createElement("div");
     rings.className = "loop-rings";
     rings.append(this.euclidView.canvas, this.mixerOpenBtn("track"));
@@ -2288,7 +2267,9 @@ export class App {
     if (loop.soundId >= 0) this.voiceBtns!.set(loop.soundId, body);
     const nm = document.createElement("span");
     nm.className = "loop-name";
-    nm.textContent = loop.name || (loop.soundId >= 0 ? `Loop ${i + 1}` : "Empty loop");
+    // The coined voice name (label); falls back to the sound description on older loops.
+    nm.textContent = loop.label || loop.name || (loop.soundId >= 0 ? `Loop ${i + 1}` : "Empty loop");
+    if (loop.label && loop.name) body.title = loop.name; // keep the sound description in reach
     const sum = document.createElement("span");
     sum.className = "loop-summary";
     sum.textContent = this.ruleSummary(loop);
@@ -2429,6 +2410,7 @@ export class App {
 
   private addLoop(c: number): void {
     const loop = emptyLoop(c, -1);
+    loop.label = generateName(); // a coined display name for this new voice
     this.track.colors[c].loops.push(loop);
     this.mintLoopSound(loop);
     this.render();
@@ -2489,9 +2471,25 @@ export class App {
     back.onclick = () => this.closePlacement();
     const title = document.createElement("h2");
     title.className = "voice-sheet-title";
-    title.textContent = loop.name || "Loop";
+    title.textContent = loop.label || loop.name || "Loop";
     head.append(back, title);
+    // Re-coin this voice's name (only for named loops).
+    if (loop.label) {
+      const dice = document.createElement("button");
+      dice.className = "voice-name-dice";
+      dice.textContent = "🎲";
+      dice.title = "Coin a new name for this voice";
+      dice.onclick = () => { loop.label = generateName(); this.persist(); rerender(); };
+      head.append(dice);
+    }
     sheet.append(head);
+    // The sound description under the coined name, for reference.
+    if (loop.label && loop.name) {
+      const sub = document.createElement("p");
+      sub.className = "voice-sheet-sub";
+      sub.textContent = loop.name;
+      sheet.append(sub);
+    }
 
     // Tab nav across the three sub-pages.
     const nav = document.createElement("div");

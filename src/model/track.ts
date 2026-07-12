@@ -107,7 +107,8 @@ export interface Loop {
   soundId: number;
   snapshot: number[];
   color: string;
-  name: string;
+  name: string;            // auto sound-description ("Tri · 590 · Punchy …"), updated on edit
+  label?: string;          // a coined display name for this voice (see model/name.ts), stable
   pitch: [number, number];
   hits: number;
   steps: number;
@@ -138,7 +139,6 @@ export const DEFAULT_BAR_LIMIT = 16;
 export class Track {
   colors: ColorTrack[] = emptyColors();
   barLimit = DEFAULT_BAR_LIMIT;
-  name = "";  // a generated coined name for the track (see model/name.ts)
   root = 0;  // 0 = C
   scale = 0; // 0 = Major
   // The last coloured row is a LIST of melodies (each a placeable phrase with its own
@@ -519,6 +519,7 @@ export function cloneLoop(loop: Loop): Loop {
     snapshot: loop.snapshot.slice(),
     color: loop.color,
     name: loop.name,
+    label: loop.label,
     pitch: [loop.pitch[0], loop.pitch[1]],
     hits: loop.hits,
     steps: loop.steps,

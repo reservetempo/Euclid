@@ -1,4 +1,4 @@
-// TRACK NAME generator: coins a fresh pronounceable word by stringing syllables from
+// NAME generator: coins a fresh pronounceable word by stringing syllables from
 // three shuffleable pools — an onset (consonant / cluster, sometimes none so a word can
 // open on a vowel), a vowel or vowel-combo nucleus, and an occasional nasal-ish coda
 // ("n", "en", "on", "m", …). Words run 2–3 syllables and read like invented names:
@@ -75,9 +75,10 @@ export function reshuffleNames(seed?: number): void {
   nasalCodaBag.reshuffle(rand);
 }
 
-/** Coin a fresh track name: 2–3 syllables drawn from the shuffled bags, first letter
-    capitalised. `rand` defaults to Math.random; pass a seeded one for reproducibility. */
-export function generateTrackName(rand: () => number = Math.random): string {
+/** Coin a fresh name (used to name each loop/voice): 2–3 syllables drawn from the shuffled
+    bags, first letter capitalised. `rand` defaults to Math.random; pass a seeded one for
+    reproducibility. */
+export function generateName(rand: () => number = Math.random): string {
   const syllables = rand() < 0.5 ? 2 : 3;
   let word = "";
   for (let s = 0; s < syllables; s++) {
