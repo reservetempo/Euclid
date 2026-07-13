@@ -10,7 +10,7 @@
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
-import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
+import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, DEFAULT_BAR_LIMIT, randomSeed,
   MelodyItem, newMelodyItem,
@@ -40,8 +40,8 @@ export interface LoopJSON {
   split?: number;
   rhythm?: boolean; // melody instrument: re-time notes onto the Euclid pattern
   gain?: number;
-  intro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
-  outro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out" };
+  intro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number };
+  outro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number };
   accent?: LifePlacement;
   ghost?: LifePlacement;
   preset?: string;
@@ -60,6 +60,8 @@ export interface RowSweepJSON {
   to?: number;
   curve?: number;
   dir?: "in" | "out";
+  shape?: BlendShapeId;
+  cycles?: number;
 }
 
 export interface ColorJSON {
@@ -116,8 +118,8 @@ const cloneLoop = (l: Loop): LoopJSON => ({
   soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name, label: l.label,
   pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
   split: l.split, rhythm: l.rhythm, gain: l.gain,
-  intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, modes: l.intro.modes?.slice(), fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir } : undefined,
-  outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, modes: l.outro.modes?.slice(), toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir } : undefined,
+  intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, modes: l.intro.modes?.slice(), fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir, shape: l.intro.shape, cycles: l.intro.cycles } : undefined,
+  outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, modes: l.outro.modes?.slice(), toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir, shape: l.outro.shape, cycles: l.outro.cycles } : undefined,
   accent: l.accent ? { ...l.accent } : undefined,
   ghost: l.ghost ? { ...l.ghost } : undefined,
   preset: l.preset,
@@ -135,7 +137,7 @@ const cloneLoop = (l: Loop): LoopJSON => ({
 
 const cloneSweep = (s: RowSweep): RowSweepJSON => ({
   on: s.on, fromBar: s.fromBar, toBar: s.toBar, mode: s.mode, modes: s.modes?.slice(), side: s.side,
-  from: s.from, to: s.to, curve: s.curve, dir: s.dir,
+  from: s.from, to: s.to, curve: s.curve, dir: s.dir, shape: s.shape, cycles: s.cycles,
 });
 
 export function serialize(
@@ -179,6 +181,17 @@ function readModes(mv: unknown, allowed: TransitionMode[]): TransitionMode[] {
   return allowed.filter((m) => (mv as unknown[]).includes(m));
 }
 
+/** Validate a stored blend-shape id (see BlendShapeId in lines.ts); "ramp" (the default)
+    normalizes to undefined so plain saves stay lean and old readers see nothing new. */
+function readShape(sv: unknown): BlendShapeId | undefined {
+  return sv !== "ramp" && BLEND_SHAPES.some((s) => s.id === sv) ? (sv as BlendShapeId) : undefined;
+}
+
+/** Validate a stored wave/stair count for the periodic blend shapes. */
+function readCycles(cv: unknown): number | undefined {
+  return typeof cv === "number" && isFinite(cv) ? Math.max(0.25, Math.min(16, cv)) : undefined;
+}
+
 function readEnv(ev: unknown, side: "intro"): IntroEnv | undefined;
 function readEnv(ev: unknown, side: "outro"): OutroEnv | undefined;
 function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | undefined {
@@ -207,9 +220,11 @@ function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | un
   const from = num(e.from);
   const to = num(e.to);
   const modeSet = modes.length > 1 ? modes : undefined;
+  const shape = readShape(e.shape);
+  const cycles = readCycles(e.cycles);
   return side === "intro"
-    ? { reps, mode, modes: modeSet, fromId: id, rate, curve, from, to, dir }
-    : { reps, mode, modes: modeSet, toId: id, rate, curve, from, to, dir };
+    ? { reps, mode, modes: modeSet, fromId: id, rate, curve, from, to, dir, shape, cycles }
+    : { reps, mode, modes: modeSet, toId: id, rate, curve, from, to, dir, shape, cycles };
 }
 
 /** Validate a stored per-loop accent/ghost LifePlacement (see lines.ts); returns
@@ -292,6 +307,8 @@ function readSweep(sv: unknown): RowSweep | undefined {
     to: num(s.to),
     curve: typeof s.curve === "number" && isFinite(s.curve) ? Math.max(0, Math.min(1, s.curve)) : undefined,
     dir: s.dir === "in" || s.dir === "out" ? s.dir : undefined,
+    shape: readShape(s.shape),
+    cycles: readCycles(s.cycles),
   };
 }
 

@@ -26,6 +26,7 @@ import { addReport, reportCount, exportReports, clearReports, ReportKind } from 
 import {
   LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
   TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape, envModes, setEnvModes, envHasSpeed,
+  BlendShapeId, BLEND_SHAPES, blendShapeSpec, blendShape,
 } from "../model/lines";
 import {
   Track, Loop, EveryRule, RowSweep, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
@@ -85,16 +86,9 @@ interface SingSession {
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
 type RhythmField = "hits" | "steps" | "rotation" | "split";
 
-// Bend a transition's blend progress t∈[0,1] for the curve visualization — must match
-// bendT in engine.js: `curve` 0 (linear) → 1 (exponential); `dir` "out" eases slowly then
-// rushes to the end, "in" rushes early then eases in. Endpoints (0→0, 1→1) are preserved.
-function bend(t: number, curve: number, dir: "in" | "out"): number {
-  const c = Math.max(0, Math.min(1, curve || 0));
-  t = Math.max(0, Math.min(1, t));
-  if (c <= 0) return t;
-  const exp = Math.pow(4, c);
-  return dir === "in" ? 1 - Math.pow(1 - t, exp) : Math.pow(t, exp);
-}
+// The curve visualization evaluates the transition's blend FUNCTION via blendShape in
+// lines.ts (shape/curve/dir/cycles) — the same evaluator the speed warp uses, mirroring
+// shapeT in engine.js, so the graph shows exactly what the engine will play.
 
 export class App {
   private engine = new EngineHost();
@@ -2753,29 +2747,9 @@ export class App {
     dirRow.append(dLbl, dirSeg);
     card.append(dirRow);
 
-    card.append(this.numRow("Curve", () => Math.round((sweep.curve ?? 0) * 100), (n) => {
-      sweep.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
-      this.recompile();
-    }, rerender, () => `${Math.round((sweep.curve ?? 0) * 100)}%`));
-
-    // Ease direction of the curve (toward the window's start or end).
-    const easeRow = document.createElement("div");
-    easeRow.className = "placement-row fade-row";
-    const eLbl = document.createElement("span");
-    eLbl.className = "placement-lbl";
-    eLbl.textContent = "Ease";
-    const easeSeg = document.createElement("div");
-    easeSeg.className = "placement-seg fade-modes";
-    const mkEase = (d: "out" | "in", text: string) => {
-      const b = document.createElement("button");
-      b.className = "seg-btn" + ((sweep.dir ?? "out") === d ? " on" : "");
-      b.textContent = text;
-      b.onclick = () => { sweep.dir = d; this.recompile(); rerender(); };
-      return b;
-    };
-    easeSeg.append(mkEase("out", "Ease out"), mkEase("in", "Ease in"));
-    easeRow.append(eLbl, easeSeg);
-    card.append(easeRow);
+    // The blend FUNCTION the sweep follows across its window: shape picker, the shape's
+    // knob, wave count, ease direction (see shapeControls).
+    for (const row of this.shapeControls(sweep, rerender)) card.append(row);
 
     // Live preview of the sweep's blend curve.
     card.append(this.rowSweepCurveViz(sweep));
@@ -3677,25 +3651,9 @@ export class App {
         }
       }
 
-      // Curve (all styles) + its ease direction (tonal styles only — Speed's glide is
-      // oriented by the intro/outro side itself).
-      controls.append(this.numRow("Curve", () => Math.round((env.curve ?? 0) * 100), (n) => {
-        env.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
-        this.recompile();
-      }, rerender, () => `${Math.round((env.curve ?? 0) * 100)}%`));
-      if (tonal.length > 0) {
-        const dirSeg = document.createElement("div");
-        dirSeg.className = "placement-seg fade-modes";
-        const mkDir = (d: "out" | "in", text: string) => {
-          const b = document.createElement("button");
-          b.className = "seg-btn" + ((env.dir ?? "out") === d ? " on" : "");
-          b.textContent = text;
-          b.onclick = () => { env.dir = d; this.recompile(); rerender(); };
-          return b;
-        };
-        dirSeg.append(mkDir("out", "Ease out"), mkDir("in", "Ease in"));
-        controls.append(dirSeg);
-      }
+      // The blend FUNCTION the fade follows: shape picker, the shape's knob, wave count,
+      // ease direction (see shapeControls). It shapes the tonal morph AND the speed glide.
+      controls.append(...this.shapeControls(env, rerender));
       controls.append(this.curveViz(loop, env, side));
     }
     row.append(lbl, controls);
@@ -3719,8 +3677,92 @@ export class App {
     return this.numRow(label, () => Math.round(val()), (n) => set(Math.round(n)), rerender, show, spec.step);
   }
 
-  /** A little graph of a transition's blend curve: the swept value's path across the span,
-      bent by Curve/dir (mirrors bendT in engine.js), labelled with its start/end values. */
+  /** One labelled control row (label left, control right) in the fade/sweep editors. */
+  private labeledRow(label: string, control: HTMLElement): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = label;
+    row.append(lbl, control);
+    return row;
+  }
+
+  /** The blend-FUNCTION controls shared by loop fades and row sweeps: a Shape picker
+      (see BLEND_SHAPES — line, s-curve, parabola, sine, cos, zigzag, wobble, steps),
+      the shape's 0..1 knob under its own name (Curve / Steep / Skew / Warp / Depth),
+      a Waves/Steps count for the periodic shapes, and the ease/skew direction where
+      it applies. Mutates `env` in place; every change recompiles so it's heard live. */
+  private shapeControls(
+    env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number },
+    rerender: () => void,
+  ): HTMLElement[] {
+    const spec = blendShapeSpec(env.shape);
+    const out: HTMLElement[] = [];
+
+    const shapeSeg = document.createElement("div");
+    shapeSeg.className = "placement-seg fade-modes";
+    for (const s of BLEND_SHAPES) {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (spec.id === s.id ? " on" : "");
+      b.textContent = s.label;
+      b.onclick = () => {
+        env.shape = s.id === "ramp" ? undefined : s.id; // ramp = the default, stored lean
+        if (s.usesCycles && env.cycles === undefined) env.cycles = s.cyclesDefault;
+        this.recompile();
+        rerender();
+      };
+      shapeSeg.append(b);
+    }
+    out.push(this.labeledRow("Shape", shapeSeg));
+
+    // The shape's one 0..1 knob, under its own name (the ramp's bend, the s-curve's
+    // steepness, the parabola's skew, the wobble's depth, the waves' time warp).
+    out.push(this.numRow(spec.curveLabel, () => Math.round((env.curve ?? 0) * 100), (n) => {
+      env.curve = Math.max(0, Math.min(1, Math.round(n) / 100));
+      this.recompile();
+    }, rerender, () => `${Math.round((env.curve ?? 0) * 100)}%`));
+
+    if (spec.usesCycles) {
+      if (spec.id === "steps") {
+        out.push(this.numRow("Stairs", () => Math.round(env.cycles ?? spec.cyclesDefault), (n) => {
+          env.cycles = Math.max(2, Math.min(16, Math.round(n)));
+          this.recompile();
+        }, rerender, () => `${Math.round(env.cycles ?? spec.cyclesDefault)} levels`));
+      } else {
+        // Quarter-wave resolution: half-integers land at the far end, integers return home.
+        out.push(this.numRow("Waves", () => Math.round((env.cycles ?? spec.cyclesDefault) * 4), (n) => {
+          env.cycles = Math.max(0.25, Math.min(16, Math.round(n) / 4));
+          this.recompile();
+        }, rerender, () => {
+          const w = Math.round((env.cycles ?? spec.cyclesDefault) * 100) / 100;
+          return `${w} wave${w === 1 ? "" : "s"}`;
+        }));
+      }
+    }
+
+    if (spec.usesDir) {
+      const dirSeg = document.createElement("div");
+      dirSeg.className = "placement-seg fade-modes";
+      const mkDir = (d: "out" | "in", text: string) => {
+        const b = document.createElement("button");
+        b.className = "seg-btn" + ((env.dir ?? "out") === d ? " on" : "");
+        b.textContent = text;
+        b.onclick = () => { env.dir = d; this.recompile(); rerender(); };
+        return b;
+      };
+      const [outLbl, inLbl] = spec.id === "parabola"
+        ? ["Peak early", "Peak late"]
+        : ["Ease out", "Ease in"];
+      dirSeg.append(mkDir("out", outLbl), mkDir("in", inLbl));
+      out.push(this.labeledRow("Ease", dirSeg));
+    }
+    return out;
+  }
+
+  /** A graph of a transition's blend curve: the swept value's path across the span,
+      following the blend function (mirrors shapeT in engine.js), labelled with its
+      start/end values. */
   private curveViz(loop: Loop, env: TransitionShape & { mode: TransitionMode; modes?: TransitionMode[] }, side: "intro" | "outro"): HTMLElement {
     const active = envModes(env);
     const spec = TRANSITION_SWEEP[env.mode];
@@ -3742,7 +3784,7 @@ export class App {
     } else {
       [startLabel, endLabel] = ["", ""];
     }
-    return this.curveVizBox(env.curve ?? 0, env.dir ?? "out", startLabel, endLabel);
+    return this.curveVizBox(env, startLabel, endLabel);
   }
 
   /** The blend-curve graph for a ROW SWEEP: it applies to every loop on the row (no single
@@ -3761,23 +3803,44 @@ export class App {
         : "";
     }
     const [startLabel, endLabel] = sweep.side === "in" ? [far, near] : [near, far];
-    return this.curveVizBox(sweep.curve ?? 0, sweep.dir ?? "out", startLabel, endLabel);
+    return this.curveVizBox(sweep, startLabel, endLabel);
   }
 
-  /** Draw a bend curve (0 linear .. 1 exponential, eased by `dir`; mirrors bendT) into a
-      little SVG box, with left/right end labels. Shared by the loop and row-sweep editors. */
-  private curveVizBox(curve: number, dir: "in" | "out", startLabel: string, endLabel: string): HTMLElement {
-    const W = 200, H = 56;
+  /** Draw the blend function's path (see blendShape in lines.ts — mirrors the engine's
+      shapeT) into an SVG graph with a quarter grid, with left/right end labels. Shared
+      by the loop-fade and row-sweep editors. */
+  private curveVizBox(
+    env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number },
+    startLabel: string, endLabel: string,
+  ): HTMLElement {
+    const W = 320, H = 132, T = 8, B = 24; // plot area between T and H−B; label strip below
+    const plotH = H - T - B;
     const NS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(NS, "svg");
     svg.setAttribute("class", "curve-viz");
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const mkLine = (x1: number, y1: number, x2: number, y2: number, cls: string) => {
+      const l = document.createElementNS(NS, "line");
+      l.setAttribute("x1", String(x1)); l.setAttribute("y1", String(y1));
+      l.setAttribute("x2", String(x2)); l.setAttribute("y2", String(y2));
+      l.setAttribute("class", cls);
+      svg.append(l);
+    };
+    // Quarter grid: time across, blend level up (the ends slightly stronger).
+    for (let q = 0; q <= 4; q++) {
+      const x = (q / 4) * W;
+      mkLine(x, T, x, T + plotH, "curve-viz-grid" + (q === 0 || q === 4 ? " edge" : ""));
+      const y = T + (q / 4) * plotH;
+      mkLine(0, y, W, y, "curve-viz-grid" + (q === 0 || q === 4 ? " edge" : ""));
+    }
+    // The steps shape draws its true staircase (vertical jumps); everything else is
+    // smooth enough at this sampling to polyline.
     let d = "";
-    const N = 32;
+    const N = 128;
     for (let i = 0; i <= N; i++) {
       const x = i / N;
-      const y = bend(x, curve, dir);
-      const px = x * W, py = H - 3 - y * (H - 6);
+      const y = blendShape(env, x);
+      const px = x * W, py = T + plotH - y * plotH;
       d += (i === 0 ? "M" : "L") + px.toFixed(1) + " " + py.toFixed(1) + " ";
     }
     const path = document.createElementNS(NS, "path");
@@ -3787,7 +3850,7 @@ export class App {
     const mkText = (x: number, anchor: string, text: string) => {
       const t = document.createElementNS(NS, "text");
       t.setAttribute("x", String(x));
-      t.setAttribute("y", String(H - 4));
+      t.setAttribute("y", String(H - 6));
       t.setAttribute("text-anchor", anchor);
       t.setAttribute("class", "curve-viz-lbl");
       t.textContent = text;

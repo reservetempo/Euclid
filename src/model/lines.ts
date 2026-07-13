@@ -101,17 +101,120 @@ export interface LifePlacement {
   dir?: "up" | "down";    // ramp: grow toward the end ("up") or the start ("down")
 }
 
+// The FUNCTION a transition's blend progress follows across its span — a graph
+// calculator over the fade, cousin of the melody's GRAPH_PRESETS. t (span progress
+// 0→1) maps to the blend position y∈[0,1] between the near sound and the far end:
+//   ramp     — the classic line, bent by `curve` toward exponential (the old behavior)
+//   scurve   — logistic ease: slow, steep middle, slow; `curve` = steepness
+//   parabola — an arch: out to the far end and back (y 0→1→0); `curve` skews the peak
+//   sine     — a smooth wave 0→1→0…, `cycles` swings (half-integers land at the far end)
+//   cos      — the same wave starting AT the far end (1→0→1…) — a dip-and-return
+//   zigzag   — the triangle cousin of sine: linear back-and-forth passes
+//   wobble   — a ramp that oscillates on the way but always lands; `curve` = depth
+//   steps    — a staircase: `cycles` flat levels jumping to the far end
+// For sine/cos/zigzag/steps, `curve` + `dir` WARP TIME instead (the same power bend),
+// squeezing the waves/stairs toward one end — an accelerating oscillation.
+export type BlendShapeId =
+  | "ramp" | "scurve" | "parabola" | "sine" | "cos" | "zigzag" | "wobble" | "steps";
+
+/** Per-shape UI spec: what the `curve` knob means for it, and whether the ease
+    direction / wave count apply (the UI hides the rows that don't). */
+export interface BlendShapeSpec {
+  id: BlendShapeId;
+  label: string;
+  curveLabel: string;    // the 0..1 `curve` knob's meaning for this shape
+  usesDir: boolean;      // ease/skew direction applies
+  usesCycles: boolean;   // the Waves/Steps count applies
+  cyclesDefault: number; // seeded into `cycles` when the shape is picked
+}
+
+export const BLEND_SHAPES: BlendShapeSpec[] = [
+  { id: "ramp",     label: "Line",     curveLabel: "Curve", usesDir: true,  usesCycles: false, cyclesDefault: 0 },
+  { id: "scurve",   label: "S-curve",  curveLabel: "Steep", usesDir: false, usesCycles: false, cyclesDefault: 0 },
+  { id: "parabola", label: "Parabola", curveLabel: "Skew",  usesDir: true,  usesCycles: false, cyclesDefault: 0 },
+  { id: "sine",     label: "Sine",     curveLabel: "Warp",  usesDir: true,  usesCycles: true,  cyclesDefault: 1.5 },
+  { id: "cos",      label: "Cos",      curveLabel: "Warp",  usesDir: true,  usesCycles: true,  cyclesDefault: 1 },
+  { id: "zigzag",   label: "Zigzag",   curveLabel: "Warp",  usesDir: true,  usesCycles: true,  cyclesDefault: 1.5 },
+  { id: "wobble",   label: "Wobble",   curveLabel: "Depth", usesDir: false, usesCycles: true,  cyclesDefault: 2 },
+  { id: "steps",    label: "Steps",    curveLabel: "Warp",  usesDir: true,  usesCycles: true,  cyclesDefault: 4 },
+];
+
+export const blendShapeSpec = (id: BlendShapeId | undefined): BlendShapeSpec =>
+  BLEND_SHAPES.find((s) => s.id === (id ?? "ramp")) ?? BLEND_SHAPES[0];
+
+/** The classic power bend of a blend progress t∈[0,1] — must match bendT in engine.js:
+    `curve` 0 (linear) → 1 (exponential); `dir` "out" eases out of the start then rushes
+    the end, "in" the reverse. Endpoints (0→0, 1→1) are preserved. */
+export function bendProgress(t: number, curve: number | undefined, dir: "in" | "out" | undefined): number {
+  const c = Math.max(0, Math.min(1, curve || 0));
+  t = Math.max(0, Math.min(1, t));
+  if (c <= 0) return t;
+  const exp = Math.pow(4, c);
+  return dir === "in" ? 1 - Math.pow(1 - t, exp) : Math.pow(t, exp);
+}
+
+/** Evaluate a transition's blend FUNCTION at span progress t∈[0,1] → blend position
+    y∈[0,1] (see BlendShapeId for each shape). Single source of truth for the UI's curve
+    graph and the speed warp; MUST match shapeT in engine.js (the per-hit morphs). */
+export function blendShape(
+  env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number }, t: number,
+): number {
+  t = Math.max(0, Math.min(1, t));
+  const c = Math.max(0, Math.min(1, env.curve || 0));
+  const cyc = (def: number) => Math.max(0.25, Math.min(16, env.cycles ?? def));
+  switch (env.shape) {
+    case "scurve": {
+      const k = 4 + c * 12;
+      const s = (x: number) => 1 / (1 + Math.exp(-k * (x - 0.5)));
+      const lo = s(0), hi = s(1);
+      return (s(t) - lo) / (hi - lo);
+    }
+    case "parabola": {
+      // A smooth arch out and back; `curve` skews the peak late (dir "in") or early.
+      const peak = Math.min(0.9, Math.max(0.1, 0.5 + (env.dir === "in" ? 1 : -1) * c * 0.35));
+      const x = t <= peak ? t / peak : (1 - t) / (1 - peak);
+      return Math.max(0, Math.min(1, x * (2 - x)));
+    }
+    case "sine":
+      return 0.5 - 0.5 * Math.cos(2 * Math.PI * cyc(1.5) * bendProgress(t, c, env.dir));
+    case "cos":
+      return 0.5 + 0.5 * Math.cos(2 * Math.PI * cyc(1) * bendProgress(t, c, env.dir));
+    case "zigzag": {
+      const ph = (cyc(1.5) * bendProgress(t, c, env.dir)) % 1;
+      return ph < 0.5 ? ph * 2 : 2 - ph * 2;
+    }
+    case "wobble": {
+      // A ramp with a damped swing riding it — lands exactly; `curve` = swing depth.
+      const depth = 0.15 + 0.85 * c;
+      const w = t + 0.5 * depth * Math.sin(2 * Math.PI * cyc(2) * t) * (1 - t);
+      return Math.max(0, Math.min(1, w));
+    }
+    case "steps": {
+      const n = Math.max(2, Math.round(env.cycles ?? 4));
+      return Math.min(1, Math.floor(bendProgress(t, c, env.dir) * n) / (n - 1));
+    }
+    default: // "ramp" / unset — the old bent line
+      return bendProgress(t, c, env.dir);
+  }
+}
+
 /** The editable sweep endpoints + blend shape shared by both fade sides (see
     TRANSITION_SWEEP for the swept parameter per mode):
     - `from` = the swept quantity's value at the near/steady end (undefined = the sound's
       own value, so the fade behaves as before until edited).
     - `to` = its value at the far/silent end (undefined = the mode's built-in extreme).
-    - `curve` bends the blend from linear (0) toward exponential (1). For the "speed" mode
-      it bends the timing glide (see warpOnsets); for every other mode it bends the
-      snapshot morph (see bendT in engine.js).
-    - `dir` shapes that curve — "out" eases toward the far end, "in" toward the near end.
+    - `shape` picks the blend FUNCTION the progress follows (see BlendShapeId; unset =
+      "ramp", the old line), `cycles` its wave/stair count where periodic.
+    - `curve` is the shape's 0..1 knob — the ramp's linear→exponential bend, the s-curve's
+      steepness, the parabola's skew, the wobble's depth, the waves' time warp. For the
+      "speed" mode it bends the timing glide (see warpOnsets); for every other mode the
+      snapshot morph (see shapeT in engine.js).
+    - `dir` orients that bend — "out" eases toward the far end, "in" toward the near end.
     - `rate` (speed only) is the FAR end's hit-rate multiple of the tempo (near end = 1×). */
-export interface TransitionShape { rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; }
+export interface TransitionShape {
+  rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out";
+  shape?: BlendShapeId; cycles?: number;
+}
 
 /** A row-wide FX SWEEP window, in engine STEP positions over the loop: while the global
     loop position is within [from, to), every steady hit on the lane is morphed toward (or
@@ -129,6 +232,8 @@ export interface SweepWindow {
   toV?: number;
   curve?: number;
   dir?: "in" | "out";
+  shape?: BlendShapeId; // blend function over the window (unset = "ramp")
+  cycles?: number;      // wave/stair count for the periodic shapes
 }
 
 /** An intro fade folded into a node's start: covers the first `reps` of its window,
@@ -261,8 +366,9 @@ export function clampEnvelopes(n: VoiceNode, keep: "intro" | "outro" = "outro"):
     across the `spanSteps`-long span so the effective hit rate glides between the tempo
     (1×) and a far-end multiple (`rate`). The span is ANCHORED to the grid at the steady
     boundary (span END for an intro, span START for an outro) so the hand-off is seamless
-    — only the far hits are displaced (rushed/dragged). `curve` bends the glide from
-    linear (0) toward exponential (1).
+    — only the far hits are displaced (rushed/dragged). The glide follows the env's blend
+    FUNCTION (see blendShape): the ramp's curve bend as before, but a sine shape makes
+    the tempo itself oscillate, steps a quantized accelerando, etc.
 
     Returns the onset TIMES as fractional step offsets within the sounding window (0 = the
     first sounding step). Done here on the main thread — it's deterministic (pattern + span
@@ -275,17 +381,17 @@ export function clampEnvelopes(n: VoiceNode, keep: "intro" | "outro" = "outro"):
     owned by the steady section for an intro (excluded) but by the span for an outro. */
 function warpOnsets(
   pattern: number[], vs: number, spanSteps: number, activeLen: number,
-  rate: number, curve: number, side: "intro" | "outro",
+  env: TransitionShape, side: "intro" | "outro",
 ): number[] {
   const onsets: number[] = [];
   if (!pattern.length || vs < 1 || spanSteps < 1) return onsets;
+  const rate = env.rate ?? 2;
   const mult = rate > 0 ? rate : 1;
-  const c = Math.max(0, Math.min(1, curve));
-  const exp = Math.pow(4, c); // 1 (linear) .. 4 (exponential) glide bend
-  // Rate at real distance `s` from the anchor: 1× at the anchor, `mult` at the far end.
+  // Rate at real distance `s` from the anchor: 1× at the anchor, `mult` at the far end,
+  // gliding along the env's blend function (shape/curve/dir/cycles).
   const rateAt = (s: number) => {
     const x = Math.max(0, Math.min(1, s / spanSteps));
-    return 1 + (mult - 1) * Math.pow(x, exp);
+    return 1 + (mult - 1) * blendShape(env, x);
   };
   const anchorStep = side === "intro" ? spanSteps : activeLen - spanSteps;
   const bit = (pstep: number) => pattern[((Math.round(pstep) % vs) + vs) % vs];
@@ -335,8 +441,8 @@ export interface LineMessage {
     // Intro/outro fade spans, in STEPS within the sounding window (after any lead-in).
     // For the "speed" mode, `warp` holds the precomputed re-timed hit onsets (fractional
     // step offsets within the sounding window) that replace the grid pattern in the span.
-    intro?: { steps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; warp?: number[] };
-    outro?: { steps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; warp?: number[] };
+    intro?: { steps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number; warp?: number[] };
+    outro?: { steps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number; warp?: number[] };
     pitchHz?: number; // melody notes only — absolute pitch the engine tunes to
     // Per-loop deterministic accent / ghost placement (see LifePlacement); the engine
     // uses these instead of the sound's random accent/ghost when present.
@@ -412,9 +518,10 @@ export class LineArrangement {
             ? {
                 steps: iSteps, mode: n.intro.mode, modes: n.intro.modes, fromId: n.intro.fromId,
                 curve: n.intro.curve, from: n.intro.from, to: n.intro.to, dir: n.intro.dir,
+                shape: n.intro.shape, cycles: n.intro.cycles,
                 ...(envHasSpeed(n.intro)
                   ? { rate: n.intro.rate,
-                      warp: warpOnsets(pattern, n.steps, iSteps, activeLen, n.intro.rate ?? 2, n.intro.curve ?? 0, "intro") }
+                      warp: warpOnsets(pattern, n.steps, iSteps, activeLen, n.intro, "intro") }
                   : {}),
               }
             : undefined,
@@ -422,9 +529,10 @@ export class LineArrangement {
             ? {
                 steps: oSteps, mode: n.outro.mode, modes: n.outro.modes, toId: n.outro.toId,
                 curve: n.outro.curve, from: n.outro.from, to: n.outro.to, dir: n.outro.dir,
+                shape: n.outro.shape, cycles: n.outro.cycles,
                 ...(envHasSpeed(n.outro)
                   ? { rate: n.outro.rate,
-                      warp: warpOnsets(pattern, n.steps, oSteps, activeLen, n.outro.rate ?? 2, n.outro.curve ?? 0, "outro") }
+                      warp: warpOnsets(pattern, n.steps, oSteps, activeLen, n.outro, "outro") }
                   : {}),
               }
             : undefined,

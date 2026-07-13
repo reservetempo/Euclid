@@ -883,9 +883,10 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .graph-apply .seg-btn { flex: none; padding: 11px 16px; }
 .graph-apply .seg-btn:disabled { opacity: 0.4; }
 
-/* Transition curve visualization: the eased blend path + start/end value labels. */
+/* Transition curve visualization: the blend function's path over a quarter grid +
+   start/end value labels. Bigger than the old strip — a proper little graph. */
 .curve-viz-box {
-  width: 100%; margin-top: 2px; padding: 6px;
+  width: 100%; margin-top: 2px; padding: 8px;
   background: var(--field); border: 1px solid var(--line-soft); border-radius: 9px;
 }
 .curve-viz { display: block; width: 100%; height: auto; }
@@ -894,6 +895,10 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke;
   filter: drop-shadow(0 0 3px color-mix(in srgb, var(--vc) 65%, transparent));
 }
+.curve-viz-grid {
+  stroke: var(--line-soft); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.55;
+}
+.curve-viz-grid.edge { opacity: 1; }
 .curve-viz-lbl { fill: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* Rhythm circles: the four values as a flattened ring — voice-coloured circles on a

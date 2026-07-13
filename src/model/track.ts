@@ -19,7 +19,7 @@
 // those lanes exactly as it did on the old 6 voice lines. See lines.ts / project.ts.
 
 import {
-  VoiceNode, IntroEnv, OutroEnv, LifePlacement, SweepWindow, TransitionMode,
+  VoiceNode, IntroEnv, OutroEnv, LifePlacement, SweepWindow, TransitionMode, BlendShapeId,
   emptyNode, clampEnvelopes, STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
 import { MelodyNode, emptyMelody, melodyNoteNode, generateMelody, regatePhrase, EmittedNote, MELODY_COLOR_INDEX } from "./melody";
@@ -85,6 +85,8 @@ export interface RowSweep {
   to?: number;
   curve?: number;
   dir?: "in" | "out";
+  shape?: BlendShapeId; // blend function over the window (unset = "ramp")
+  cycles?: number;      // wave/stair count for the periodic shapes
 }
 
 /** A fresh row sweep: a filter opening across the first 8 bars (clamped to the track),
@@ -104,7 +106,7 @@ export function rowSweepWindow(sweep: RowSweep | undefined, barLimit: number): S
   const from = (fromBar - 1) * STEPS_PER_BAR;
   const to = toBar * STEPS_PER_BAR;
   if (to <= from) return null;
-  return { from, to, mode: sweep.mode, modes: sweep.modes, side: sweep.side, fromV: sweep.from, toV: sweep.to, curve: sweep.curve, dir: sweep.dir };
+  return { from, to, mode: sweep.mode, modes: sweep.modes, side: sweep.side, fromV: sweep.from, toV: sweep.to, curve: sweep.curve, dir: sweep.dir, shape: sweep.shape, cycles: sweep.cycles };
 }
 
 /** All of a row's live sweeps as engine windows (off / empty ones dropped). */
@@ -253,12 +255,14 @@ function collectMelodySweeps(inst: Loop, startStep: number, usedSteps: number, o
   if (inst.intro) {
     const bars = Math.max(1, Math.min(placeBars, Math.round(inst.intro.reps)));
     out.push({ from: startStep, to: startStep + bars * STEPS_PER_BAR, mode: inst.intro.mode, modes: inst.intro.modes,
-      side: "in", fromV: inst.intro.from, toV: inst.intro.to, curve: inst.intro.curve, dir: inst.intro.dir });
+      side: "in", fromV: inst.intro.from, toV: inst.intro.to, curve: inst.intro.curve, dir: inst.intro.dir,
+      shape: inst.intro.shape, cycles: inst.intro.cycles });
   }
   if (inst.outro) {
     const bars = Math.max(1, Math.min(placeBars, Math.round(inst.outro.reps)));
     out.push({ from: end - bars * STEPS_PER_BAR, to: end, mode: inst.outro.mode, modes: inst.outro.modes,
-      side: "out", fromV: inst.outro.from, toV: inst.outro.to, curve: inst.outro.curve, dir: inst.outro.dir });
+      side: "out", fromV: inst.outro.from, toV: inst.outro.to, curve: inst.outro.curve, dir: inst.outro.dir,
+      shape: inst.outro.shape, cycles: inst.outro.cycles });
   }
 }
 

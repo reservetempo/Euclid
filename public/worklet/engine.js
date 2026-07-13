@@ -142,6 +142,49 @@ function bendT(t, curve, dir) {
   return dir === "in" ? 1 - Math.pow(1 - t, exp) : Math.pow(t, exp);
 }
 
+// Evaluate a transition's blend FUNCTION at span progress t∈[0,1] → blend position
+// y∈[0,1]. `env` carries shape/curve/dir/cycles (see BlendShapeId in lines.ts); unset
+// shape = "ramp", the old bent line, so bendT keeps its meaning. MUST match blendShape
+// in lines.ts (the UI's curve graph and the speed warp use that copy).
+function shapeT(t, env) {
+  t = clamp(t, 0, 1);
+  const c = clamp(env.curve || 0, 0, 1);
+  const cyc = (def) => Math.max(0.25, Math.min(16, env.cycles == null ? def : env.cycles));
+  switch (env.shape) {
+    case "scurve": {
+      const k = 4 + c * 12;
+      const s = (x) => 1 / (1 + Math.exp(-k * (x - 0.5)));
+      const lo = s(0), hi = s(1);
+      return (s(t) - lo) / (hi - lo);
+    }
+    case "parabola": {
+      // A smooth arch out and back; `curve` skews the peak late (dir "in") or early.
+      const peak = Math.min(0.9, Math.max(0.1, 0.5 + (env.dir === "in" ? 1 : -1) * c * 0.35));
+      const x = t <= peak ? t / peak : (1 - t) / (1 - peak);
+      return clamp(x * (2 - x), 0, 1);
+    }
+    case "sine":
+      return 0.5 - 0.5 * Math.cos(TWO_PI * cyc(1.5) * bendT(t, c, env.dir));
+    case "cos":
+      return 0.5 + 0.5 * Math.cos(TWO_PI * cyc(1) * bendT(t, c, env.dir));
+    case "zigzag": {
+      const ph = (cyc(1.5) * bendT(t, c, env.dir)) % 1;
+      return ph < 0.5 ? ph * 2 : 2 - ph * 2;
+    }
+    case "wobble": {
+      // A ramp with a damped swing riding it — lands exactly; `curve` = swing depth.
+      const depth = 0.15 + 0.85 * c;
+      return clamp(t + 0.5 * depth * Math.sin(TWO_PI * cyc(2) * t) * (1 - t), 0, 1);
+    }
+    case "steps": {
+      const n = Math.max(2, Math.round(env.cycles == null ? 4 : env.cycles));
+      return Math.min(1, Math.floor(bendT(t, c, env.dir) * n) / (n - 1));
+    }
+    default: // "ramp" / unset
+      return bendT(t, c, env.dir);
+  }
+}
+
 // The ONE parameter each silence-end fade sweeps (see silentVariant / nearVariant and the
 // UI's TRANSITION_SWEEP). The far end may also touch secondary params (crush's Downsample,
 // echo's Feedback, wash's Size) — those stay automatic; only this primary one is From→To
@@ -1359,7 +1402,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       let snap = baseSnap;
       if (tonal.length) {
         const raw = clamp((o - spanStart) / Math.max(1, span), 0, 1);
-        const t = bendT(raw, env.curve, env.dir);
+        const t = shapeT(raw, env);
         snap = this.sweptSnap(baseSnap, tonal, t, side === "intro" ? "in" : "out", env.from, env.to);
       }
       const hit = this.perHit(snap, life);
@@ -1526,7 +1569,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         const from = fromId >= 0 ? this.sounds.get(fromId) : null;
         if (fromId < 0 || from) {
           const raw = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
-          const t = bendT(raw, nd.intro.curve, nd.intro.dir);
+          const t = shapeT(raw, nd.intro);
           this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.modes || nd.intro.mode, t, life, gate, beat, fired, nd.intro.from, nd.intro.to);
           continue;
         }
@@ -1540,7 +1583,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (toId < 0 || to) {
           const local = activeLocal - (activeLen - outroSteps);
           const raw = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
-          const t = bendT(raw, nd.outro.curve, nd.outro.dir);
+          const t = shapeT(raw, nd.outro);
           this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.modes || nd.outro.mode, t, life, gate, beat, fired, nd.outro.from, nd.outro.to);
           continue;
         }
@@ -1561,7 +1604,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         for (let si = 0; si < sws.length; si++) {
           const sw = sws[si];
           const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
-          const t = bendT(raw, sw.curve, sw.dir);
+          const t = shapeT(raw, sw);
           const modes = sw.modes && sw.modes.length ? sw.modes : [sw.mode];
           snap = this.sweptSnap(snap, modes, t, sw.side, sw.fromV, sw.toV);
         }
