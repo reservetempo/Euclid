@@ -650,6 +650,53 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   }
 }
 
+/* Loop-tab action row: three small buttons (Options / Accents / Copy) under the grid. */
+.loop-actions { display: flex; gap: 8px; margin-top: 12px; }
+.loop-action-btn {
+  flex: 1 1 0; min-width: 0; padding: 10px 6px; font-size: 12.5px; font-weight: 600;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.loop-action-btn:active { background: color-mix(in srgb, var(--vc) 12%, var(--panel2)); border-color: var(--vc); color: var(--vc); }
+@media (hover: hover) { .loop-action-btn:hover { border-color: color-mix(in srgb, var(--vc) 55%, var(--line)); } }
+
+/* Loop-tab sub-panel back header (⚙ Options / Accents). */
+.loop-sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.loop-sub-head .mixer-back { padding: 4px 2px; }
+
+/* The expanded placement drag grid (16 bars/row). */
+.place-grid-wrap { --vc: var(--accent); display: flex; flex-direction: column; gap: 8px; }
+.place-grid-head { display: flex; align-items: center; gap: 10px; }
+.place-grid-readout { flex: 1; font-size: 12.5px; font-weight: 600; color: var(--vc); font-variant-numeric: tabular-nums; }
+.place-grid {
+  display: grid; grid-template-columns: repeat(var(--cols, 16), 1fr); gap: 3px;
+  padding: 8px; background: var(--field); border: 1px solid var(--line-soft); border-radius: var(--r-md);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+  touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer;
+}
+.place-cell {
+  aspect-ratio: 1 / 1; min-width: 0; border-radius: 3px;
+  background: rgba(154, 168, 204, 0.10);
+}
+/* Every 4th bar a touch brighter (phrase quarters); the first column brighter still. */
+.place-cell.beat { background: rgba(154, 168, 204, 0.17); }
+.place-cell.rowstart { box-shadow: inset 2px 0 0 rgba(154, 168, 204, 0.4); }
+/* A bar covered by ANOTHER loop of this colour (a clash hint): faint diagonal stripe. */
+.place-cell.occ {
+  background:
+    repeating-linear-gradient(45deg, rgba(255,255,255,0.16) 0 2px, transparent 2px 5px),
+    rgba(154, 168, 204, 0.10);
+}
+/* Bars past the track length: dimmed (painting into them grows the track). */
+.place-cell.out { opacity: 0.32; }
+/* This loop's chosen bars, lit in its colour. */
+.place-cell.sel {
+  background: var(--vc);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--vc) 55%, transparent), inset 0 0 0 1px rgba(255,255,255,0.25);
+  opacity: 1;
+}
+
 /* Copy-to-row picker: a compact modal over the loop popup. */
 .copy-menu-overlay {
   position: fixed; inset: 0; z-index: 240; padding: 16px;

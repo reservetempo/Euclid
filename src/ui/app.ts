@@ -137,6 +137,8 @@ export class App {
   private melodySoloItem: MelodyItem | null = null;
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private placementTab: "loop" | "transition" | "sound" = "loop"; // which sub-page of the loop popup
+  // Loop tab sub-view: the drag grid (default), or the panels the two buttons open.
+  private loopSub: "grid" | "options" | "life" = "grid";
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
   private soundName = "";
@@ -3015,7 +3017,7 @@ export class App {
   private openPlacement(loop: Loop): void {
     document.querySelector(".placement-overlay")?.remove();
     const fresh = this.editLoop !== loop;
-    if (fresh) this.placementTab = "loop"; // fresh open starts on the Loop tab
+    if (fresh) { this.placementTab = "loop"; this.loopSub = "grid"; } // fresh open: Loop tab, grid
     this.editLoop = loop;
     const rerender = () => this.openPlacement(loop);
 
@@ -3063,7 +3065,7 @@ export class App {
       const b = document.createElement("button");
       b.className = "seg-btn" + (this.placementTab === tab ? " on" : "");
       b.textContent = text;
-      b.onclick = () => { if (this.placementTab !== tab) { this.placementTab = tab; rerender(); } };
+      b.onclick = () => { if (this.placementTab !== tab) { this.placementTab = tab; this.loopSub = "grid"; rerender(); } };
       return b;
     };
     nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transition"));
@@ -3073,24 +3075,191 @@ export class App {
       this.appendSoundTab(loop, sheet);
     } else if (this.placementTab === "transition") {
       sheet.append(this.transitionControls(loop, rerender));
-    } else {
+    } else if (this.loopSub === "options") {
+      // Procedural placement options (behind the ⚙ button): the Repeat-every rule + the
+      // sound's Euclidean rhythm circles.
+      sheet.append(this.subPanelHead("Placement options", () => { this.loopSub = "grid"; rerender(); }));
       sheet.append(this.placementControls(loop, rerender));
-      sheet.append(this.lifeControls(loop, rerender));
       const detail = document.createElement("div");
       detail.className = "euclid-detail";
       detail.append(this.rhythmCircles(loop, rerender));
       sheet.append(detail);
+    } else if (this.loopSub === "life") {
+      sheet.append(this.subPanelHead("Accents & Ghosts", () => { this.loopSub = "grid"; rerender(); }));
+      sheet.append(this.lifeControls(loop, rerender));
+    } else {
+      // Default Loop view: the big drag grid, then a row of small actions.
+      sheet.append(this.placementGrid(loop, rerender));
 
-      // Copy this whole loop (sound + rhythm + rule) onto another coloured row.
-      const copy = document.createElement("button");
-      copy.className = "loop-add copy-loop-btn";
-      copy.textContent = "⧉ Copy to another row";
-      copy.onclick = () => this.openCopyLoopMenu(loop);
-      sheet.append(copy);
+      const actions = document.createElement("div");
+      actions.className = "loop-actions";
+      const mkAction = (text: string, title: string, fn: () => void) => {
+        const b = document.createElement("button");
+        b.className = "loop-action-btn";
+        b.textContent = text;
+        b.title = title;
+        b.onclick = fn;
+        return b;
+      };
+      actions.append(
+        mkAction("⚙ Options", "Repeat rule + rhythm", () => { this.loopSub = "options"; rerender(); }),
+        mkAction("◔ Accents", "Accents & ghosts", () => { this.loopSub = "life"; rerender(); }),
+        mkAction("⧉ Copy", "Copy this loop to another row", () => this.openCopyLoopMenu(loop)),
+      );
+      sheet.append(actions);
     }
 
     overlay.append(sheet);
     this.root.append(overlay);
+  }
+
+  /** A back header for a Loop-tab sub-panel (⚙ Options / Accents), returning to the grid. */
+  private subPanelHead(title: string, back: () => void): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "loop-sub-head";
+    const b = document.createElement("button");
+    b.className = "mixer-back";
+    b.textContent = "‹ Back";
+    b.onclick = back;
+    const t = document.createElement("span");
+    t.className = "placement-lbl transition-head";
+    t.textContent = title;
+    row.append(b, t);
+    return row;
+  }
+
+  /** The expanded drag grid on the Loop tab: 16 bars per row (16 rows to start), a fast
+      way to place a loop across the arrangement. Tap a bar to toggle it; drag to paint a
+      contiguous run of bars on/off. Cells past the track length are dimmed; painting into
+      them GROWS the track to fit. Bars already covered by ANOTHER loop of this colour are
+      marked (a clash/occupancy hint). Editing sets the rule to "At bars" (seeded from the
+      current placement, so switching from an algorithmic rule keeps its bars). */
+  private placementGrid(loop: Loop, rerender: () => void): HTMLElement {
+    const COLS = 16;
+    const barLimit = Math.max(1, this.track.barLimit);
+    const rows = Math.max(16, Math.ceil(barLimit / COLS));
+    const total = rows * COLS;
+    const c = this.colorOf(loop);
+
+    // This loop's placement as an explicit bar set (start bars). Seed from placementsFor so
+    // an algorithmic rule shows its bars and converts cleanly to a manual list on edit.
+    const ownList = () => loop.rule.every.kind === "at"
+      ? (loop.rule.every as { bars: number[] }).bars.slice()
+      : placementsFor(loop, barLimit).map((iv) => iv.startBar + 1);
+
+    // Bars where ANOTHER loop of this colour sounds (covered bars) — a clash hint.
+    const occupied = new Set<number>();
+    for (const other of this.track.colors[c]?.loops ?? []) {
+      if (other === loop || other.soundId < 0) continue;
+      for (const iv of placementsFor(other, barLimit)) {
+        for (let b = iv.startBar; b < iv.startBar + iv.forBars && b < barLimit; b++) occupied.add(b + 1);
+      }
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "place-grid-wrap";
+    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+
+    const head = document.createElement("div");
+    head.className = "place-grid-head";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Bars";
+    const readout = document.createElement("span");
+    readout.className = "place-grid-readout";
+    const clear = document.createElement("button");
+    clear.className = "play-range-clear";
+    clear.textContent = "✕";
+    clear.title = "Clear all bars";
+    const syncHead = () => {
+      const bs = ownList();
+      // Live track length too, since growing it is a side effect of painting past the end
+      // (and the top-bar length pill is hidden under this popup).
+      readout.textContent = bs.length
+        ? `${bs.length} bar${bs.length === 1 ? "" : "s"} · track ${this.track.barLimit}`
+        : "tap or drag to place";
+      clear.disabled = bs.length === 0;
+    };
+    clear.onclick = () => { loop.rule.every = { kind: "at", bars: [] }; this.recompile(); rerender(); };
+    head.append(lbl, readout, clear);
+    wrap.append(head);
+
+    const grid = document.createElement("div");
+    grid.className = "place-grid";
+    grid.style.setProperty("--cols", String(COLS));
+    const cells: HTMLElement[] = [];
+    for (let i = 0; i < total; i++) {
+      const bar = i + 1;
+      const cell = document.createElement("div");
+      cell.className = "place-cell"
+        + (bar > barLimit ? " out" : "")
+        + ((i % COLS) === 0 ? " rowstart" : "")
+        + (((bar - 1) % 4) === 0 ? " beat" : "");
+      cell.dataset.bar = String(bar);
+      if (occupied.has(bar)) cell.classList.add("occ");
+      cells.push(cell);
+      grid.append(cell);
+    }
+    const paint = (set: Set<number>) => {
+      for (let i = 0; i < total; i++) cells[i].classList.toggle("sel", set.has(i + 1));
+    };
+    paint(new Set(ownList()));
+    wrap.append(grid);
+    syncHead();
+
+    // Drag paints the linear bar range [anchor..bar] to the anchor's inverse state, from a
+    // pre-drag snapshot (so back-and-forth doesn't accumulate). elementFromPoint reads the
+    // cell under the pointer (robust to the grid gaps).
+    const barAt = (x: number, y: number): number | null => {
+      const el = document.elementFromPoint(x, y) as HTMLElement | null;
+      const bAttr = el?.closest(".place-cell") as HTMLElement | null;
+      return bAttr?.dataset.bar ? Number(bAttr.dataset.bar) : null;
+    };
+    let base = new Set<number>();
+    let anchor = 0, paintOn = true, lastBar = 0;
+    const commitLive = (set: Set<number>) => {
+      const bars = [...set].sort((a, b) => a - b);
+      // Painting past the track grows it to fit the furthest placed bar.
+      const max = bars.length ? bars[bars.length - 1] : 0;
+      if (max > this.track.barLimit) this.track.barLimit = Math.min(512, max);
+      loop.rule.every = { kind: "at", bars };
+      this.recompile();
+      syncHead();
+    };
+    const applyTo = (bar: number) => {
+      const lo = Math.min(anchor, bar), hi = Math.max(anchor, bar);
+      const next = new Set(base);
+      for (let i = lo; i <= hi; i++) { if (paintOn) next.add(i); else next.delete(i); }
+      paint(next);
+      return next;
+    };
+    const onMove = (e: PointerEvent) => {
+      const bar = barAt(e.clientX, e.clientY);
+      if (bar === null || bar === lastBar) return;
+      lastBar = bar;
+      commitLive(applyTo(bar));
+    };
+    const onUp = (e: PointerEvent) => {
+      grid.removeEventListener("pointermove", onMove);
+      grid.removeEventListener("pointerup", onUp);
+      grid.removeEventListener("pointercancel", onUp);
+      try { grid.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+      rerender(); // rebuild (track may have grown → more rows)
+    };
+    grid.onpointerdown = (e) => {
+      const bar = barAt(e.clientX, e.clientY);
+      if (bar === null) return;
+      e.preventDefault();
+      base = new Set(ownList());
+      anchor = bar; lastBar = bar;
+      paintOn = !base.has(bar);
+      commitLive(applyTo(bar));
+      try { grid.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
+      grid.addEventListener("pointermove", onMove);
+      grid.addEventListener("pointerup", onUp);
+      grid.addEventListener("pointercancel", onUp);
+    };
+    return wrap;
   }
 
   /** A small picker over the loop popup: tap a coloured row to drop an independent copy of
