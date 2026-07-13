@@ -1413,6 +1413,59 @@ class EngineProcessor extends AudioWorkletProcessor {
     }
   }
 
+  // Fire the re-timed hits of any SPEED row sweeps covering lane position `pos`, and
+  // report whether one covers it at all (its span then owns the grid — steady hits are
+  // replaced by the warp, like a node's own speed span). Each warp entry fires its
+  // SOURCE node's sound (the window may cross node boundaries), morphed through every
+  // covering window's TONAL styles at the onset's own progress, and held off the grid
+  // by its fractional part. See warpSweepOnsets in lines.ts for the precompute.
+  fireRowWarpAt(ln, pos, gate, fired) {
+    const sweeps = ln && ln.sweeps;
+    if (!sweeps) return false;
+    const spb = this.samplesPerStep();
+    const beat = this.absStep * 0.25;
+    let covered = false;
+    for (let si = 0; si < sweeps.length; si++) {
+      const sw = sweeps[si];
+      if (!sw.warp || pos < sw.from || pos >= sw.to) continue;
+      covered = true;
+      const warp = sw.warp;
+      for (let k = 0; k < warp.length; k++) {
+        const e = warp[k];
+        if (Math.floor(e.o) !== pos) continue; // not this step's onset(s)
+        const nd = ln.nodes[e.ni];
+        const snd = nd ? this.sounds.get(nd.soundId) : null;
+        if (!snd) continue;
+        let snap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+        // Compose every covering window's tonal morph at the onset's own position —
+        // the speed window's own tonal styles included (a "Rush + Filter" sweep rushes
+        // WHILE the filter closes), other windows at the same progress they'd give a
+        // grid hit here.
+        const sws = this.sweepsAt(ln, pos);
+        if (sws) {
+          for (let i = 0; i < sws.length; i++) {
+            const sw2 = sws[i];
+            const raw = clamp((e.o - sw2.from) / Math.max(1, sw2.to - sw2.from), 0, 1);
+            const modes = (sw2.modes && sw2.modes.length ? sw2.modes : [sw2.mode]).filter((m) => m !== "speed");
+            if (!modes.length) continue;
+            snap = this.sweptSnap(snap, modes, shapeT(raw, sw2), sw2.side, sw2.fromV, sw2.toV);
+          }
+        }
+        const span = Math.max(1, sw.to - sw.from);
+        const pos01 = clamp((e.o - sw.from) / span, 0, 1);
+        const life = { isAccent: k === 0, hitIndex: k, pos01, accent: nd.accent, ghost: nd.ghost };
+        const hit = this.perHit(snap, life);
+        if (!hit) continue;
+        const delay = Math.round((e.o - pos) * spb);
+        const voiceSnap = snap.slice();
+        this.jitterSnap(voiceSnap, hit.human);
+        this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, delay);
+        fired.push(nd.soundId);
+      }
+    }
+    return covered;
+  }
+
   // ALL row-sweep windows covering global loop position `pos` on line `ln`, or null.
   // Overlapping windows are allowed — the caller composes them in list order, each
   // morphing the result of the previous. See SweepWindow in lines.ts.
@@ -1503,8 +1556,9 @@ class EngineProcessor extends AudioWorkletProcessor {
       const activeLocal = nodeLocal - waitSteps;
       states.push({ node: ni, step: vs >= 1 && activeLocal >= 0 ? activeLocal % vs : -1 });
 
-      // Still waiting (lead-in)?
-      if (activeLocal < 0) continue;
+      // Still waiting (lead-in)? A speed row sweep may have dragged hits INTO the wait
+      // span — fire those; the grid is silent here anyway.
+      if (activeLocal < 0) { this.fireRowWarpAt(ln, pos, gate, fired); continue; }
 
       // Speed transition: within an intro/outro SPEED span the node's hits are RE-TIMED —
       // a precomputed onset list (fractional steps, off the grid) replaces the pattern's
@@ -1532,6 +1586,12 @@ class EngineProcessor extends AudioWorkletProcessor {
           }
         }
       }
+
+      // SPEED row sweeps (see fireRowWarpAt): inside a warp-carrying window the lane's
+      // grid hits are replaced by the window's re-timed onsets — rushing in / dragging
+      // out across the whole row, node boundaries included. A node's OWN speed span
+      // still wins (handled above; its hits were left out of the window's warp).
+      if (this.fireRowWarpAt(ln, pos, gate, fired)) continue;
 
       // A pattern rest (rests ship an empty pattern) — nothing to fire on the grid here.
       if (vs < 1 || !nd.pattern || !nd.pattern[activeLocal % vs]) continue;

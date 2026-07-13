@@ -234,6 +234,11 @@ export interface SweepWindow {
   dir?: "in" | "out";
   shape?: BlendShapeId; // blend function over the window (unset = "ramp")
   cycles?: number;      // wave/stair count for the periodic shapes
+  rate?: number;        // "speed" style: the far end's hit-rate multiple of the tempo
+  // "speed" only, engine message only (built in linesMessage, never serialised): the
+  // window's re-timed hit onsets replacing the grid — fractional lane steps `o` (absolute)
+  // firing source node `ni`'s sound. See warpSweepOnsets.
+  warp?: { o: number; ni: number }[];
 }
 
 /** An intro fade folded into a node's start: covers the first `reps` of its window,
@@ -418,6 +423,104 @@ function warpOnsets(
   return onsets;
 }
 
+/** Re-time the hits inside a SPEED row-sweep window — the sweep cousin of warpOnsets,
+    but over the LANE's composite hit grid (the window may cross node boundaries).
+    `hits[i]` is the source node index at relative step i (−1 = none). The hit rate
+    glides between 1× at the window's STEADY end and `rate`× at its far end — side "out"
+    anchors at the window START (hits rush/drag toward the end), side "in" at its END
+    (a fast/slow start settles onto the grid) — following the sweep's blend function,
+    like every other transition. The window's hit sequence CYCLES like a pattern (the
+    grid slice wraps, mirroring warpOnsets' modular pattern): rushing fires MORE hits —
+    the sequence comes round faster — and slowing (rate < 1) stretches them apart into
+    fewer, longer-spaced hits, so the window stays musically filled either way.
+    Returns onsets as fractional steps RELATIVE to the window start, sorted, each firing
+    its source node's sound. */
+function warpSweepOnsets(hits: number[], span: number, sw: SweepWindow): { o: number; ni: number }[] {
+  const out: { o: number; ni: number }[] = [];
+  if (span < 1) return out;
+  const rate = sw.rate ?? 2;
+  const mult = rate > 0 ? rate : 1;
+  const rateAt = (s: number) => 1 + (mult - 1) * blendShape(sw, Math.max(0, Math.min(1, s / span)));
+  const at = (rel: number) => hits[((Math.round(rel) % span) + span) % span];
+  // side "out" is anchored at the window start, which owns its own event; side "in" is
+  // anchored at the window END — the first steady step AFTER it, owned by the grid — so
+  // integration counts m = 1.. on both sides and only "out" fires its anchor.
+  let nextM = 1;
+  if (sw.side === "out" && at(0) >= 0) out.push({ o: 0, ni: at(0) });
+  const N = Math.max(64, Math.ceil(span * 32)); // integration resolution
+  const ds = span / N;
+  let psi = 0;
+  for (let i = 1; i <= N; i++) {
+    const s0 = (i - 1) * ds, s1 = i * ds;
+    const psiNext = psi + 0.5 * (rateAt(s0) + rateAt(s1)) * ds; // trapezoid
+    while (nextM <= psiNext) {
+      const frac = psiNext > psi ? (nextM - psi) / (psiNext - psi) : 0;
+      const s = s0 + frac * ds;
+      const rel = sw.side === "out" ? nextM : span - nextM;
+      const ni = at(rel);
+      if (ni >= 0) out.push({ o: sw.side === "out" ? s : span - s, ni });
+      nextM++;
+    }
+    psi = psiNext;
+  }
+  out.sort((a, b) => a.o - b.o);
+  return out;
+}
+
+/** The lane's sweeps as shipped to the engine: windows whose style set includes "speed"
+    get their `warp` onset list attached (see warpSweepOnsets), built from the lane's
+    compiled message nodes. Hits inside a node's OWN speed intro/outro span stay with the
+    node's warp, and where speed windows overlap the EARLIER window owns the shared steps
+    (list order) so nothing double-fires. */
+function sweepsMessage(
+  sweeps: SweepWindow[] | undefined, nodes: LineMessage["nodes"],
+): SweepWindow[] | undefined {
+  if (!sweeps || !sweeps.length) return undefined;
+  let total = 0;
+  for (const n of nodes) total += Math.max(1, n.lenSteps | 0);
+  // Per-step source node index (−1 = no hit), built lazily — only speed windows need it.
+  let grid: Int32Array | null = null;
+  const buildGrid = () => {
+    const g = new Int32Array(total).fill(-1);
+    let acc = 0;
+    nodes.forEach((n, ni) => {
+      const len = Math.max(1, n.lenSteps | 0);
+      const vs = n.steps | 0;
+      const wait = Math.max(0, n.waitSteps | 0);
+      const aLen = Math.max(1, len - wait);
+      const iSpan = n.intro && n.intro.warp ? Math.min(aLen, Math.max(1, n.intro.steps | 0)) : 0;
+      const oSpan = n.outro && n.outro.warp ? Math.min(aLen, Math.max(1, n.outro.steps | 0)) : 0;
+      if (n.soundId !== EMPTY && vs >= 1 && n.pattern && n.pattern.length) {
+        for (let p = wait; p < len; p++) {
+          const active = p - wait;
+          if (iSpan > 0 && active < iSpan) continue;         // node's own speed intro
+          if (oSpan > 0 && active >= aLen - oSpan) continue; // node's own speed outro
+          if (n.pattern[active % vs]) g[acc + p] = ni;
+        }
+      }
+      acc += len;
+    });
+    return g;
+  };
+  const claimed = new Uint8Array(total);
+  return sweeps.map((sw) => {
+    const modes = sw.modes && sw.modes.length ? sw.modes : [sw.mode];
+    if (!modes.includes("speed")) return sw;
+    const from = Math.max(0, Math.min(total, Math.round(sw.from)));
+    const to = Math.max(from, Math.min(total, Math.round(sw.to)));
+    const span = to - from;
+    if (span < 1) return sw;
+    if (!grid) grid = buildGrid();
+    const hits: number[] = new Array(span);
+    for (let i = 0; i < span; i++) {
+      hits[i] = claimed[from + i] ? -1 : grid[from + i];
+      claimed[from + i] = 1;
+    }
+    const warp = warpSweepOnsets(hits, span, sw).map((h) => ({ o: from + h.o, ni: h.ni }));
+    return { ...sw, warp };
+  });
+}
+
 // One engine LANE: a node chain plus the colour it belongs to. Placement is now
 // procedural (see track.ts): a colour may compile to several lanes (overlapping loops)
 // or one (priority-resolved solo loops). Mute/solo live per COLOUR on the track, not
@@ -495,11 +598,11 @@ export class LineArrangement {
   }
 
   /** Lines serialised for the worklet scheduler (patterns precomputed here so the
-      worklet stays pattern-only). Every node ships, including silent rests. */
+      worklet stays pattern-only). Every node ships, including silent rests. Speed row
+      sweeps get their re-timed onsets attached from the compiled nodes (sweepsMessage). */
   linesMessage(): LineMessage[] {
-    return this.lines.map((ln) => ({
-      sweeps: ln.sweeps && ln.sweeps.length ? ln.sweeps : undefined,
-      nodes: ln.nodes.map((n) => {
+    return this.lines.map((ln) => {
+      const nodes = ln.nodes.map((n) => {
         const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
         const reps = Math.max(1, n.reps | 0);
         const pattern = n.steps >= 1 && n.soundId !== EMPTY
@@ -540,7 +643,8 @@ export class LineArrangement {
           accent: n.accent,
           ghost: n.ghost,
         };
-      }),
-    }));
+      });
+      return { sweeps: sweepsMessage(ln.sweeps, nodes), nodes };
+    });
   }
 }

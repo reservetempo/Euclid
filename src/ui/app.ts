@@ -2639,7 +2639,7 @@ export class App {
     if (!sweeps.length) {
       const hint = document.createElement("p");
       hint.className = "hint";
-      hint.textContent = "An FX sweep across the whole row over a bar range — the filter opens, reverb wells up, drive bites… spanning every loop on the row. Transitions can overlap: where they do, they stack.";
+      hint.textContent = "An FX sweep across the whole row over a bar range — the filter opens, reverb wells up, drive bites, or the hits themselves rush or drag (Speed)… spanning every loop on the row. Transitions can overlap: where they do, they stack.";
       wrap.append(hint);
     }
     sweeps.forEach((s, i) => wrap.append(this.sweepCard(c, s, i)));
@@ -2717,12 +2717,14 @@ export class App {
     sLbl.textContent = "Style";
     const styles = document.createElement("div");
     styles.className = "placement-seg fade-modes";
-    const SWEEP_STYLES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo"];
+    // "Speed" re-times the hits themselves across the window (rushing in / dragging
+    // out — see warpSweepOnsets); direction-neutral name since Rate may go either way.
+    const SWEEP_STYLES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo", "speed"];
     const active = envModes(sweep);
     for (const m of SWEEP_STYLES) {
       const b = document.createElement("button");
       b.className = "seg-btn" + (active.includes(m) ? " on" : "");
-      b.textContent = this.fadeModeLabel(m, sweep.side === "out" ? "outro" : "intro");
+      b.textContent = m === "speed" ? "Speed" : this.fadeModeLabel(m, sweep.side === "out" ? "outro" : "intro");
       b.onclick = () => { this.toggleModeIn(sweep, m); this.recompile(); rerender(); };
       styles.append(b);
     }
@@ -2746,6 +2748,15 @@ export class App {
     dirSeg.append(mkSide("out", "Into effect"), mkSide("in", "Out of effect"));
     dirRow.append(dLbl, dirSeg);
     card.append(dirRow);
+
+    // Speed's far-end hit rate: >1× the hits crowd together (rush), <1× they stretch
+    // apart (drag). The near/steady end is always the tempo (1×).
+    if (envHasSpeed(sweep)) {
+      card.append(this.numRow("Rate", () => Math.round((sweep.rate ?? 2) * 100), (n) => {
+        sweep.rate = Math.max(0.25, Math.min(4, Math.round(n) / 100));
+        this.recompile();
+      }, rerender, () => `${(sweep.rate ?? 2).toFixed(2)}×`));
+    }
 
     // The blend FUNCTION the sweep follows across its window: shape picker, the shape's
     // knob, wave count, ease direction (see shapeControls).
@@ -3789,13 +3800,18 @@ export class App {
 
   /** The blend-curve graph for a ROW SWEEP: it applies to every loop on the row (no single
       snapshot), so the ends are labelled generically — the clean "sound" vs the effect (or
-      the From/To overrides when set). Left = window start, right = window end. */
+      the From/To overrides when set); "speed" is named by its far-end rate multiple.
+      Left = window start, right = window end. */
   private rowSweepCurveViz(sweep: RowSweep): HTMLElement {
     const active = envModes(sweep);
     const spec = TRANSITION_SWEEP[sweep.mode];
+    const rateLbl = `${(Math.round((sweep.rate ?? 2) * 100) / 100)}×`;
     let near = "sound", far = "";
     if (active.length > 1) {
-      far = active.map((m) => this.fadeModeLabel(m, "outro")).join(" + ");
+      far = active.map((m) => (m === "speed" ? rateLbl : this.fadeModeLabel(m, "outro"))).join(" + ");
+    } else if (sweep.mode === "speed") {
+      near = "1×";
+      far = rateLbl;
     } else {
       near = spec && sweep.from !== undefined ? spec.format(sweep.from) : "sound";
       far = spec

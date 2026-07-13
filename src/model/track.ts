@@ -87,6 +87,7 @@ export interface RowSweep {
   dir?: "in" | "out";
   shape?: BlendShapeId; // blend function over the window (unset = "ramp")
   cycles?: number;      // wave/stair count for the periodic shapes
+  rate?: number;        // "speed" style: the far end's hit-rate multiple of the tempo
 }
 
 /** A fresh row sweep: a filter opening across the first 8 bars (clamped to the track),
@@ -106,7 +107,7 @@ export function rowSweepWindow(sweep: RowSweep | undefined, barLimit: number): S
   const from = (fromBar - 1) * STEPS_PER_BAR;
   const to = toBar * STEPS_PER_BAR;
   if (to <= from) return null;
-  return { from, to, mode: sweep.mode, modes: sweep.modes, side: sweep.side, fromV: sweep.from, toV: sweep.to, curve: sweep.curve, dir: sweep.dir, shape: sweep.shape, cycles: sweep.cycles };
+  return { from, to, mode: sweep.mode, modes: sweep.modes, side: sweep.side, fromV: sweep.from, toV: sweep.to, curve: sweep.curve, dir: sweep.dir, shape: sweep.shape, cycles: sweep.cycles, rate: sweep.rate };
 }
 
 /** All of a row's live sweeps as engine windows (off / empty ones dropped). */

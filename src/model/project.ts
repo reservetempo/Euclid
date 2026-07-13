@@ -62,6 +62,7 @@ export interface RowSweepJSON {
   dir?: "in" | "out";
   shape?: BlendShapeId;
   cycles?: number;
+  rate?: number;
 }
 
 export interface ColorJSON {
@@ -137,7 +138,7 @@ const cloneLoop = (l: Loop): LoopJSON => ({
 
 const cloneSweep = (s: RowSweep): RowSweepJSON => ({
   on: s.on, fromBar: s.fromBar, toBar: s.toBar, mode: s.mode, modes: s.modes?.slice(), side: s.side,
-  from: s.from, to: s.to, curve: s.curve, dir: s.dir, shape: s.shape, cycles: s.cycles,
+  from: s.from, to: s.to, curve: s.curve, dir: s.dir, shape: s.shape, cycles: s.cycles, rate: s.rate,
 });
 
 export function serialize(
@@ -286,7 +287,9 @@ function readRule(rv: unknown): PlacementRule {
   };
 }
 
-const SWEEP_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo"];
+// Row sweeps take the full silence-fade palette, "speed" included (its warp is rebuilt
+// from the compiled lanes on load — see sweepsMessage in lines.ts; only `rate` persists).
+const SWEEP_MODES: TransitionMode[] = ["fade", "filter", "wash", "thin", "drive", "crush", "echo", "speed"];
 
 /** Validate a stored per-row RowSweep; returns undefined for anything malformed. */
 function readSweep(sv: unknown): RowSweep | undefined {
@@ -296,6 +299,7 @@ function readSweep(sv: unknown): RowSweep | undefined {
   const modes = readModes(s.modes, SWEEP_MODES);
   const mode = modes[0]
     ?? (SWEEP_MODES.includes(s.mode as TransitionMode) ? (s.mode as TransitionMode) : "filter");
+  const hasSpeed = mode === "speed" || modes.includes("speed");
   return {
     on: s.on === true,
     fromBar: Math.max(1, Math.round(Number(s.fromBar) || 1)),
@@ -309,6 +313,9 @@ function readSweep(sv: unknown): RowSweep | undefined {
     dir: s.dir === "in" || s.dir === "out" ? s.dir : undefined,
     shape: readShape(s.shape),
     cycles: readCycles(s.cycles),
+    rate: hasSpeed
+      ? (typeof s.rate === "number" && isFinite(s.rate) ? Math.max(0.25, Math.min(4, s.rate)) : 2)
+      : undefined,
   };
 }
 
