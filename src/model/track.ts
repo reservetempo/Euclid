@@ -39,8 +39,8 @@ export type EveryRule =
                                         // series later (default/absent = bar 1)
   | { kind: "pow2" }                   // at bars 1, 2, 4, 8, 16 …
   | { kind: "at"; bars: number[] }     // at explicit, 1-indexed bar numbers
-  | { kind: "fill" };                  // every bar — fills gaps left by higher-priority
-                                       // solo loops (order it last to "fill the blanks")
+  | { kind: "fill" };                  // "fill the blanks" — every bar the colour's OTHER
+                                       // loops leave empty (any mode; masked in compile)
 
 /** A loop's placement: where it lands, how long each hit lasts, and how it stacks. The
     `seed` fixes a weighted roll (kept until re-rolled); `seedHistory` is the Back stack. */
@@ -330,8 +330,9 @@ export function placementsFor(loop: Loop, barLimit: number): Interval[] {
     // Explicit 1-indexed bar numbers the user typed; stored 0-indexed here.
     every.bars.forEach((b, i) => push(Math.round(b) - 1, lenAt(i)));
   } else if (every.kind === "fill" || every.kind === "dice") {
-    // Every bar (tiled by the length cycle). "fill" masks behind higher-priority solo
-    // loops; a stray "dice" loop (its pool resolved by dicePoolLane) tiles as a fallback.
+    // Every bar (tiled by the length cycle) — the raw, unmasked placement. compile() clips a
+    // "fill" loop to the colour's blank bars (placementsMasked); a stray "dice" loop (its pool
+    // resolved by dicePoolLane) tiles as a fallback.
     let i = 0;
     for (let b = 0; b < barLimit; ) { const len = lenAt(i++); push(b, len); b += len; }
   } else {
@@ -444,13 +445,14 @@ function packOverlap(intervals: Interval[]): Interval[][] {
 
 /** Resolve solo loops of a colour to a SINGLE lane: paint a bar-resolution timeline where
     the highest-priority (earliest in the list) loop covering a bar wins, then coalesce
-    equal-loop runs into intervals. */
-function soloLane(soloLoops: Loop[], barLimit: number): Interval[] {
+    equal-loop runs into intervals. `blocked` marks bars already taken by the colour's other
+    loops — a "fill" loop only lands on the blanks (see placementsMasked). */
+function soloLane(soloLoops: Loop[], barLimit: number, blocked?: boolean[]): Interval[] {
   const owner: (Loop | null)[] = new Array(barLimit).fill(null);
   const prio = new Map<Loop, number>();
   soloLoops.forEach((lp, i) => prio.set(lp, i));
   for (const lp of soloLoops) {
-    for (const iv of placementsFor(lp, barLimit)) {
+    for (const iv of placementsMasked(lp, barLimit, blocked)) {
       const end = Math.min(barLimit, iv.startBar + iv.forBars);
       for (let b = iv.startBar; b < end; b++) {
         const cur = owner[b];
@@ -498,6 +500,42 @@ function dicePoolLane(diceLoops: Loop[], barLimit: number): Interval[] {
   return out;
 }
 
+/** The bars (0-indexed, true = taken) a colour's NON-fill loops sound on, across EVERY mode
+    (solo, overlap, dice). A "fill" loop fills only the bars left false here — the blanks — so
+    "fill the blanks" holds whatever the other loops' modes/order are (not just solo, as the
+    priority-resolved soloLane alone would give). Fill loops are excluded so they never block
+    each other into total silence. */
+function nonFillCoverage(loops: Loop[], barLimit: number): boolean[] {
+  const covered = new Array(barLimit).fill(false);
+  const mark = (iv: Interval) => {
+    const end = Math.min(barLimit, iv.startBar + iv.forBars);
+    for (let b = Math.max(0, iv.startBar); b < end; b++) covered[b] = true;
+  };
+  for (const lp of loops) {
+    if (lp.rule.every.kind === "fill" || lp.rule.every.kind === "dice") continue;
+    for (const iv of placementsFor(lp, barLimit)) mark(iv);
+  }
+  for (const iv of dicePoolLane(loops.filter((l) => l.rule.every.kind === "dice"), barLimit)) mark(iv);
+  return covered;
+}
+
+/** A loop's placements, but with "fill" loops clipped to the blank bars (`!blocked[b]`): each
+    maximal blank run becomes one placement (its pattern cycles to fill it, as before). Non-fill
+    loops — and fill loops with no `blocked` mask — are unchanged (plain placementsFor). */
+function placementsMasked(loop: Loop, barLimit: number, blocked?: boolean[]): Interval[] {
+  if (loop.rule.every.kind !== "fill" || !blocked) return placementsFor(loop, barLimit);
+  const out: Interval[] = [];
+  let b = 0;
+  while (b < barLimit) {
+    if (blocked[b]) { b++; continue; }
+    let e = b + 1;
+    while (e < barLimit && !blocked[e]) e++;
+    out.push({ startBar: b, forBars: e - b, loop });
+    b = e;
+  }
+  return out;
+}
+
 /** Compile a whole track into engine lanes: per colour, one solo lane (priority-resolved),
     one dice-pool lane (proportional fill), plus one lane per simultaneous overlap. Lanes
     carry their colour; each spans barLimit. */
@@ -517,15 +555,19 @@ export function compile(colors: ColorTrack[], barLimit: number): Lane[] {
     const dice = loops.filter((l) => l.rule.every.kind === "dice");
     const solo = loops.filter((l) => l.rule.every.kind !== "dice" && l.rule.mode === "solo");
     const overlap = loops.filter((l) => l.rule.every.kind !== "dice" && l.rule.mode === "overlap");
+    // Bars already sounded by this colour's non-fill loops (any mode). A "fill" loop lands
+    // only on the blanks — so it fills the gaps left by an overlap/dice loop too, not just
+    // by higher-priority solo loops.
+    const blocked = nonFillCoverage(loops, limit);
 
-    const soloIvs = soloLane(solo, limit);
+    const soloIvs = soloLane(solo, limit, blocked);
     if (soloIvs.length) add(buildLane(soloIvs, limit));
 
     const diceIvs = dicePoolLane(dice, limit);
     if (diceIvs.length) add(buildLane(diceIvs, limit));
 
     const overlapIvs: Interval[] = [];
-    for (const lp of overlap) overlapIvs.push(...placementsFor(lp, limit));
+    for (const lp of overlap) overlapIvs.push(...placementsMasked(lp, limit, blocked));
     for (const laneIvs of packOverlap(overlapIvs)) add(buildLane(laneIvs, limit));
   }
   return lanes;

@@ -3445,7 +3445,7 @@ export class App {
     } else if (r.every.kind === "fill") {
       const hint = document.createElement("p");
       hint.className = "hint placement-hint";
-      hint.textContent = "Fills every bar. Order it below other solo loops (▼) so they win and it fills only the gaps.";
+      hint.textContent = "Sounds on every bar this colour's other loops leave empty — it fills the blanks around them, whatever their mode.";
       wrap.append(hint);
     } else if (r.every.kind === "dice") {
       const hint = document.createElement("p");
