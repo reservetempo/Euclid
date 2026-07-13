@@ -350,17 +350,17 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .loop-view-btn.on { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
 .loop-view-btn svg { display: block; }
 
-/* Track view's top-left control: the track length (scrub/tap to edit) as a pill, with
-   the loop's total seconds beside it in small muted type. */
-.loop-meta { display: flex; align-items: center; gap: 8px; }
+/* Track view's top-left control: the track length (scrub/tap to edit) as a compact pill,
+   with the loop's total seconds beside it in small muted type. */
+.loop-meta { display: flex; align-items: center; gap: 6px; }
 .loop-meta-bars {
-  width: auto; padding: 9px 13px; border-radius: 21px; text-align: center;
-  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
-  border: 1.5px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  color: var(--accent); font: inherit; font-size: 13px; font-weight: 700;
+  width: auto; padding: 5px 9px; border-radius: 14px; text-align: center;
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent); font: inherit; font-size: 12px; font-weight: 700;
   font-variant-numeric: tabular-nums; cursor: ns-resize; touch-action: none;
 }
-.loop-meta-secs { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.loop-meta-secs { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* Rings visualizer (the sequencer's canvas, centred) with the Play-range button at its
    top-left and the Mixer button at its top-right, floating on a soft glow. */
@@ -453,6 +453,14 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 }
 .play-range-cell { flex: 1; min-width: 0; border-radius: 2px; background: rgba(154, 168, 204, 0.09); }
 .play-range-cell.tick { background: rgba(154, 168, 204, 0.2); }
+/* Multi-select bar strip (the "At bars" picker): lit cells for the chosen bars. */
+.multi-bar-strip { cursor: pointer; }
+.play-range-cell.sel {
+  background: color-mix(in srgb, var(--vc, var(--accent)) 60%, transparent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--vc, var(--accent)) 45%, transparent);
+}
+.atbars-pick { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.atbars-pick-hint { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .play-range-band {
   position: absolute; top: -3px; bottom: -3px; z-index: 2; pointer-events: none;
   background: color-mix(in srgb, var(--accent) 24%, transparent);

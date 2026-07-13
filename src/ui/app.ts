@@ -698,6 +698,7 @@ export class App {
       bars.type = "text";
       bars.readOnly = true;
       bars.inputMode = "none";
+      bars.size = 8; // fit "512 bars" without an input's default 20-char width
       bars.className = "loop-meta-bars";
       bars.title = "Track length";
       bars.value = `${this.track.barLimit} bars`;
@@ -851,6 +852,69 @@ export class App {
       e.preventDefault();
       anchor = barAt(e.clientX);
       drag(anchor);
+      try { strip.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
+      strip.addEventListener("pointermove", onMove);
+      strip.addEventListener("pointerup", onUp);
+      strip.addEventListener("pointercancel", onUp);
+    };
+    return strip;
+  }
+
+  /** A MULTI-select bar strip (the play-range gesture, but several bars/ranges at once):
+      tap a bar to toggle it; drag to paint a contiguous span on or off (the anchor bar's
+      starting state decides which). `read`/`write` are the 1-indexed selected bars; `write`
+      fires live during the drag (engine-only), and `commit` runs once on release for the
+      full re-render. Tinted by the container's `--vc`. */
+  private multiBarStrip(
+    barLimit: number,
+    read: () => number[],
+    write: (bars: number[]) => void,
+    commit: () => void,
+  ): HTMLElement {
+    const strip = document.createElement("div");
+    strip.className = "play-range-strip multi-bar-strip";
+    const cells: HTMLElement[] = [];
+    for (let b = 0; b < barLimit; b++) {
+      const cell = document.createElement("span");
+      cell.className = "play-range-cell" + (b % 4 === 0 ? " tick" : "");
+      cells.push(cell);
+      strip.append(cell);
+    }
+    const paint = (set: Set<number>) => {
+      for (let b = 0; b < barLimit; b++) cells[b].classList.toggle("sel", set.has(b + 1));
+    };
+    paint(new Set(read()));
+
+    const barAt = (clientX: number) => {
+      const rect = strip.getBoundingClientRect();
+      const frac = Math.max(0, Math.min(0.9999, (clientX - rect.left) / Math.max(1, rect.width)));
+      return Math.max(1, Math.min(barLimit, Math.floor(frac * barLimit) + 1));
+    };
+    // Each drag paints the swept span [anchor, bar] to `paintOn`, computed fresh from the
+    // pre-drag snapshot so sweeping back and forth doesn't accumulate.
+    let base = new Set<number>();
+    let anchor = 0, paintOn = true;
+    const applyTo = (bar: number): number[] => {
+      const lo = Math.min(anchor, bar), hi = Math.max(anchor, bar);
+      const next = new Set(base);
+      for (let i = lo; i <= hi; i++) { if (paintOn) next.add(i); else next.delete(i); }
+      paint(next);
+      return [...next].sort((a, b) => a - b);
+    };
+    const onMove = (e: PointerEvent) => write(applyTo(barAt(e.clientX)));
+    const onUp = (e: PointerEvent) => {
+      strip.removeEventListener("pointermove", onMove);
+      strip.removeEventListener("pointerup", onUp);
+      strip.removeEventListener("pointercancel", onUp);
+      try { strip.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+      commit();
+    };
+    strip.onpointerdown = (e) => {
+      e.preventDefault();
+      base = new Set(read());
+      anchor = barAt(e.clientX);
+      paintOn = !base.has(anchor);
+      write(applyTo(anchor));
       try { strip.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
       strip.addEventListener("pointermove", onMove);
       strip.addEventListener("pointerup", onUp);
@@ -3161,8 +3225,8 @@ export class App {
         return s <= 1 ? "bar 1" : `bar ${s}`;
       }));
     } else if (r.every.kind === "at") {
-      // Manual bar list: a read-only field that opens the custom list numpad (the native
-      // numeric keyboard has no comma, so multi-bar entry needs our own pad).
+      // Manual bar list: a read-only field (tap → list numpad for precise / large-track
+      // entry) plus a play-range-style strip you tap or drag to pick MULTIPLE bars/ranges.
       const row = document.createElement("div");
       row.className = "placement-row placement-atbars";
       const lbl = document.createElement("span");
@@ -3172,12 +3236,12 @@ export class App {
       inp.type = "text";
       inp.readOnly = true;
       inp.inputMode = "none";
-      inp.placeholder = "tap to set — e.g. 1, 5, 9";
-      const shown = () => (r.every as { bars: number[] }).bars.join(", ");
-      inp.value = shown();
+      inp.placeholder = "tap or drag below — e.g. 1, 5, 9";
+      const readBars = () => (r.every as { bars: number[] }).bars;
+      inp.value = readBars().join(", ");
       inp.onclick = () => this.openNumpad({
         title: "At bars",
-        value: shown() || "—",
+        value: readBars().join(", ") || "—",
         color: loop.soundId >= 0 ? loop.color : undefined,
         list: true,
         onSubmitList: (raw) => {
@@ -3189,6 +3253,26 @@ export class App {
       });
       row.append(lbl, inp);
       wrap.append(row);
+
+      // The multi-select bar strip: tap toggles a bar, drag paints a span on/off.
+      const pick = document.createElement("div");
+      pick.className = "atbars-pick";
+      pick.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+      const readout = document.createElement("span");
+      readout.className = "atbars-pick-hint";
+      const syncReadout = () => {
+        const bs = readBars();
+        readout.textContent = bs.length ? `bars ${bs.join(", ")}` : "tap or drag bars to pick";
+      };
+      syncReadout();
+      pick.append(readout);
+      pick.append(this.multiBarStrip(
+        Math.max(1, this.track.barLimit),
+        readBars,
+        (bars) => { r.every = { kind: "at", bars }; this.recompile(); inp.value = bars.join(", "); syncReadout(); },
+        rerender,
+      ));
+      wrap.append(pick);
     } else if (r.every.kind === "fill") {
       const hint = document.createElement("p");
       hint.className = "hint placement-hint";
