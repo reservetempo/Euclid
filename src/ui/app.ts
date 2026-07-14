@@ -133,6 +133,9 @@ export class App {
   private placementTab: "loop" | "transition" | "sound" = "loop"; // which sub-page of the loop popup
   // Loop tab sub-view: the drag grid (default), or the panels the two buttons open.
   private loopSub: "grid" | "options" | "life" = "grid";
+  // Loop-tab drag grid: rows shown (each row = 16 bars). A view preference — the grid
+  // auto-grows past it so the whole track always fits.
+  private placeGridRows = 8;
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
   private soundName = "";
@@ -3113,16 +3116,21 @@ export class App {
     return row;
   }
 
-  /** The expanded drag grid on the Loop tab: 16 bars per row (16 rows to start), a fast
-      way to place a loop across the arrangement. Tap a bar to toggle it; drag to paint a
-      contiguous run of bars on/off. Cells past the track length are dimmed; painting into
-      them GROWS the track to fit. Bars already covered by ANOTHER loop of this colour are
-      marked (a clash/occupancy hint). Editing sets the rule to "At bars" (seeded from the
+  /** The expanded drag grid on the Loop tab: 8 squares per row, each worth 2 bars (a row
+      = 16 bars), with a − / + stepper choosing how many rows show (auto-grown so the whole
+      track always fits). Tap a square to toggle its 2 bars; drag to paint a contiguous run
+      on/off. Squares past the track length are dimmed; painting into them GROWS the track
+      to fit. Squares covered by ANOTHER loop of this colour are marked (a clash/occupancy
+      hint); a half-lit square has only one of its 2 bars placed (from an algorithmic rule
+      or the numeric "At bars" picker). Editing sets the rule to "At bars" (seeded from the
       current placement, so switching from an algorithmic rule keeps its bars). */
   private placementGrid(loop: Loop, rerender: () => void): HTMLElement {
-    const COLS = 16;
+    const COLS = 8, SPAN = 2; // squares per row × bars per square
+    const barsPerRow = COLS * SPAN;
     const barLimit = Math.max(1, this.track.barLimit);
-    const rows = Math.max(16, Math.ceil(barLimit / COLS));
+    const needRows = Math.ceil(barLimit / barsPerRow); // rows the track itself fills
+    const maxRows = Math.ceil(512 / barsPerRow);       // rows at the 512-bar track cap
+    const rows = Math.min(maxRows, Math.max(needRows, this.placeGridRows));
     const total = rows * COLS;
     const c = this.colorOf(loop);
 
@@ -3166,7 +3174,25 @@ export class App {
       clear.disabled = bs.length === 0;
     };
     clear.onclick = () => { loop.rule.every = { kind: "at", bars: [] }; this.recompile(); rerender(); };
-    head.append(lbl, readout, clear);
+    // Row-count stepper: how much of the arrangement the grid shows. − stops at the rows
+    // the track already fills (the grid never hides placed bars); + stops at the track cap.
+    const rowCtl = document.createElement("span");
+    rowCtl.className = "place-grid-rowctl";
+    const mkStep = (txt: string, delta: number, atLimit: boolean) => {
+      const b = document.createElement("button");
+      b.className = "place-grid-rowbtn";
+      b.textContent = txt;
+      b.title = delta < 0 ? "Fewer rows" : "More rows";
+      b.disabled = atLimit;
+      b.onclick = () => { this.placeGridRows = rows + delta; rerender(); };
+      return b;
+    };
+    const rowsLbl = document.createElement("span");
+    rowsLbl.className = "place-grid-rowsn";
+    rowsLbl.textContent = `${rows} row${rows === 1 ? "" : "s"}`;
+    rowsLbl.title = `${rows * barsPerRow} bars shown`;
+    rowCtl.append(mkStep("−", -1, rows <= Math.max(1, needRows)), rowsLbl, mkStep("+", 1, rows >= maxRows));
+    head.append(lbl, readout, rowCtl, clear);
     wrap.append(head);
 
     const grid = document.createElement("div");
@@ -3174,27 +3200,34 @@ export class App {
     grid.style.setProperty("--cols", String(COLS));
     const cells: HTMLElement[] = [];
     for (let i = 0; i < total; i++) {
-      const bar = i + 1;
+      const bar = i * SPAN + 1; // first bar of this square's 2-bar block
       const cell = document.createElement("div");
       cell.className = "place-cell"
         + (bar > barLimit ? " out" : "")
         + ((i % COLS) === 0 ? " rowstart" : "")
         + (((bar - 1) % 4) === 0 ? " beat" : "");
       cell.dataset.bar = String(bar);
-      if (occupied.has(bar)) cell.classList.add("occ");
+      if (occupied.has(bar) || occupied.has(bar + 1)) cell.classList.add("occ");
       cells.push(cell);
       grid.append(cell);
     }
     const paint = (set: Set<number>) => {
-      for (let i = 0; i < total; i++) cells[i].classList.toggle("sel", set.has(i + 1));
+      for (let i = 0; i < total; i++) {
+        const a = set.has(i * SPAN + 1), b = set.has(i * SPAN + 2);
+        cells[i].classList.toggle("sel", a || b);
+        cells[i].classList.toggle("half-l", a && !b);
+        cells[i].classList.toggle("half-r", b && !a);
+      }
     };
     paint(new Set(ownList()));
     wrap.append(grid);
     syncHead();
 
-    // Drag paints the linear bar range [anchor..bar] to the anchor's inverse state, from a
-    // pre-drag snapshot (so back-and-forth doesn't accumulate). elementFromPoint reads the
-    // cell under the pointer (robust to the grid gaps).
+    // Drag paints the linear square range [anchor..bar] to the anchor's inverse state,
+    // from a pre-drag snapshot (so back-and-forth doesn't accumulate). Anchors are block
+    // START bars (what dataset.bar holds), so the walk steps by SPAN and each square
+    // toggles both of its bars. elementFromPoint reads the cell under the pointer (robust
+    // to the grid gaps).
     const barAt = (x: number, y: number): number | null => {
       const el = document.elementFromPoint(x, y) as HTMLElement | null;
       const bAttr = el?.closest(".place-cell") as HTMLElement | null;
@@ -3214,7 +3247,9 @@ export class App {
     const applyTo = (bar: number) => {
       const lo = Math.min(anchor, bar), hi = Math.max(anchor, bar);
       const next = new Set(base);
-      for (let i = lo; i <= hi; i++) { if (paintOn) next.add(i); else next.delete(i); }
+      for (let s = lo; s <= hi; s += SPAN) {
+        for (let b = s; b < s + SPAN; b++) { if (paintOn) next.add(b); else next.delete(b); }
+      }
       paint(next);
       return next;
     };
@@ -3237,7 +3272,8 @@ export class App {
       e.preventDefault();
       base = new Set(ownList());
       anchor = bar; lastBar = bar;
-      paintOn = !base.has(bar);
+      // A square with EITHER of its bars placed erases on tap (so half squares clear).
+      paintOn = !base.has(bar) && !base.has(bar + 1);
       commitLive(applyTo(bar));
       try { grid.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
       grid.addEventListener("pointermove", onMove);
@@ -3700,10 +3736,11 @@ export class App {
   }
 
   /** The blend-FUNCTION controls shared by loop fades and row sweeps: a Shape picker
-      (see BLEND_SHAPES — line, s-curve, parabola, sine, cos, zigzag, wobble, steps),
-      the shape's 0..1 knob under its own name (Curve / Steep / Skew / Warp / Depth),
-      a Waves/Steps count for the periodic shapes, and the ease/skew direction where
-      it applies. Mutates `env` in place; every change recompiles so it's heard live. */
+      (see BLEND_SHAPES — line, s-curve, parabola, sine, cos, zigzag, wobble, steps,
+      half wave), the shape's 0..1 knob under its own name (Curve / Steep / Skew / Warp /
+      Depth / the half wave's Gap), a Waves/Steps count for the periodic shapes, and the
+      ease/skew direction where it applies. Mutates `env` in place; every change
+      recompiles so it's heard live. */
   private shapeControls(
     env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number },
     rerender: () => void,

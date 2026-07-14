@@ -1,7 +1,8 @@
-// The deep sound editor for one loop's sound, opened via "Full Parameters": the
-// shuffle section (one global Shuffle + Randomness/Spread/Max-len/Snap/Seed), the
-// sound's JSON, then every parameter grouped by category. Values edit live; manual
-// numeric entry may exceed the preset range (clamped only to the absolute base range).
+// The deep sound editor for one loop's sound, opened via "Full Parameters": a tab bar
+// over the sections — the shuffle section (one global Shuffle + Randomness/Spread/
+// Max-len/Snap/Seed), each parameter category, and the sound's JSON — showing ONE
+// section at a time instead of a long scroll. Values edit live; manual numeric entry
+// may exceed the preset range (clamped only to the absolute base range).
 
 import { DrumKit } from "../model/drumKit";
 import { DrumType } from "../model/drums";
@@ -16,9 +17,19 @@ import {
   mkBtn, textOn, selectRow, seedRow, randomnessRow, shuffleButton,
 } from "./controls";
 
-const ALL_GROUPS = [
-  ParamGroup.Tone, ParamGroup.Amp, ParamGroup.Filter, ParamGroup.Lfo, ParamGroup.Fx,
-  ParamGroup.Life, ParamGroup.Output,
+// The tab bar over the editor's sections: Shuffle first (the main page), then the
+// parameter categories, JSON last. Labels are short so the pills wrap tidily.
+type SoundTab = "shuffle" | "json" | ParamGroup;
+const SOUND_TABS: { key: SoundTab; label: string }[] = [
+  { key: "shuffle",          label: "Shuffle" },
+  { key: ParamGroup.Tone,    label: "Tone" },
+  { key: ParamGroup.Amp,     label: "Amp" },
+  { key: ParamGroup.Filter,  label: "Filter" },
+  { key: ParamGroup.Lfo,     label: "LFO" },
+  { key: ParamGroup.Fx,      label: "FX" },
+  { key: ParamGroup.Life,    label: "Life" },
+  { key: ParamGroup.Output,  label: "Out" },
+  { key: "json",             label: "JSON" },
 ];
 
 export interface SoundViewCallbacks {
@@ -33,6 +44,7 @@ export class SoundView {
   readonly el = document.createElement("div");
   private st = defaultShuffleSettings();
   private rolled = false; // one-shot: spin the die on the rebuild right after a shuffle
+  private tab: SoundTab = "shuffle"; // active section (kept across live-edit rebuilds)
 
   constructor(
     private kit: DrumKit,
@@ -58,9 +70,23 @@ export class SoundView {
 
   private build(): void {
     this.el.innerHTML = "";
-    this.el.append(this.shuffleSection());
-    this.el.append(this.jsonBox());
-    for (const g of ALL_GROUPS) this.el.append(this.category(g));
+    this.el.append(this.tabNav());
+    if (this.tab === "shuffle") this.el.append(this.shuffleSection());
+    else if (this.tab === "json") this.el.append(this.jsonBox());
+    else this.el.append(this.category(this.tab));
+  }
+
+  // The wrapping pill bar picking which section shows (same segmented style as the
+  // loop popup's nav, in this editor's own accent).
+  private tabNav(): HTMLElement {
+    const nav = document.createElement("div");
+    nav.className = "placement-seg sound-nav";
+    for (const t of SOUND_TABS) {
+      const b = mkBtn(t.label, "seg-btn" + (this.tab === t.key ? " on" : ""));
+      b.onclick = () => { if (this.tab !== t.key) { this.tab = t.key; this.build(); } };
+      nav.append(b);
+    }
+    return nav;
   }
 
   // Presets: a single button labelled with the active preset's name + colour (Full

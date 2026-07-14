@@ -180,6 +180,15 @@ function shapeT(t, env) {
       const n = Math.max(2, Math.round(env.cycles == null ? 4 : env.cycles));
       return Math.min(1, Math.floor(bendT(t, c, env.dir) * n) / (n - 1));
     }
+    case "halfwave": {
+      // Half-sine humps centred in their slots, flat rest between; `curve` = the gap
+      // (see blendShape in lines.ts — the copies must match).
+      const n = cyc(3);
+      const w = 1 - 0.9 * c;
+      const ph = (t * n) % 1;
+      const lo = (1 - w) / 2;
+      return ph < lo || ph > lo + w ? 0 : Math.sin(Math.PI * ((ph - lo) / w));
+    }
     default: // "ramp" / unset
       return bendT(t, c, env.dir);
   }

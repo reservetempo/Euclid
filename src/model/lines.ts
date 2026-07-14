@@ -112,10 +112,13 @@ export interface LifePlacement {
 //   zigzag   — the triangle cousin of sine: linear back-and-forth passes
 //   wobble   — a ramp that oscillates on the way but always lands; `curve` = depth
 //   steps    — a staircase: `cycles` flat levels jumping to the far end
+//   halfwave — `cycles` half-sine humps (0→1→0) with FLAT space between them; `curve` =
+//              the gap — 0 humps touch (|sin|), 1 thin spikes with mostly rest between
 // For sine/cos/zigzag/steps, `curve` + `dir` WARP TIME instead (the same power bend),
 // squeezing the waves/stairs toward one end — an accelerating oscillation.
 export type BlendShapeId =
-  | "ramp" | "scurve" | "parabola" | "sine" | "cos" | "zigzag" | "wobble" | "steps";
+  | "ramp" | "scurve" | "parabola" | "sine" | "cos" | "zigzag" | "wobble" | "steps"
+  | "halfwave";
 
 /** Per-shape UI spec: what the `curve` knob means for it, and whether the ease
     direction / wave count apply (the UI hides the rows that don't). */
@@ -137,6 +140,7 @@ export const BLEND_SHAPES: BlendShapeSpec[] = [
   { id: "zigzag",   label: "Zigzag",   curveLabel: "Warp",  usesDir: true,  usesCycles: true,  cyclesDefault: 1.5 },
   { id: "wobble",   label: "Wobble",   curveLabel: "Depth", usesDir: false, usesCycles: true,  cyclesDefault: 2 },
   { id: "steps",    label: "Steps",    curveLabel: "Warp",  usesDir: true,  usesCycles: true,  cyclesDefault: 4 },
+  { id: "halfwave", label: "Half wave", curveLabel: "Gap",  usesDir: false, usesCycles: true,  cyclesDefault: 3 },
 ];
 
 export const blendShapeSpec = (id: BlendShapeId | undefined): BlendShapeSpec =>
@@ -192,6 +196,15 @@ export function blendShape(
     case "steps": {
       const n = Math.max(2, Math.round(env.cycles ?? 4));
       return Math.min(1, Math.floor(bendProgress(t, c, env.dir) * n) / (n - 1));
+    }
+    case "halfwave": {
+      // `cycles` half-sine humps, each centred in its slot with flat rest around it;
+      // `curve` = the gap — 0 humps touch (|sin|), 1 thin spikes (width floors at 10%).
+      const n = cyc(3);
+      const w = 1 - 0.9 * c; // hump width as a fraction of its slot
+      const ph = (t * n) % 1;
+      const lo = (1 - w) / 2;
+      return ph < lo || ph > lo + w ? 0 : Math.sin(Math.PI * ((ph - lo) / w));
     }
     default: // "ramp" / unset — the old bent line
       return bendProgress(t, c, env.dir);
