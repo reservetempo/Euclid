@@ -1758,8 +1758,9 @@ export class App {
       }, rerender, () => `${g.bend}%`));
     }
     if (spec.uses.includes("cycles")) {
+      // Fractional wave counts are honoured as typed (the numpad's dot key).
       controls.append(this.numRow("Waves", () => g.cycles, (n) => {
-        g.cycles = Math.max(1, Math.min(12, Math.round(n)));
+        g.cycles = Math.round(Math.max(1, Math.min(12, n)) * 100) / 100;
       }, rerender, () => `${g.cycles} wave${g.cycles === 1 ? "" : "s"}`));
     }
     // How forgiving the lattice is: the thickness of the note (pitch) and step (time)
@@ -2755,10 +2756,11 @@ export class App {
     // Speed's far-end hit rate: >1× the hits crowd together (rush), <1× they stretch
     // apart (drag). The near/steady end is always the tempo (1×).
     if (envHasSpeed(sweep)) {
-      card.append(this.numRow("Rate", () => Math.round((sweep.rate ?? 2) * 100), (n) => {
-        sweep.rate = Math.max(0.25, Math.min(4, Math.round(n) / 100));
+      // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
+      card.append(this.numRow("Rate", () => Math.round((sweep.rate ?? 2) * 100) / 100, (n) => {
+        sweep.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
         this.recompile();
-      }, rerender, () => `${(sweep.rate ?? 2).toFixed(2)}×`));
+      }, rerender, () => `${(sweep.rate ?? 2).toFixed(2)}×`, 0.05));
     }
 
     // The blend FUNCTION the sweep follows across its window: shape picker, the shape's
@@ -3681,10 +3683,11 @@ export class App {
       // Speed (stacked or alone) is timing, not a swept param: the far end's hit rate.
       const tonal = active.filter((m) => m !== "speed");
       if (active.includes("speed")) {
-        controls.append(this.numRow("Rate", () => Math.round((env.rate ?? 2) * 100), (n) => {
-          env.rate = Math.max(0.25, Math.min(4, Math.round(n) / 100));
+        // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
+        controls.append(this.numRow("Rate", () => Math.round((env.rate ?? 2) * 100) / 100, (n) => {
+          env.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
           this.recompile();
-        }, rerender, () => `${(env.rate ?? 2).toFixed(2)}×`));
+        }, rerender, () => `${(env.rate ?? 2).toFixed(2)}×`, 0.05));
       }
       if (tonal.length === 1) {
         // A single tonal style sweeps ONE parameter From → To (see TRANSITION_SWEEP; with
@@ -3778,14 +3781,16 @@ export class App {
           this.recompile();
         }, rerender, () => `${Math.round(env.cycles ?? spec.cyclesDefault)} levels`));
       } else {
-        // Quarter-wave resolution: half-integers land at the far end, integers return home.
-        out.push(this.numRow("Waves", () => Math.round((env.cycles ?? spec.cyclesDefault) * 4), (n) => {
-          env.cycles = Math.max(0.25, Math.min(16, Math.round(n) / 4));
+        // In WAVE units: typed entry (the numpad's dot key) lands exactly as given;
+        // scrubbing steps by quarter waves (half-integers land at the far end,
+        // integers return home).
+        out.push(this.numRow("Waves", () => Math.round((env.cycles ?? spec.cyclesDefault) * 100) / 100, (n) => {
+          env.cycles = Math.round(Math.max(0.25, Math.min(16, n)) * 100) / 100;
           this.recompile();
         }, rerender, () => {
           const w = Math.round((env.cycles ?? spec.cyclesDefault) * 100) / 100;
           return `${w} wave${w === 1 ? "" : "s"}`;
-        }));
+        }, 0.25));
       }
     }
 
@@ -4316,9 +4321,10 @@ export class App {
     input.addEventListener("pointercancel", end);
   }
 
-  /** The custom on-screen numpad. Single-value by default (`onSubmit` gets the integer);
-      pass `list: true` for a comma-separated list (a comma key appears and `onSubmitList`
-      gets the raw string). A Clear (C) key wipes the buffer like a calculator. */
+  /** The custom on-screen numpad. Single-value by default (`onSubmit` gets the number;
+      a dot key allows decimals, e.g. 2.5 waves); pass `list: true` for a comma-separated
+      list (a comma key replaces the dot and `onSubmitList` gets the raw string). A Clear
+      (C) key wipes the buffer like a calculator. */
   private openNumpad(opts: {
     title: string;
     value: number | string;
@@ -4331,7 +4337,7 @@ export class App {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 
     const list = !!opts.list;
-    const maxLen = list ? 60 : 3;
+    const maxLen = list ? 60 : 6;
     let buf = "";
     const overlay = document.createElement("div");
     overlay.className = "numpad-overlay";
@@ -4360,7 +4366,7 @@ export class App {
     const close = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); };
     const submit = () => {
       if (list) opts.onSubmitList?.(buf);
-      else if (buf !== "") opts.onSubmit?.(parseInt(buf, 10));
+      else if (buf !== "" && !Number.isNaN(parseFloat(buf))) opts.onSubmit?.(parseFloat(buf));
       close();
     };
     const press = (d: string) => { if (buf.length < maxLen) { buf += d; refresh(); } };
@@ -4368,6 +4374,11 @@ export class App {
       // No leading comma, no doubling; a single ", " separator.
       if (buf === "" || buf.endsWith(",") || buf.endsWith(", ")) return;
       if (buf.length < maxLen) { buf += ", "; refresh(); }
+    };
+    const dot = () => {
+      // One decimal point per number; an empty buffer starts "0." like a calculator.
+      if (buf.includes(".")) return;
+      if (buf.length < maxLen) { buf = buf === "" ? "0." : buf + "."; refresh(); }
     };
     const backspace = () => { buf = buf.replace(/, $|.$/, ""); refresh(); };
     const clear = () => { buf = ""; refresh(); };
@@ -4384,11 +4395,12 @@ export class App {
     ["1", "2", "3", "4", "5", "6", "7", "8", "9"].forEach((d) => grid.append(key(d, "", () => press(d))));
     grid.append(key("C", "clear", clear), key("0", "", () => press("0")), key("⌫", "back", backspace));
     if (list) grid.append(key(",", "comma", comma), key("✓", "enter wide2", submit));
-    else grid.append(key("✓", "enter wide3", submit));
+    else grid.append(key(".", "comma", dot), key("✓", "enter wide2", submit));
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key >= "0" && e.key <= "9") press(e.key);
       else if (list && (e.key === "," || e.key === " ")) comma();
+      else if (!list && (e.key === "." || e.key === ",")) dot();
       else if (e.key === "Backspace") backspace();
       else if (e.key === "Enter") submit();
       else if (e.key === "Escape") close();
