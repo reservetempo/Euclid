@@ -1407,7 +1407,7 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   border-radius: var(--r-md); padding: 12px 14px;
   box-shadow: var(--card-shadow);
 }
-.cat-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.cat-head { position: relative; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .cat-name {
   font-weight: 700; font-size: 12px; margin-right: auto;
   text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted);
@@ -1568,6 +1568,60 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .lfo-head {
   font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 8px;
   text-transform: uppercase; letter-spacing: 0.07em;
+}
+
+/* Section help: the little "?" in each section head opens a glossary of that
+   section's controls; each entry expands into a plain-words description. */
+.help-btn {
+  flex: none; width: 24px; height: 24px; padding: 0;
+  border-radius: 50%; font-size: 12px; font-weight: 800; line-height: 1;
+  color: var(--muted); background: var(--panel2); border: 1px solid var(--line);
+}
+.help-btn.on {
+  color: var(--vc);
+  border-color: color-mix(in srgb, var(--vc) 50%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--vc) 22%, transparent);
+}
+@media (hover: hover) {
+  .help-btn:hover { color: var(--text); }
+}
+/* In the Back/Reset/Preset row (the Shuffle section's anchor) it sits at the far right. */
+.sound-lib .help-btn { margin-left: auto; }
+
+.help-panel {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  width: min(380px, 84vw); max-height: 55vh; overflow-y: auto;
+  background: var(--panel2-glass);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: 10px 12px; box-shadow: var(--pop-shadow);
+  animation: pop-in 0.18s ease-out;
+}
+.help-title {
+  font-size: 11px; font-weight: 700; color: var(--vc);
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+.help-hint { font-size: 11px; color: var(--muted); margin: 2px 0 4px; }
+.help-item { border-top: 1px solid var(--line-soft); }
+.help-item summary {
+  display: flex; align-items: center; gap: 8px;
+  list-style: none; cursor: pointer;
+  padding: 9px 2px; font-size: 13px; font-weight: 600; color: var(--text);
+  -webkit-user-select: none; user-select: none;
+}
+.help-item summary::-webkit-details-marker { display: none; }
+.help-item summary::after { content: "+"; margin-left: auto; color: var(--muted); font-weight: 700; }
+.help-item[open] summary { color: var(--vc); }
+.help-item[open] summary::after { content: "−"; color: var(--vc); }
+.help-desc { padding: 0 2px 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+/* The behind-the-scenes snippet: the real engine lines, styled like the JSON box. */
+.help-code {
+  margin: 0 2px 10px; padding: 8px 10px; overflow-x: auto;
+  background: var(--field); border: 1px solid var(--line-soft); border-radius: 8px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 10.5px; line-height: 1.5; color: var(--text);
+  white-space: pre; user-select: text; -webkit-user-select: text;
 }
 
 /* --- toast + confetti -------------------------------------------------------------- */

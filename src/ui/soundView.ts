@@ -16,6 +16,7 @@ import {
   defaultShuffleSettings, shuffleOptions, randomSeed,
   mkBtn, textOn, selectRow, seedRow, randomnessRow, shuffleButton,
 } from "./controls";
+import { helpButton, paramHelpItems, SHUFFLE_HELP, JSON_HELP } from "./soundHelp";
 
 // The tab bar over the editor's sections: Shuffle first (the main page), then the
 // parameter categories, JSON last. Labels are short so the pills wrap tidily.
@@ -186,7 +187,7 @@ export class SoundView {
     back.disabled = !this.kit.canBack(drum);
     back.onclick = () => { if (this.kit.backAll(drum)) this.afterReplace(); };
     reset.onclick = () => { this.kit.resetAll(drum); this.afterReplace(); };
-    br.append(back, reset, this.presetButton());
+    br.append(back, reset, this.presetButton(), helpButton("Shuffle", SHUFFLE_HELP));
     sec.append(br);
 
     sec.append(randomnessRow(this.st));
@@ -213,7 +214,7 @@ export class SoundView {
       copy.textContent = "Copied";
       setTimeout(() => { copy.textContent = "Copy"; }, 1200);
     };
-    head.append(name, copy);
+    head.append(name, copy, helpButton("Sound JSON", JSON_HELP));
     sec.append(head);
     const pre = document.createElement("pre");
     pre.className = "json-pre";
@@ -248,7 +249,7 @@ export class SoundView {
     const name = document.createElement("span");
     name.className = "cat-name";
     name.textContent = getParamGroupName(g);
-    head.append(name);
+    head.append(name, helpButton(getParamGroupName(g), paramHelpItems(this.drum, g)));
     sec.append(head);
 
     if (g === ParamGroup.Lfo) {
