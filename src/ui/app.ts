@@ -2091,7 +2091,6 @@ export class App {
       audition: () => this.auditionLoop(inst),
       onFullParams: () => { this.soundLoop = inst; this.soundReturn = "melody"; this.view = "sound"; this.render(); },
       context: () => this.shuffleContext(),
-      mates: () => this.breedMatesFor(inst),
       report: (kind) => this.reportLoopSound(inst, kind),
     });
   }
@@ -3355,7 +3354,6 @@ export class App {
         this.render();
       },
       context: () => this.shuffleContext(),
-      mates: () => this.breedMatesFor(loop),
       report: (kind) => this.reportLoopSound(loop, kind),
     });
     sheet.append(menu);
@@ -4256,18 +4254,6 @@ export class App {
 
   private shuffleContext(): { root: number; scale: number; bpm: number } {
     return { root: this.track.root, scale: this.track.scale, bpm: this.tempo };
-  }
-
-  /** Crossbreed partners: every OTHER loop across the track that carries a sound. */
-  private breedMatesFor(loop: Loop): { name: string; color: string; snapshot: number[] }[] {
-    const out: { name: string; color: string; snapshot: number[] }[] = [];
-    this.track.colors.forEach((c, ci) => {
-      c.loops.forEach((l, i) => {
-        if (l === loop || l.soundId < 0 || !l.snapshot.length) return;
-        out.push({ name: l.name || `Voice ${ci + 1} loop ${i + 1}`, color: l.color, snapshot: l.snapshot.slice() });
-      });
-    });
-    return out;
   }
 
   // --- number entry helpers ---------------------------------------------

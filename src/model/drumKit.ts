@@ -429,39 +429,6 @@ export class DrumParameters {
     this.set(ParamId.OscModRatio, Math.max(0.5, Math.round(this.get(ParamId.OscModRatio) * 2) / 2));
   }
 
-  /** Crossbreed: replace the current sound with a child of it and `other`. Discrete
-      params coin-flip a parent; continuous params mostly inherit one parent (60%)
-      or land on a random blend (40%), then a light mutation jitters a quarter of
-      them so children aren't pure interpolations. Volume and ChokeGroup stay ours
-      (mix state and kit wiring, not genes). Runs the same audibility/harshness
-      post-passes as a shuffle. Tolerates short (older) `other` snapshots. */
-  breedFrom(other: number[]): void {
-    const MUTATE_P = 0.25;
-    const MUTATE_SPAN = 0.06; // jitter as a fraction of the param's base range
-    for (let i = 0; i < NUM_PARAMS; i++) {
-      const id = i as ParamId;
-      if (id === ParamId.Volume || id === ParamId.ChokeGroup) continue;
-      const a = this.get(id);
-      const b = other[i];
-      if (b === undefined || Number.isNaN(b)) continue;
-      const s = getParamSpec(this.drum, id);
-      let v: number;
-      if (isDiscrete(s)) {
-        v = rand() < 0.5 ? a : b;
-      } else {
-        v = rand() < 0.6 ? (rand() < 0.5 ? a : b) : a + (b - a) * rand();
-        if (rand() < MUTATE_P) {
-          const r = baseRange(id);
-          v += (rand() * 2 - 1) * (r.max - r.min) * MUTATE_SPAN;
-        }
-      }
-      this.set(id, v);
-    }
-    this.dedupeLfoTargets();
-    this.ensureAudibleLevel();
-    this.tameHarshness();
-  }
-
   /** Keep a shuffled sound from coming out near-silent. Two common causes on a wide
       (Full Range) draw: the Tone and Noise source levels both land low, or the
       filter is set to cut the fundamental (LP below it / HP above it). This lifts
@@ -796,12 +763,6 @@ export class DrumKit {
   shuffleAll(drum: DrumType, opts: ShuffleOptions): void {
     this.pushUndo(drum);
     this.get(drum).randomize(opts);
-  }
-
-  /** Crossbreed the drum's current sound with another snapshot (undoable). */
-  breed(drum: DrumType, other: number[]): void {
-    this.pushUndo(drum);
-    this.get(drum).breedFrom(other);
   }
 
   resetAll(drum: DrumType): void {

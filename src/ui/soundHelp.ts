@@ -71,6 +71,8 @@ function paramDesc(id: ParamId): string {
       return "A separate decay for just the oscillator layer, so the tone can die quicker (or ring longer) than the noise. 0 = follow the main envelope.";
     case ParamId.NoiseDecay:
       return "A separate decay for just the noise layer — e.g. a short tone with a longer sizzle tail. 0 = follow the main envelope.";
+    case ParamId.Gate:
+      return "How long each hit is held 'on' before it releases, in seconds — the note-length control. With Sustain at 0 the hit already dies during its Decay, so gate barely matters; with any Sustain the sound holds for the whole gate and then Release fades it. Short gate = choked/staccato; long = it rings for the full hit.";
 
     // --- Filter & resonators ---
     case ParamId.FilterType:
@@ -270,6 +272,11 @@ if (this.toneEnvCoef > 0) { toneAmp *= this.toneEnv; this.toneEnv *= this.toneEn
       return `// engine.js — same trick for the noise layer, on its own clock
 this.noiseEnvCoef = noiseDec > 0.004 ? Math.exp(-1 / (noiseDec * this.sr)) : 0;
 if (this.noiseEnvCoef > 0) { noiseAmp *= this.noiseEnv; this.noiseEnv *= this.noiseEnvCoef; }`;
+    case ParamId.Gate:
+      return `// engine.js — the note is held for gateSamples, then note-off fires the release
+const gateSec = rd(s, P.Gate, 0); // per-sound; 0/absent → the sequencer's default gate
+this.gateSamples = gateSec > 0 ? Math.max(1, (gateSec * this.sr) | 0) : Math.max(1, gate);
+if (!this.noteOffSent && ++this.samplesPlayed >= this.gateSamples) this.adsr.noteOff();`;
 
     // --- Filter & resonators ---
     case ParamId.FilterType:

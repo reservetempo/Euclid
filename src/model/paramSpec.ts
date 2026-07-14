@@ -143,6 +143,9 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.Lfo1Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     case ParamId.Lfo2Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     case ParamId.Lfo3Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
+    // Note-hold in seconds; default 0.4 matches the legacy fixed gate (STEP_GATE_SEC).
+    // Not randomizable — it's a length choice, not part of the sound's character.
+    case ParamId.Gate:           return make("Gate", 0.02, 2, 0.4, 0.35, 0.005, "s", false);
     default:                     return make("?", 0, 1, 0, 1, 0.01, "");
   }
 }

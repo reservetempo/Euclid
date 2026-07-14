@@ -15,6 +15,7 @@ import {
   CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS,
   defaultShuffleSettings, shuffleOptions, randomSeed,
   mkBtn, textOn, selectRow, seedRow, randomnessRow, shuffleButton,
+  normFromRange, valueFromRange,
 } from "./controls";
 import { helpButton, paramHelpItems, SHUFFLE_HELP, JSON_HELP } from "./soundHelp";
 
@@ -384,19 +385,3 @@ function trim(v: number): string {
   return String(Math.round(v * 1000) / 1000);
 }
 
-// Skew-aware slider mapping over an explicit [lo,hi] window (mirrors the paramSpec
-// helpers but uses the live preset range instead of the static spec min/max).
-function normFromRange(lo: number, hi: number, skew: number, value: number): number {
-  const range = hi - lo;
-  if (range <= 0) return 0;
-  const p = Math.min(1, Math.max(0, (value - lo) / range));
-  return skew === 1 ? p : Math.pow(p, skew);
-}
-
-function valueFromRange(lo: number, hi: number, skew: number, step: number, norm: number): number {
-  let p = Math.min(1, Math.max(0, norm));
-  if (skew !== 1) p = Math.pow(p, 1 / skew);
-  let v = lo + (hi - lo) * p;
-  if (step > 0) v = Math.round(v / step) * step;
-  return Math.min(hi, Math.max(lo, v));
-}

@@ -153,6 +153,24 @@ export function randomnessRow(st: ShuffleSettings): HTMLElement {
   return rnd;
 }
 
+/** Skew-aware slider mapping over an explicit [lo,hi] window (mirrors the paramSpec
+    helpers but on a live preset range). Shared by the deep editor's value boxes and
+    the per-loop menu's single-param sliders (e.g. Gate). */
+export function normFromRange(lo: number, hi: number, skew: number, value: number): number {
+  const range = hi - lo;
+  if (range <= 0) return 0;
+  const p = Math.min(1, Math.max(0, (value - lo) / range));
+  return skew === 1 ? p : Math.pow(p, skew);
+}
+
+export function valueFromRange(lo: number, hi: number, skew: number, step: number, norm: number): number {
+  let p = Math.min(1, Math.max(0, norm));
+  if (skew !== 1) p = Math.pow(p, 1 / skew);
+  let v = lo + (hi - lo) * p;
+  if (step > 0) v = Math.round(v / step) * step;
+  return Math.min(hi, Math.max(lo, v));
+}
+
 /** The big primary Shuffle button with its idle-wiggling die. Pass `rolled` to spin
     the die once (the render right after a shuffle). */
 export function shuffleButton(rolled: boolean): HTMLButtonElement {

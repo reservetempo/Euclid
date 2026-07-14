@@ -7,25 +7,20 @@
 
 import { DrumKit } from "../model/drumKit";
 import { DrumType } from "../model/drums";
+import { ParamId } from "../model/params";
+import { getParamSpec, formatValue } from "../model/paramSpec";
 import { FACTORY_PRESETS, Preset } from "../model/presets";
 import {
   ShuffleSettings, shuffleOptions, randomSeed,
   mkBtn, textOn, selectRow, seedRow, randomnessRow, shuffleButton,
+  normFromRange, valueFromRange,
   CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS,
 } from "./controls";
-import { burstConfetti } from "./confetti";
 
 /** The per-loop editor: its shuffle settings plus the kit holding the live params,
     ranges, and undo stack for this one loop's sound. */
 export interface VoiceEditor extends ShuffleSettings {
   kit: DrumKit;
-}
-
-// A potential crossbreeding partner: another loop of the track with a sound.
-export interface BreedMate {
-  name: string;
-  color: string;
-  snapshot: number[];
 }
 
 export interface VoiceMenuCallbacks {
@@ -40,8 +35,6 @@ export interface VoiceMenuCallbacks {
   onFullParams: () => void;
   // Key + tempo context for the shuffle (Key snap + synced-echo length estimates).
   context: () => { root: number; scale: number; bpm: number };
-  // The other loops of the track that have sounds (crossbreeding partners).
-  mates: () => BreedMate[];
   // File the CURRENT sound in a feedback log: "high" = too screechy (recap row
   // swiped right), "low" = too quiet (swiped left). See model/soundReports.ts.
   report: (kind: "high" | "low") => void;
@@ -58,7 +51,6 @@ export function buildVoiceShuffleMenu(
   const panel = document.createElement("div");
   panel.className = "voice-shuffle";
   let showPresets = false; // presets stay hidden behind their button until toggled
-  let showMates = false;   // ditto for the crossbreed partner list
   let rolled = false;      // one-shot: spin the die on the render right after a shuffle
 
   // Apply a kit mutation, then push it into the loop (awaiting its loudness
@@ -110,28 +102,10 @@ export function buildVoiceShuffleMenu(
     panel.append(selectRow("Snap", SNAP_OPTIONS.map((o) => o.label), editor.snapIdx, (i) => { editor.snapIdx = i; }));
     panel.append(seedRow(editor));
 
-    // Crossbreed: pick another loop of the track, get a child of the two sounds.
-    const mates = cb.mates();
-    if (mates.length > 0) {
-      const breed = mkBtn("🧬 Breed with…", "cat-btn breed-btn");
-      breed.onclick = () => { showMates = !showMates; render(); };
-      panel.append(breed);
-      if (showMates) {
-        const list = document.createElement("div");
-        list.className = "voice-preset-grid";
-        mates.forEach((m, i) => {
-          const tile = presetTile(m.name, m.color, () => {
-            editor.kit.breed(drum, m.snapshot);
-            showMates = false;
-            burstConfetti(44); // a birth deserves a little party
-            afterChange();
-          });
-          tile.style.setProperty("--i", String(i));
-          list.append(tile);
-        });
-        panel.append(list);
-      }
-    }
+    // Gate: how long each hit is held before note-off. Together with the amp Sustain
+    // this is the note-length control (it replaced the old fixed 0.4s hold — now per
+    // sound; see engine.js). Commits on release: persist, then audition the new length.
+    panel.append(gateRow(editor.kit.get(drum), drum, afterChange));
 
     // Presets live behind a button that shows the active preset's name + colour; tapping
     // it reveals the grid of character windows. Picking one applies it and collapses.
@@ -176,6 +150,38 @@ function presetTile(name: string, color: string, onPick: () => void): HTMLButton
   b.style.borderColor = "transparent";
   b.onclick = onPick;
   return b;
+}
+
+/** A compact Gate slider (note-hold in seconds), skew-mapped like the deep editor's
+    value boxes. Edits the sound's Gate param live so you hear it move, and commits
+    (persist + audition) on release. */
+function gateRow(params: ReturnType<DrumKit["get"]>, drum: DrumType, commit: () => void): HTMLElement {
+  const s = getParamSpec(drum, ParamId.Gate);
+  const lo = params.loOf(ParamId.Gate);
+  const hi = params.hiOf(ParamId.Gate);
+
+  const row = document.createElement("div");
+  row.className = "precision gate-row";
+  const lbl = document.createElement("span");
+  lbl.className = "precision-lbl";
+  lbl.textContent = "Gate";
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "0";
+  slider.max = "1";
+  slider.step = "0.001";
+  slider.value = String(normFromRange(lo, hi, s.skew, params.get(ParamId.Gate)));
+  const val = document.createElement("span");
+  val.className = "rnd-lbl gate-val";
+  val.textContent = formatValue(s, params.get(ParamId.Gate));
+
+  slider.oninput = () => {
+    params.set(ParamId.Gate, valueFromRange(lo, hi, s.skew, s.step, Number(slider.value)));
+    val.textContent = formatValue(s, params.get(ParamId.Gate));
+  };
+  slider.onchange = () => commit(); // persist + audition on release
+  row.append(lbl, slider, val);
+  return row;
 }
 
 /** Swipe the recap row to file the current sound in a feedback log: RIGHT = "too

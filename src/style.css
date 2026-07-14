@@ -2,7 +2,7 @@
    Euclid — dark glass + neon. One shared visual language: dots and lines, six
    voice colours, glass panels floating over a slowly drifting aurora.
    Sections: tokens/base · controls · topbar · views · track · colour · sheets ·
-   numpad · melody · mixer · sound editor · toast/confetti · motion · a11y.
+   numpad · melody · mixer · sound editor · toast · motion · a11y.
    ========================================================================== */
 
 :root {
@@ -1426,7 +1426,10 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 @media (hover: hover) {
   .full-params-btn:hover { box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 22%, transparent); }
 }
-.breed-btn { width: 100%; }
+/* Gate slider in the per-loop menu: label + range + seconds readout on one row. */
+.gate-row { --slider: #b197fc; }
+.gate-row input[type="range"] { flex: 1; min-width: 0; }
+.gate-val { width: 48px; }
 
 /* The star of the show: the brand-gradient Shuffle button with a passing sheen. */
 .shuffle-big {
@@ -1624,7 +1627,7 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   white-space: pre; user-select: text; -webkit-user-select: text;
 }
 
-/* --- toast + confetti -------------------------------------------------------------- */
+/* --- toast -------------------------------------------------------------------------- */
 .toast {
   position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom));
   transform: translateX(-50%); z-index: 300; pointer-events: none;
@@ -1641,21 +1644,6 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   0% { opacity: 0; transform: translateX(-50%) translateY(8px); }
   12%, 82% { opacity: 1; transform: translateX(-50%) translateY(0); }
   100% { opacity: 0; transform: translateX(-50%) translateY(6px); }
-}
-
-.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 9999; overflow: hidden; }
-.confetti-piece {
-  position: absolute; left: 50%; top: 45%;
-  width: 9px; height: 9px; border-radius: 2px;
-  will-change: transform, opacity;
-  animation: confetti-fly 1.5s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
-}
-@keyframes confetti-fly {
-  0% { transform: translate(-50%, -50%) rotate(0); opacity: 1; }
-  100% {
-    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy) + 260px)) rotate(var(--rot));
-    opacity: 0;
-  }
 }
 
 /* ================= motion pass: micro-delights =================
@@ -1691,8 +1679,8 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   100% { transform: rotate(360deg) scale(1); }
 }
 
-/* The recap line slides in fresh after every shuffle/breed/preset (the menus
-   rebuild their DOM on change, so the animation re-triggers for free). */
+/* The recap line slides in fresh after every shuffle/preset (the menus rebuild
+   their DOM on change, so the animation re-triggers for free). */
 .shuffle-summary span:last-child { animation: recap-in 0.3s ease-out; }
 @keyframes recap-in {
   from { opacity: 0; transform: translateX(6px); }
@@ -1706,7 +1694,7 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   100% { box-shadow: 0 0 0 0 transparent; filter: brightness(1); }
 }
 
-/* Preset / breed tiles pop in with a little stagger (--i set in JS). */
+/* Preset tiles pop in with a little stagger (--i set in JS). */
 .preset-tile {
   animation: tile-in 0.24s cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
   animation-delay: calc(var(--i, 0) * 20ms);
@@ -1741,5 +1729,4 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   }
   /* The toast is REMOVED by JS after 1.7s — keep it visible until then. */
   .toast { animation: none !important; opacity: 1; }
-  .confetti { display: none; }
 }

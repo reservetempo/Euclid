@@ -40,6 +40,8 @@ const P = {
   // LFO tempo-sync, one per LFO (Free = LfoRate Hz; a division = one LFO cycle
   // per that note length at the live tempo, phase-locked to the beat grid).
   Lfo1Sync: 62, Lfo2Sync: 63, Lfo3Sync: 64,
+  // Per-sound note-hold in seconds (0/absent = the sequencer's default gate).
+  Gate: 65,
 };
 
 // Read a snapshot index that may not exist in older saves (undefined/null -> default).
@@ -556,7 +558,10 @@ class Voice {
     this.pitchEnvCoef = Math.exp(-1 / (this.pitchEnvDecay * this.sr));
     this.filter.reset();
     this.samplesPlayed = 0; this.noteOffSent = false;
-    this.gateSamples = Math.max(1, gate);
+    // A per-sound Gate (seconds) sets the note-hold; an absent/zero param (old
+    // snapshots) falls back to the fixed gate the sequencer passed in.
+    const gateSec = rd(s, P.Gate, 0);
+    this.gateSamples = gateSec > 0 ? Math.max(1, (gateSec * this.sr) | 0) : Math.max(1, gate);
     this.adsr.noteOn();
     this.active = true;
   }
@@ -1168,7 +1173,11 @@ class EngineProcessor extends AudioWorkletProcessor {
     const c = this.allocate(id);
     const ch = this.channels[c];
     ch.setParams(baseSnap);
-    ch.busyUntil = this.clock + gate + Math.max(0, tailSec || 0) * this.sr;
+    // Match the voice's per-sound gate so a long-held sound keeps its channel for the
+    // whole hold (not just the default gate) before it's eligible to be stolen.
+    const gateSec = rd(baseSnap, P.Gate, 0);
+    const holdSamples = gateSec > 0 ? (gateSec * this.sr) | 0 : gate;
+    ch.busyUntil = this.clock + holdSamples + Math.max(0, tailSec || 0) * this.sr;
     ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay);
   }
 

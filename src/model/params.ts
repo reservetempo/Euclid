@@ -88,6 +88,11 @@ export enum ParamId {
   Lfo1Sync,
   Lfo2Sync,
   Lfo3Sync,
+  // Note-hold: how many seconds each hit is gated ON before note-off. With the amp
+  // Sustain this is the note-length control. Appended last so every index above stays
+  // stable; snapshots saved before it default to the legacy fixed hold (STEP_GATE_SEC
+  // in engine.js) via rd() there and restore() in drumKit.ts.
+  Gate,
   NumParams,
 }
 
@@ -130,6 +135,7 @@ export function getParamGroup(id: ParamId): ParamGroup {
     case ParamId.AmpDecayShape:
     case ParamId.ToneDecay:
     case ParamId.NoiseDecay:
+    case ParamId.Gate:
       return ParamGroup.Amp;
     case ParamId.FilterType:
     case ParamId.FilterCutoff:
