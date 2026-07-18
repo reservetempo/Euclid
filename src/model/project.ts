@@ -12,8 +12,8 @@ import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
-  Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, DEFAULT_BAR_LIMIT, randomSeed,
-  MelodyItem, newMelodyItem,
+  Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, LoopTransition,
+  DEFAULT_BAR_LIMIT, randomSeed, MelodyItem, newMelodyItem,
 } from "./track";
 import { MelodyNode, MelodyNote, emptyMelody, melodySeed, MELODY_COLOR_INDEX } from "./melody";
 
@@ -27,6 +27,23 @@ export interface RuleJSON {
   seedHistory: number[];
 }
 
+/** A per-loop transition (see LoopTransition in track.ts). */
+export interface LoopTransitionJSON {
+  on: boolean;
+  bars: number[];
+  snapshot: number[];
+  shape?: BlendShapeId;
+  curve?: number;
+  dir?: "in" | "out";
+  cycles?: number;
+  yGain?: number;
+  yBias?: number;
+  yMin?: number;
+  yMax?: number;
+  speedOn?: boolean;
+  rate?: number;
+}
+
 export interface LoopJSON {
   soundId: number;
   snapshot: number[];
@@ -38,6 +55,7 @@ export interface LoopJSON {
   steps: number;
   rotation: number;
   split?: number;
+  patternOv?: number[]; // hand-edited pattern override (the Loop tab's sequencer grid)
   rhythm?: boolean; // melody instrument: re-time notes onto the Euclid pattern
   gain?: number;
   intro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number };
@@ -46,6 +64,7 @@ export interface LoopJSON {
   ghost?: LifePlacement;
   preset?: string;
   ranges?: { lo: number[]; hi: number[] };
+  transitions?: LoopTransitionJSON[]; // per-loop sound → transformed-sound transitions
   rule: RuleJSON;
 }
 
@@ -115,10 +134,19 @@ function cloneMelody(m: MelodyNode): MelodyJSON {
   };
 }
 
+const cloneTransition = (t: LoopTransition): LoopTransitionJSON => ({
+  on: t.on, bars: t.bars.slice(), snapshot: t.snapshot.slice(),
+  shape: t.shape, curve: t.curve, dir: t.dir, cycles: t.cycles,
+  yGain: t.yGain, yBias: t.yBias, yMin: t.yMin, yMax: t.yMax,
+  speedOn: t.speedOn, rate: t.rate,
+});
+
 const cloneLoop = (l: Loop): LoopJSON => ({
   soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name, label: l.label,
   pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
-  split: l.split, rhythm: l.rhythm, gain: l.gain,
+  split: l.split, patternOv: l.patternOv ? l.patternOv.slice() : undefined,
+  rhythm: l.rhythm, gain: l.gain,
+  transitions: l.transitions && l.transitions.length ? l.transitions.map(cloneTransition) : undefined,
   intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, modes: l.intro.modes?.slice(), fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir, shape: l.intro.shape, cycles: l.intro.cycles } : undefined,
   outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, modes: l.outro.modes?.slice(), toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir, shape: l.outro.shape, cycles: l.outro.cycles } : undefined,
   accent: l.accent ? { ...l.accent } : undefined,
@@ -327,6 +355,45 @@ function readSweeps(cj: ColorJSON): RowSweep[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** Validate a stored per-loop transition; returns undefined for anything malformed. */
+function readTransition(tv: unknown): LoopTransition | undefined {
+  if (!tv || typeof tv !== "object") return undefined;
+  const t = tv as Record<string, unknown>;
+  const bars = Array.isArray(t.bars)
+    ? (t.bars as unknown[]).map((x) => Math.round(Number(x) || 0)).filter((n) => n >= 1)
+    : [];
+  const snapshot = Array.isArray(t.snapshot) ? (t.snapshot as number[]).slice() : [];
+  if (!snapshot.length) return undefined;
+  const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : undefined);
+  const clampNum = (v: unknown, lo: number, hi: number) => {
+    const n = num(v);
+    return n === undefined ? undefined : Math.max(lo, Math.min(hi, n));
+  };
+  const speedOn = t.speedOn === true ? true : undefined;
+  return {
+    on: t.on !== false,
+    bars,
+    snapshot,
+    shape: readShape(t.shape),
+    curve: clampNum(t.curve, 0, 1),
+    dir: t.dir === "in" || t.dir === "out" ? t.dir : undefined,
+    cycles: readCycles(t.cycles),
+    yGain: clampNum(t.yGain, -4, 4),
+    yBias: clampNum(t.yBias, -1, 1),
+    yMin: clampNum(t.yMin, 0, 1),
+    yMax: clampNum(t.yMax, 0, 1),
+    speedOn,
+    rate: speedOn ? (clampNum(t.rate, 0.25, 4) ?? 2) : undefined,
+  };
+}
+
+/** The stored per-loop transition list, malformed entries dropped. */
+function readTransitions(tv: unknown): LoopTransition[] | undefined {
+  if (!Array.isArray(tv)) return undefined;
+  const out = tv.map(readTransition).filter((t): t is LoopTransition => !!t);
+  return out.length ? out : undefined;
+}
+
 function readLoop(lv: unknown, colorIndex: number): Loop {
   const s = (lv && typeof lv === "object" ? lv : {}) as Partial<LoopJSON>;
   return {
@@ -340,6 +407,8 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     steps: s.steps ?? 0,
     rotation: s.rotation ?? 0,
     split: typeof s.split === "number" ? s.split : undefined,
+    patternOv: Array.isArray(s.patternOv) && s.patternOv.length
+      ? s.patternOv.map((x) => (x ? 1 : 0)) : undefined,
     rhythm: s.rhythm === true ? true : undefined,
     gain: typeof s.gain === "number" && isFinite(s.gain) ? Math.max(0.2, Math.min(4, s.gain)) : undefined,
     intro: readEnv(s.intro, "intro"),
@@ -349,6 +418,7 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     preset: typeof s.preset === "string" ? s.preset : undefined,
     ranges: s.ranges && Array.isArray(s.ranges.lo) && Array.isArray(s.ranges.hi)
       ? { lo: s.ranges.lo.slice(), hi: s.ranges.hi.slice() } : undefined,
+    transitions: readTransitions(s.transitions),
     rule: readRule(s.rule),
   };
 }

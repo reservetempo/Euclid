@@ -26,14 +26,15 @@ import { addReport, reportCount, exportReports, clearReports, ReportKind } from 
 import {
   LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
   TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape, envModes, setEnvModes, envHasSpeed,
-  BlendShapeId, BLEND_SHAPES, blendShapeSpec, blendShape,
+  BlendShapeId, BLEND_SHAPES, blendShapeSpec, blendShape, blendShapeY,
 } from "../model/lines";
 import {
-  Track, Loop, EveryRule, RowSweep, emptyLoop, cloneLoop, loopToNode, randomSeed as newSeed,
-  ruleLengths, defaultRowSweep, MelodyItem, newMelodyItem, placementsFor,
+  Track, Loop, EveryRule, RowSweep, LoopTransition, emptyLoop, cloneLoop, loopToNode,
+  randomSeed as newSeed, ruleLengths, defaultRowSweep, defaultLoopTransition,
+  MelodyItem, newMelodyItem, placementsFor,
 } from "../model/track";
 import { generateName, reshuffleNames } from "../model/name";
-import { clampSteps, MAX_STEPS, evenGap, maxSplitGap } from "../model/euclid";
+import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
 import {
   MelodyNote, MelodyNode, MELODY_COLOR_INDEX, defaultNote, newBranch, countNotes, randomizeNotes,
   generateMelody, regatePhrase, chainNotes, isChain, MAX_CHAIN,
@@ -46,7 +47,7 @@ import {
 } from "../model/melodyGraph";
 import { detectPitchHz, SingTracker, SungNote, sungToMelodyNotes, midiName } from "../model/sing";
 import { EuclidView, RingState } from "./euclidView";
-import { SoundView } from "./soundView";
+import { SoundView, SoundTab } from "./soundView";
 import { defaultShuffleSettings, shuffleOptions, randomSeed } from "./controls";
 import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
 import { logoLetters } from "./logo";
@@ -130,12 +131,31 @@ export class App {
   // shaping its instrument. Transient — never saved; cleared on navigating away.
   private melodySoloItem: MelodyItem | null = null;
   private editLoop: Loop | null = null; // loop whose placement popup is open
-  private placementTab: "loop" | "transition" | "sound" = "loop"; // which sub-page of the loop popup
-  // Loop tab sub-view: the drag grid (default), or the panels the two buttons open.
+  private placementTab: "loop" | "transition" | "sound" = "sound"; // which sub-page of the loop popup
+  // Loop tab sub-view: the main page (default), or the panels the action buttons open.
   private loopSub: "grid" | "options" | "life" = "grid";
-  // Loop-tab drag grid: rows shown (each row = 16 bars). A view preference — the grid
-  // auto-grows past it so the whole track always fits.
+  // Loop-tab drag grid: rows shown. A view preference — the grid auto-grows past it so
+  // the whole track always fits.
   private placeGridRows = 8;
+  // Loop tab: whether the sequencer pattern grid is unfolded.
+  private patternOpen = false;
+  // Bar-square grids (loop placement / transition bars): how many bars one square is
+  // worth (1 / 2 / 4), and the armed Start→End range pick (start 0 = awaiting start).
+  private gridSpan: Record<"place" | "trans", number> = { place: 2, trans: 2 };
+  private gridPick: { key: "place" | "trans"; start: number } | null = null;
+  // Voice popup Sound tab: the active editor sub-tab + the Reset baseline (both captured
+  // on a fresh open, surviving in-place popup rebuilds).
+  private popupSoundTab: SoundTab | undefined;
+  private soundBaseline: number[] = [];
+  // Transition editor state: the open transition, its tab, its Effects sub-tab, and one
+  // param-editor kit per transition (the target snapshot's editing surface).
+  private editTransition: LoopTransition | null = null;
+  private transTab: "bars" | "graph" | "effects" | "speed" = "bars";
+  private transFxTab: SoundTab | undefined;
+  private transitionKits = new Map<LoopTransition, DrumKit>();
+  // Debounced looping 4-bar preview of the transition being edited (offline render).
+  private previewTimer = 0;
+  private previewToken = 0;
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
   private soundName = "";
@@ -423,6 +443,8 @@ export class App {
     this.applyRandomDefault();
     this.tempo = 120;
     this.voiceEditors.clear();
+    this.transitionKits.clear();
+    this.editTransition = null;
     this.nextSoundId = 0;
     this.editLoop = null;
     this.soundLoop = null;
@@ -439,6 +461,8 @@ export class App {
       collide, and clear cached editors. */
   private resetIds(): void {
     this.voiceEditors.clear();
+    this.transitionKits.clear();
+    this.editTransition = null;
     let maxId = -1;
     for (const c of this.track.colors) {
       for (const l of c.loops) if (l.soundId > maxId) maxId = l.soundId;
@@ -450,6 +474,7 @@ export class App {
   }
 
   private afterProjectChange(): void {
+    this.stopPreview();
     if (this.playing) { this.playing = false; this.engine.stop(); }
     this.pushAll();
     this.render();
@@ -623,6 +648,7 @@ export class App {
     };
     syncPlay();
     play.onclick = async () => {
+      this.stopPreview(); // the transition preview never plays under the real transport
       if (!this.playing) {
         try {
           const rebuilt = await this.engine.ensureRunning();
@@ -2985,7 +3011,13 @@ export class App {
   private removeLoop(c: number, i: number): void {
     const loops = this.track.colors[c].loops;
     const [removed] = loops.splice(i, 1);
-    if (removed) this.voiceEditors.delete(removed);
+    if (removed) {
+      this.voiceEditors.delete(removed);
+      for (const tr of removed.transitions ?? []) {
+        this.transitionKits.delete(tr);
+        if (this.editTransition === tr) { this.editTransition = null; this.stopPreview(); }
+      }
+    }
     if (this.editLoop === removed) this.editLoop = null;
     this.pushSounds();
     this.recompile();
@@ -2994,19 +3026,36 @@ export class App {
 
   // --- placement popup --------------------------------------------------
   private closePlacement(): void {
+    this.stopPreview();
     document.querySelector(".placement-overlay")?.remove();
     this.editLoop = null;
+    this.editTransition = null;
+    this.gridPick = null;
     this.render();
   }
 
-  /** The placement popup for `loop`: a Sound / Loop / Transition tab nav over its sub-pages —
-      Loop = the Repeat-every rule + Accents & Ghosts + rhythm circles; Transition = the
-      intro/outro fades; Sound = the shuffle menu. Rebuilt in place on any change (it's
-      appended to the root, so it survives a panel re-render). */
+  /** The placement popup for `loop`: a Sound / Loop / Transitions tab nav over its
+      sub-pages — Sound (the default) = the FULL parameter editor, embedded; Loop = the
+      rhythm circles + sequencer pattern grid + the placement squares; Transitions = the
+      loop's transition list (each opening its Bars / Graph / Effects / Speed editor).
+      Rebuilt in place on any change (it's appended to the root, so it survives a panel
+      re-render). */
   private openPlacement(loop: Loop): void {
     document.querySelector(".placement-overlay")?.remove();
     const fresh = this.editLoop !== loop;
-    if (fresh) { this.placementTab = "loop"; this.loopSub = "grid"; } // fresh open: Loop tab, grid
+    if (fresh) {
+      // Fresh open: land on the Sound page (the full params ARE the default now) and
+      // reset every sub-state the popup carries.
+      this.placementTab = "sound";
+      this.loopSub = "grid";
+      this.patternOpen = false;
+      this.gridPick = null;
+      this.editTransition = null;
+      this.transTab = "bars";
+      this.popupSoundTab = undefined;
+      this.transFxTab = undefined;
+      this.soundBaseline = loop.snapshot.slice(); // each section's Reset reverts to this
+    }
     this.editLoop = loop;
     const rerender = () => this.openPlacement(loop);
 
@@ -3054,30 +3103,53 @@ export class App {
       const b = document.createElement("button");
       b.className = "seg-btn" + (this.placementTab === tab ? " on" : "");
       b.textContent = text;
-      b.onclick = () => { if (this.placementTab !== tab) { this.placementTab = tab; this.loopSub = "grid"; rerender(); } };
+      b.onclick = () => {
+        if (this.placementTab === tab) return;
+        this.placementTab = tab;
+        this.loopSub = "grid";
+        this.gridPick = null;
+        // Leaving (or re-entering) the Transitions page drops back to its list and
+        // silences the editing preview.
+        this.editTransition = null;
+        this.stopPreview();
+        rerender();
+      };
       return b;
     };
-    nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transition"));
+    nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transitions"));
     sheet.append(nav);
 
     if (this.placementTab === "sound") {
       this.appendSoundTab(loop, sheet);
     } else if (this.placementTab === "transition") {
-      sheet.append(this.transitionControls(loop, rerender));
+      const trs = loop.transitions ?? (loop.transitions = []);
+      const cur = this.editTransition && trs.includes(this.editTransition) ? this.editTransition : null;
+      if (cur) sheet.append(this.transitionEditor(loop, cur, rerender));
+      else { this.editTransition = null; sheet.append(this.transitionList(loop, rerender)); }
     } else if (this.loopSub === "options") {
-      // Procedural placement options (behind the ⚙ button): the Repeat-every rule + the
-      // sound's Euclidean rhythm circles.
+      // Procedural placement options (behind the ⚙ button): the Repeat-every rule.
       sheet.append(this.subPanelHead("Placement options", () => { this.loopSub = "grid"; rerender(); }));
       sheet.append(this.placementControls(loop, rerender));
-      const detail = document.createElement("div");
-      detail.className = "euclid-detail";
-      detail.append(this.rhythmCircles(loop, rerender));
-      sheet.append(detail);
     } else if (this.loopSub === "life") {
       sheet.append(this.subPanelHead("Accents & Ghosts", () => { this.loopSub = "grid"; rerender(); }));
       sheet.append(this.lifeControls(loop, rerender));
     } else {
-      // Default Loop view: the big drag grid, then a row of small actions.
+      // Default Loop view: the rhythm circles up front, the sequencer pattern grid on
+      // demand, the placement squares, then a row of small actions.
+      const rhythmRow = document.createElement("div");
+      rhythmRow.className = "loop-rhythm";
+      const detail = document.createElement("div");
+      detail.className = "euclid-detail";
+      detail.append(this.rhythmCircles(loop, rerender));
+      const patBtn = document.createElement("button");
+      patBtn.className = "loop-action-btn pattern-toggle" + (this.patternOpen ? " on" : "");
+      patBtn.textContent = "▦ Grid";
+      patBtn.title = "View / edit the pattern as a step sequencer grid";
+      patBtn.onclick = () => { this.patternOpen = !this.patternOpen; rerender(); };
+      rhythmRow.append(detail, patBtn);
+      sheet.append(rhythmRow);
+      if (this.patternOpen) sheet.append(this.patternGrid(loop, rerender));
+
       sheet.append(this.placementGrid(loop, rerender));
 
       const actions = document.createElement("div");
@@ -3091,7 +3163,7 @@ export class App {
         return b;
       };
       actions.append(
-        mkAction("⚙ Options", "Repeat rule + rhythm", () => { this.loopSub = "options"; rerender(); }),
+        mkAction("⚙ Options", "Repeat rule", () => { this.loopSub = "options"; rerender(); }),
         mkAction("◔ Accents", "Accents & ghosts", () => { this.loopSub = "life"; rerender(); }),
         mkAction("⧉ Copy", "Copy this loop to another row", () => this.openCopyLoopMenu(loop)),
       );
@@ -3117,42 +3189,95 @@ export class App {
     return row;
   }
 
-  /** The expanded drag grid on the Loop tab: 8 squares per row, each worth 2 bars (a row
-      = 16 bars), with a − / + stepper choosing how many rows show (auto-grown so the whole
-      track always fits). Tap a square to toggle its 2 bars; drag to paint a contiguous run
-      on/off. Squares past the track length are dimmed; painting into them GROWS the track
-      to fit. Squares covered by ANOTHER loop of this colour are marked (a clash/occupancy
-      hint); a half-lit square has only one of its 2 bars placed (from an algorithmic rule
-      or the numeric "At bars" picker). Editing sets the rule to "At bars" (seeded from the
-      current placement, so switching from an algorithmic rule keeps its bars). */
-  private placementGrid(loop: Loop, rerender: () => void): HTMLElement {
-    const COLS = 8, SPAN = 2; // squares per row × bars per square
+  /** The Loop tab's SEQUENCER grid: the pattern's steps laid out like a step sequencer,
+      hits highlighted. Tapping a step toggles it — the edit becomes a pattern OVERRIDE
+      (`patternOv`) that replaces the Euclid derivation until the circles are touched
+      again (editing them clears it); ↺ Euclid drops the override immediately. */
+  private patternGrid(loop: Loop, rerender: () => void): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "pattern-grid-wrap";
+    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    const steps = loop.steps >= 1 ? loop.steps : 0;
+    if (steps < 1) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "Give the loop some steps first (the circles above).";
+      wrap.append(hint);
+      return wrap;
+    }
+    const cur: number[] = loop.patternOv && loop.patternOv.length === steps
+      ? loop.patternOv.slice()
+      : voicePattern(loop.hits, steps, loop.rotation, loop.split).map((b) => (b ? 1 : 0));
+
+    const head = document.createElement("div");
+    head.className = "place-grid-head";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Pattern";
+    const readout = document.createElement("span");
+    readout.className = "place-grid-readout";
+    const hits = cur.reduce((a, b) => a + b, 0);
+    readout.textContent = `${hits} hit${hits === 1 ? "" : "s"} · ${steps} steps${loop.patternOv ? " · edited" : ""}`;
+    const euc = document.createElement("button");
+    euc.className = "place-grid-rowbtn pattern-euclid";
+    euc.textContent = "↺";
+    euc.title = "Back to the Euclid pattern (drop the hand edits)";
+    euc.disabled = !loop.patternOv;
+    euc.onclick = () => { loop.patternOv = undefined; this.recompile(); rerender(); };
+    head.append(lbl, readout, euc);
+    wrap.append(head);
+
+    const grid = document.createElement("div");
+    grid.className = "pattern-grid";
+    grid.style.setProperty("--cols", String(Math.min(16, steps)));
+    for (let i = 0; i < steps; i++) {
+      const cell = document.createElement("button");
+      cell.className = "pattern-cell" + (cur[i] ? " on" : "") + (i % 4 === 0 ? " beat" : "");
+      cell.title = `Step ${i + 1}`;
+      cell.onclick = () => {
+        const next = cur.slice();
+        next[i] = next[i] ? 0 : 1;
+        loop.patternOv = next;
+        loop.hits = next.reduce((a, b) => a + b, 0); // keep the circles honest
+        this.recompile();
+        rerender();
+      };
+      grid.append(cell);
+    }
+    wrap.append(grid);
+    return wrap;
+  }
+
+  /** The shared bar-SQUARE grid (8 squares per row): the Loop tab's placement editor and
+      a transition's Bars tab both use it. Each square is worth 1 / 2 / 4 bars (the
+      per-grid squares picker). Tap toggles a square; drag paints a contiguous run on/off;
+      the ⇱⇲ button arms a Start→End pick — the FIRST tap resets the grid and marks the
+      start, the SECOND fills straight through to the end. Squares in `occupied` carry the
+      faint stripe (context: other loops' bars, or — on a transition — where this loop
+      itself sounds). With `grow`, painting past the track lengthens it (loop placement
+      only); otherwise the grid is clamped to the track. */
+  private barGrid(cfg: {
+    key: "place" | "trans";
+    color: string;
+    read: () => number[];
+    write: (bars: number[]) => void; // live during a drag (engine follows along)
+    commit: () => void;              // on release → full popup rebuild
+    occupied: Set<number>;
+    grow: boolean;
+  }): HTMLElement {
+    const COLS = 8;
+    const SPAN = Math.max(1, this.gridSpan[cfg.key]);
     const barsPerRow = COLS * SPAN;
     const barLimit = Math.max(1, this.track.barLimit);
     const needRows = Math.ceil(barLimit / barsPerRow); // rows the track itself fills
-    const maxRows = Math.ceil(512 / barsPerRow);       // rows at the 512-bar track cap
-    const rows = Math.min(maxRows, Math.max(needRows, this.placeGridRows));
+    const maxRows = cfg.grow ? Math.ceil(512 / barsPerRow) : needRows;
+    const rows = Math.min(maxRows, Math.max(needRows, cfg.grow ? this.placeGridRows : 1));
     const total = rows * COLS;
-    const c = this.colorOf(loop);
-
-    // This loop's placement as an explicit bar set (start bars). Seed from placementsFor so
-    // an algorithmic rule shows its bars and converts cleanly to a manual list on edit.
-    const ownList = () => loop.rule.every.kind === "at"
-      ? (loop.rule.every as { bars: number[] }).bars.slice()
-      : placementsFor(loop, barLimit).map((iv) => iv.startBar + 1);
-
-    // Bars where ANOTHER loop of this colour sounds (covered bars) — a clash hint.
-    const occupied = new Set<number>();
-    for (const other of this.track.colors[c]?.loops ?? []) {
-      if (other === loop || other.soundId < 0) continue;
-      for (const iv of placementsFor(other, barLimit)) {
-        for (let b = iv.startBar; b < iv.startBar + iv.forBars && b < barLimit; b++) occupied.add(b + 1);
-      }
-    }
+    const picking = this.gridPick?.key === cfg.key ? this.gridPick : null;
 
     const wrap = document.createElement("div");
     wrap.className = "place-grid-wrap";
-    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    wrap.style.setProperty("--vc", cfg.color);
 
     const head = document.createElement("div");
     head.className = "place-grid-head";
@@ -3166,68 +3291,133 @@ export class App {
     clear.textContent = "✕";
     clear.title = "Clear all bars";
     const syncHead = () => {
-      const bs = ownList();
-      // Live track length too, since growing it is a side effect of painting past the end
-      // (and the top-bar length pill is hidden under this popup).
-      readout.textContent = bs.length
-        ? `${bs.length} bar${bs.length === 1 ? "" : "s"} · track ${this.track.barLimit}`
-        : "tap or drag to place";
+      const bs = cfg.read();
+      // While a Start→End pick is armed, the readout walks the user through it. The live
+      // track length rides along on the growing grid (the top-bar pill is hidden here).
+      const pick = this.gridPick?.key === cfg.key ? this.gridPick : null;
+      readout.textContent = pick
+        ? (pick.start < 1 ? "tap the START square" : `start bar ${pick.start} — tap the END square`)
+        : bs.length
+          ? `${bs.length} bar${bs.length === 1 ? "" : "s"}${cfg.grow ? ` · track ${this.track.barLimit}` : ""}`
+          : "tap or drag to place";
       clear.disabled = bs.length === 0;
     };
-    clear.onclick = () => { loop.rule.every = { kind: "at", bars: [] }; this.recompile(); rerender(); };
-    // Row-count stepper: how much of the arrangement the grid shows. − stops at the rows
-    // the track already fills (the grid never hides placed bars); + stops at the track cap.
-    const rowCtl = document.createElement("span");
-    rowCtl.className = "place-grid-rowctl";
-    const mkStep = (txt: string, delta: number, atLimit: boolean) => {
-      const b = document.createElement("button");
-      b.className = "place-grid-rowbtn";
-      b.textContent = txt;
-      b.title = delta < 0 ? "Fewer rows" : "More rows";
-      b.disabled = atLimit;
-      b.onclick = () => { this.placeGridRows = rows + delta; rerender(); };
-      return b;
-    };
-    const rowsLbl = document.createElement("span");
-    rowsLbl.className = "place-grid-rowsn";
-    rowsLbl.textContent = `${rows} row${rows === 1 ? "" : "s"}`;
-    rowsLbl.title = `${rows * barsPerRow} bars shown`;
-    rowCtl.append(mkStep("−", -1, rows <= Math.max(1, needRows)), rowsLbl, mkStep("+", 1, rows >= maxRows));
-    head.append(lbl, readout, rowCtl, clear);
+    clear.onclick = () => { cfg.write([]); cfg.commit(); };
+    head.append(lbl, readout, clear);
     wrap.append(head);
 
+    // Tool row: the squares' bar worth (1 / 2 / 4), the Start→End pick, the row stepper.
+    const tools = document.createElement("div");
+    tools.className = "place-grid-tools";
+    const spanCtl = document.createElement("span");
+    spanCtl.className = "place-grid-rowctl";
+    const spanLbl = document.createElement("span");
+    spanLbl.className = "place-grid-rowsn";
+    spanLbl.textContent = "square =";
+    spanCtl.append(spanLbl);
+    for (const s of [1, 2, 4]) {
+      const b = document.createElement("button");
+      b.className = "place-grid-rowbtn span-btn" + (SPAN === s ? " on" : "");
+      b.textContent = String(s);
+      b.title = `Each square counts as ${s} bar${s === 1 ? "" : "s"}`;
+      b.onclick = () => { this.gridSpan[cfg.key] = s; cfg.commit(); };
+      spanCtl.append(b);
+    }
+    const barsWord = document.createElement("span");
+    barsWord.className = "place-grid-rowsn";
+    barsWord.textContent = SPAN === 1 ? "bar" : "bars";
+    spanCtl.append(barsWord);
+    tools.append(spanCtl);
+
+    const pickBtn = document.createElement("button");
+    pickBtn.className = "place-grid-rowbtn pick-btn" + (picking ? " on" : "");
+    pickBtn.textContent = "⇱⇲ Start · End";
+    pickBtn.title = "Pick a start square (resets the grid), then an end square — the run in between fills in";
+    pickBtn.onclick = () => {
+      this.gridPick = picking ? null : { key: cfg.key, start: 0 };
+      cfg.commit();
+    };
+    tools.append(pickBtn);
+
+    if (cfg.grow) {
+      const rowCtl = document.createElement("span");
+      rowCtl.className = "place-grid-rowctl";
+      const mkStep = (txt: string, delta: number, atLimit: boolean) => {
+        const b = document.createElement("button");
+        b.className = "place-grid-rowbtn";
+        b.textContent = txt;
+        b.title = delta < 0 ? "Fewer rows" : "More rows";
+        b.disabled = atLimit;
+        b.onclick = () => { this.placeGridRows = rows + delta; cfg.commit(); };
+        return b;
+      };
+      const rowsLbl = document.createElement("span");
+      rowsLbl.className = "place-grid-rowsn";
+      rowsLbl.textContent = `${rows} row${rows === 1 ? "" : "s"}`;
+      rowsLbl.title = `${rows * barsPerRow} bars shown`;
+      rowCtl.append(mkStep("−", -1, rows <= Math.max(1, needRows)), rowsLbl, mkStep("+", 1, rows >= maxRows));
+      tools.append(rowCtl);
+    }
+    wrap.append(tools);
+
     const grid = document.createElement("div");
-    grid.className = "place-grid";
+    grid.className = "place-grid" + (picking ? " picking" : "");
     grid.style.setProperty("--cols", String(COLS));
     const cells: HTMLElement[] = [];
     for (let i = 0; i < total; i++) {
-      const bar = i * SPAN + 1; // first bar of this square's 2-bar block
+      const bar = i * SPAN + 1; // first bar of this square's block
       const cell = document.createElement("div");
       cell.className = "place-cell"
         + (bar > barLimit ? " out" : "")
         + ((i % COLS) === 0 ? " rowstart" : "")
         + (((bar - 1) % 4) === 0 ? " beat" : "");
       cell.dataset.bar = String(bar);
-      if (occupied.has(bar) || occupied.has(bar + 1)) cell.classList.add("occ");
+      for (let b = bar; b < bar + SPAN; b++) if (cfg.occupied.has(b)) { cell.classList.add("occ"); break; }
       cells.push(cell);
       grid.append(cell);
     }
     const paint = (set: Set<number>) => {
       for (let i = 0; i < total; i++) {
-        const a = set.has(i * SPAN + 1), b = set.has(i * SPAN + 2);
-        cells[i].classList.toggle("sel", a || b);
-        cells[i].classList.toggle("half-l", a && !b);
-        cells[i].classList.toggle("half-r", b && !a);
+        const first = i * SPAN + 1;
+        let cnt = 0;
+        for (let b = first; b < first + SPAN; b++) if (set.has(b)) cnt++;
+        cells[i].classList.toggle("sel", cnt === SPAN);
+        cells[i].classList.toggle("part", cnt > 0 && cnt < SPAN);
       }
     };
-    paint(new Set(ownList()));
+    paint(new Set(cfg.read()));
     wrap.append(grid);
     syncHead();
+
+    const clampBars = (bars: number[]): number[] =>
+      cfg.grow ? bars.filter((b) => b <= 512) : bars.filter((b) => b <= barLimit);
+
+    // Start→End pick: two taps instead of painting.
+    const pickTap = (bar: number): void => {
+      const pick = this.gridPick;
+      if (!pick || pick.key !== cfg.key) return;
+      if (pick.start < 1) {
+        // First tap: reset the grid and mark the start square.
+        pick.start = bar;
+        const bars = clampBars(Array.from({ length: SPAN }, (_, k) => bar + k));
+        cfg.write(bars);
+        paint(new Set(bars));
+        syncHead();
+        return;
+      }
+      // Second tap: fill straight through start → end (either direction).
+      const lo = Math.min(pick.start, bar);
+      const hi = Math.max(pick.start, bar) + SPAN - 1;
+      const bars = clampBars(Array.from({ length: hi - lo + 1 }, (_, k) => lo + k));
+      this.gridPick = null;
+      cfg.write(bars);
+      cfg.commit();
+    };
 
     // Drag paints the linear square range [anchor..bar] to the anchor's inverse state,
     // from a pre-drag snapshot (so back-and-forth doesn't accumulate). Anchors are block
     // START bars (what dataset.bar holds), so the walk steps by SPAN and each square
-    // toggles both of its bars. elementFromPoint reads the cell under the pointer (robust
+    // toggles all of its bars. elementFromPoint reads the cell under the pointer (robust
     // to the grid gaps).
     const barAt = (x: number, y: number): number | null => {
       const el = document.elementFromPoint(x, y) as HTMLElement | null;
@@ -3237,12 +3427,7 @@ export class App {
     let base = new Set<number>();
     let anchor = 0, paintOn = true, lastBar = 0;
     const commitLive = (set: Set<number>) => {
-      const bars = [...set].sort((a, b) => a - b);
-      // Painting past the track grows it to fit the furthest placed bar.
-      const max = bars.length ? bars[bars.length - 1] : 0;
-      if (max > this.track.barLimit) this.track.barLimit = Math.min(512, max);
-      loop.rule.every = { kind: "at", bars };
-      this.recompile();
+      cfg.write(clampBars([...set].sort((a, b) => a - b)));
       syncHead();
     };
     const applyTo = (bar: number) => {
@@ -3265,16 +3450,18 @@ export class App {
       grid.removeEventListener("pointerup", onUp);
       grid.removeEventListener("pointercancel", onUp);
       try { grid.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
-      rerender(); // rebuild (track may have grown → more rows)
+      cfg.commit(); // rebuild (the track may have grown → more rows)
     };
     grid.onpointerdown = (e) => {
       const bar = barAt(e.clientX, e.clientY);
       if (bar === null) return;
       e.preventDefault();
-      base = new Set(ownList());
+      if (this.gridPick?.key === cfg.key) { pickTap(bar); return; }
+      base = new Set(cfg.read());
       anchor = bar; lastBar = bar;
-      // A square with EITHER of its bars placed erases on tap (so half squares clear).
-      paintOn = !base.has(bar) && !base.has(bar + 1);
+      // A square with ANY of its bars placed erases on tap (so partial squares clear).
+      paintOn = true;
+      for (let b = bar; b < bar + SPAN; b++) if (base.has(b)) { paintOn = false; break; }
       commitLive(applyTo(bar));
       try { grid.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
       grid.addEventListener("pointermove", onMove);
@@ -3282,6 +3469,69 @@ export class App {
       grid.addEventListener("pointercancel", onUp);
     };
     return wrap;
+  }
+
+  /** The Loop tab's placement grid: this loop's bars across the track. Editing sets the
+      rule to "At bars" (seeded from the current placement, so switching from an
+      algorithmic rule keeps its bars); painting past the track end GROWS the track.
+      Squares covered by ANOTHER loop of this colour carry the clash stripe. */
+  private placementGrid(loop: Loop, rerender: () => void): HTMLElement {
+    const barLimit = Math.max(1, this.track.barLimit);
+    const c = this.colorOf(loop);
+
+    // This loop's placement as an explicit bar set (start bars). Seed from placementsFor so
+    // an algorithmic rule shows its bars and converts cleanly to a manual list on edit.
+    const ownList = () => loop.rule.every.kind === "at"
+      ? (loop.rule.every as { bars: number[] }).bars.slice()
+      : placementsFor(loop, barLimit).map((iv) => iv.startBar + 1);
+
+    // Bars where ANOTHER loop of this colour sounds (covered bars) — a clash hint.
+    const occupied = new Set<number>();
+    for (const other of this.track.colors[c]?.loops ?? []) {
+      if (other === loop || other.soundId < 0) continue;
+      for (const iv of placementsFor(other, barLimit)) {
+        for (let b = iv.startBar; b < iv.startBar + iv.forBars && b < barLimit; b++) occupied.add(b + 1);
+      }
+    }
+
+    return this.barGrid({
+      key: "place",
+      color: loop.soundId >= 0 ? loop.color : "#4a5064",
+      read: ownList,
+      write: (bars) => {
+        // Painting past the track grows it to fit the furthest placed bar.
+        const max = bars.length ? bars[bars.length - 1] : 0;
+        if (max > this.track.barLimit) this.track.barLimit = Math.min(512, max);
+        loop.rule.every = { kind: "at", bars };
+        this.recompile();
+      },
+      commit: rerender,
+      occupied,
+      grow: true,
+    });
+  }
+
+  /** A transition's Bars tab grid: WHERE the transition runs. The stripes mark where the
+      loop itself sounds (context — the default selection is exactly its full loop). */
+  private transBarsGrid(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
+    const barLimit = Math.max(1, this.track.barLimit);
+    const occupied = new Set<number>();
+    for (const iv of placementsFor(loop, barLimit)) {
+      for (let b = iv.startBar; b < iv.startBar + iv.forBars && b < barLimit; b++) occupied.add(b + 1);
+    }
+    return this.barGrid({
+      key: "trans",
+      color: loop.soundId >= 0 ? loop.color : "#4a5064",
+      read: () => tr.bars.filter((b) => b >= 1 && b <= barLimit),
+      write: (bars) => {
+        tr.bars = bars;
+        this.recompile();
+        this.schedulePreview(loop, tr);
+      },
+      commit: rerender,
+      occupied,
+      grow: false,
+    });
   }
 
   /** A small picker over the loop popup: tap a coloured row to drop an independent copy of
@@ -3340,23 +3590,436 @@ export class App {
     this.toast(`Copied to Voice ${target + 1}`);
   }
 
-  /** The Sound tab: the loop's shuffle menu (its sound params), appended under the shared
-      tab nav so it has full scroll room. */
+  /** The Sound tab: the FULL parameter editor, embedded (Shuffle + every category, each
+      section with its own Reset). This replaced the old shuffle-menu-plus-"Full
+      Parameters" pair — the deep editor IS the default sound surface now. */
   private appendSoundTab(loop: Loop, sheet: HTMLElement): void {
-    const menu = buildVoiceShuffleMenu(this.voiceEditorFor(loop), REF_DRUM, {
-      onChange: async () => { await this.writeAndNormalizeLoop(loop); },
-      audition: () => this.auditionLoop(loop),
-      onFullParams: () => {
-        this.soundLoop = loop;
-        this.soundReturn = "color";
-        this.view = "sound";
-        document.querySelector(".placement-overlay")?.remove();
-        this.render();
-      },
+    const ed = this.voiceEditorFor(loop);
+    const view = new SoundView(ed.kit, REF_DRUM, {
+      onChange: () => this.writeLoopFromEditor(loop),
+      onRangeChange: () => this.writeLoopFromEditor(loop),
+      // Whole-sound replacements (shuffle / preset / reset / back) re-level offline
+      // before the audition, like the old shuffle menu did.
+      onReplace: () => this.writeAndNormalizeLoop(loop),
+      onAudition: () => this.auditionLoop(loop),
       context: () => this.shuffleContext(),
-      report: (kind) => this.reportLoopSound(loop, kind),
+    }, {
+      settings: ed,                       // keep Randomness/Spread/… across rebuilds
+      baseline: this.soundBaseline,       // section Reset target (captured on open)
+      initialTab: this.popupSoundTab,
+      onTabChange: (t) => { this.popupSoundTab = t; },
     });
-    sheet.append(menu);
+    sheet.append(view.el);
+  }
+
+  // --- per-loop transitions (the Transitions tab) ------------------------
+
+  /** The Transitions tab's LIST: every transition this loop carries — tap one to edit it
+      (Bars / Graph / Effects / Speed), toggle it, or remove it. */
+  private transitionList(loop: Loop, rerender: () => void): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "trans-list";
+    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    const trs = loop.transitions ?? (loop.transitions = []);
+
+    if (!trs.length) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "A transition transforms this sound into another across a stretch of bars: pick the bars, draw the blend graph, and shape the destination sound in Effects — the values you set there are where the transition ENDS. Add one to start.";
+      wrap.append(hint);
+    }
+
+    trs.forEach((tr, i) => {
+      const row = document.createElement("div");
+      row.className = "loop-row trans-row" + (tr.on ? "" : " off");
+      row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+      const body = document.createElement("button");
+      body.className = "loop-body";
+      const nm = document.createElement("span");
+      nm.className = "loop-name";
+      nm.textContent = `Transition ${i + 1}`;
+      const sum = document.createElement("span");
+      sum.className = "loop-summary";
+      sum.textContent = this.transitionSummary(loop, tr);
+      body.append(nm, sum);
+      body.onclick = () => {
+        this.editTransition = tr;
+        this.transTab = "bars";
+        this.transFxTab = undefined;
+        this.schedulePreview(loop, tr);
+        rerender();
+      };
+      const onBtn = document.createElement("button");
+      onBtn.className = "seg-btn fade-toggle trans-onoff" + (tr.on ? " on" : "");
+      onBtn.textContent = tr.on ? "On" : "Off";
+      onBtn.onclick = (e) => { e.stopPropagation(); tr.on = !tr.on; this.recompile(); rerender(); };
+      const rm = document.createElement("button");
+      rm.className = "loop-remove";
+      rm.textContent = "×";
+      rm.title = "Remove this transition";
+      rm.onclick = (e) => {
+        e.stopPropagation();
+        trs.splice(i, 1);
+        this.transitionKits.delete(tr);
+        if (this.editTransition === tr) { this.editTransition = null; this.stopPreview(); }
+        this.recompile();
+        rerender();
+      };
+      row.append(body, onBtn, rm);
+      wrap.append(row);
+    });
+
+    const add = document.createElement("button");
+    add.className = "loop-add";
+    add.textContent = "＋ Add transition";
+    add.onclick = () => {
+      const tr = defaultLoopTransition(loop, this.track.barLimit);
+      trs.push(tr);
+      this.editTransition = tr;
+      this.transTab = "bars";
+      this.transFxTab = undefined;
+      this.recompile();
+      this.schedulePreview(loop, tr);
+      rerender();
+    };
+    wrap.append(add);
+    return wrap;
+  }
+
+  /** One-line recap of a transition: its bar count, how many params its target bends,
+      the speed warp, and whether it's off. */
+  private transitionSummary(loop: Loop, tr: LoopTransition): string {
+    const barLimit = Math.max(1, this.track.barLimit);
+    const bars = tr.bars.filter((b) => b >= 1 && b <= barLimit).length;
+    const changed = this.changedParamCount(loop, tr);
+    const bits = [
+      `${bars} bar${bars === 1 ? "" : "s"}`,
+      changed ? `${changed} param${changed === 1 ? "" : "s"} changed` : "no changes yet",
+    ];
+    if (tr.speedOn) bits.push(`speed ${(tr.rate ?? 2).toFixed(2)}×`);
+    if (!tr.on) bits.push("off");
+    return bits.join(" · ");
+  }
+
+  /** How many params the transition's target differs from the loop's own sound in. */
+  private changedParamCount(loop: Loop, tr: LoopTransition): number {
+    let n = 0;
+    const len = Math.max(loop.snapshot.length, tr.snapshot.length);
+    for (let i = 0; i < len; i++) {
+      const a = loop.snapshot[i] ?? 0;
+      const b = tr.snapshot[i] ?? a;
+      if (Math.abs(a - b) > 1e-6) n++;
+    }
+    return n;
+  }
+
+  /** One transition's editor: a back header + On/Off, then Bars / Graph / Effects /
+      Speed tabs. Every edit reschedules the shortened 4-bar looping preview (the sound
+      morphing linearly into the transformed sound — the latest changes land each time
+      the render catches up). */
+  private transitionEditor(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "trans-editor";
+    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    const i = (loop.transitions ?? []).indexOf(tr);
+
+    const head = this.subPanelHead(`Transition ${i + 1}`, () => {
+      this.stopPreview();
+      this.editTransition = null;
+      this.gridPick = null;
+      rerender();
+    });
+    const onBtn = document.createElement("button");
+    onBtn.className = "seg-btn fade-toggle trans-onoff" + (tr.on ? " on" : "");
+    onBtn.textContent = tr.on ? "On" : "Off";
+    onBtn.onclick = () => { tr.on = !tr.on; this.recompile(); rerender(); };
+    head.append(onBtn);
+    wrap.append(head);
+
+    const nav = document.createElement("div");
+    nav.className = "placement-seg placement-nav trans-nav";
+    const mkTab = (tab: typeof this.transTab, text: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (this.transTab === tab ? " on" : "");
+      b.textContent = text;
+      b.onclick = () => {
+        if (this.transTab !== tab) { this.transTab = tab; this.gridPick = null; rerender(); }
+      };
+      return b;
+    };
+    nav.append(mkTab("bars", "Bars"), mkTab("graph", "Graph"), mkTab("effects", "Effects"), mkTab("speed", "Speed"));
+    wrap.append(nav);
+
+    if (this.transTab === "bars") {
+      const hint = document.createElement("p");
+      hint.className = "sing-hint";
+      hint.textContent = "Where the transition runs. It starts on the loop's full placement (the striped squares are where this loop sounds); each contiguous run sweeps sound → transformed across itself.";
+      wrap.append(hint);
+      wrap.append(this.transBarsGrid(loop, tr, rerender));
+    } else if (this.transTab === "graph") {
+      wrap.append(this.transGraphSection(loop, tr, rerender));
+    } else if (this.transTab === "effects") {
+      wrap.append(this.transEffectsSection(loop, tr));
+    } else {
+      wrap.append(this.transSpeedSection(loop, tr, rerender));
+    }
+    return wrap;
+  }
+
+  /** The Graph tab: the blend curve (x = the transition's length, y = 0 the starting
+      sound → 100 the transformed sound), the blend-function pickers, and the
+      graph-calculator extras — slope, vertical shift, min/max — whose defaults leave
+      the basic shapes untouched. */
+  private transGraphSection(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls trans-graph";
+    wrap.append(this.transGraphViz(tr));
+
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = "y is how far the sound has transformed (0 = as it is, 100 = the Effects values); x runs across each bar window. Slope, shift and min/max bend the function like a graph calculator.";
+    wrap.append(hint);
+
+    // The blend function itself (shape / knob / waves / ease — shared controls).
+    const touch = () => { this.schedulePreview(loop, tr); rerender(); };
+    for (const row of this.shapeControls(tr, touch)) wrap.append(row);
+
+    // Graph-calculator extras. Stored lean: the identity default is `undefined`.
+    const setOr = (v: number, def: number): number | undefined => (Math.abs(v - def) < 1e-9 ? undefined : v);
+    wrap.append(this.numRow("Slope", () => Math.round((tr.yGain ?? 1) * 100), (n) => {
+      tr.yGain = setOr(Math.max(-4, Math.min(4, Math.round(n) / 100)), 1);
+      this.recompile();
+      this.schedulePreview(loop, tr);
+    }, rerender, () => `${Math.round((tr.yGain ?? 1) * 100)}%`, 5));
+    wrap.append(this.numRow("Shift", () => Math.round((tr.yBias ?? 0) * 100), (n) => {
+      tr.yBias = setOr(Math.max(-1, Math.min(1, Math.round(n) / 100)), 0);
+      this.recompile();
+      this.schedulePreview(loop, tr);
+    }, rerender, () => `${Math.round((tr.yBias ?? 0) * 100)}%`, 5));
+    wrap.append(this.numRow("Min", () => Math.round((tr.yMin ?? 0) * 100), (n) => {
+      tr.yMin = setOr(Math.max(0, Math.min(1, Math.round(n) / 100)), 0);
+      this.recompile();
+      this.schedulePreview(loop, tr);
+    }, rerender, () => `${Math.round((tr.yMin ?? 0) * 100)}%`, 5));
+    wrap.append(this.numRow("Max", () => Math.round((tr.yMax ?? 1) * 100), (n) => {
+      tr.yMax = setOr(Math.max(0, Math.min(1, Math.round(n) / 100)), 1);
+      this.recompile();
+      this.schedulePreview(loop, tr);
+    }, rerender, () => `${Math.round((tr.yMax ?? 1) * 100)}%`, 5));
+    return wrap;
+  }
+
+  /** The transition's blend graph with its transform applied: a 0–100 y axis (0 = the
+      starting sound, 100 = the transformed sound) over the window's length. */
+  private transGraphViz(tr: LoopTransition): HTMLElement {
+    const W = 320, H = 150, T = 8, B = 24, L = 26;
+    const plotW = W - L - 4, plotH = H - T - B;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "curve-viz");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const mkLine = (x1: number, y1: number, x2: number, y2: number, cls: string) => {
+      const l = document.createElementNS(NS, "line");
+      l.setAttribute("x1", String(x1)); l.setAttribute("y1", String(y1));
+      l.setAttribute("x2", String(x2)); l.setAttribute("y2", String(y2));
+      l.setAttribute("class", cls);
+      svg.append(l);
+    };
+    const mkText = (x: number, y: number, anchor: string, text: string) => {
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("x", String(x)); t.setAttribute("y", String(y));
+      t.setAttribute("text-anchor", anchor);
+      t.setAttribute("class", "curve-viz-lbl");
+      t.textContent = text;
+      svg.append(t);
+    };
+    for (let q = 0; q <= 4; q++) {
+      const x = L + (q / 4) * plotW;
+      mkLine(x, T, x, T + plotH, "curve-viz-grid" + (q === 0 || q === 4 ? " edge" : ""));
+      const y = T + (q / 4) * plotH;
+      mkLine(L, y, L + plotW, y, "curve-viz-grid" + (q === 0 || q === 4 ? " edge" : ""));
+    }
+    mkText(L - 4, T + 4, "end", "100");
+    mkText(L - 4, T + plotH + 3, "end", "0");
+    let d = "";
+    const N = 160;
+    for (let i = 0; i <= N; i++) {
+      const x = i / N;
+      const y = blendShapeY(tr, x);
+      d += (i === 0 ? "M" : "L") + (L + x * plotW).toFixed(1) + " " + (T + plotH - y * plotH).toFixed(1) + " ";
+    }
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d.trim());
+    path.setAttribute("class", "curve-viz-line");
+    svg.append(path);
+    mkText(L, H - 6, "start", "sound");
+    mkText(W - 4, H - 6, "end", "transformed");
+
+    const box = document.createElement("div");
+    box.className = "curve-viz-box";
+    box.append(svg);
+    return box;
+  }
+
+  /** The Effects tab: the sound's params section replicated — but every value here is
+      the transition's END. Lower the filter and the transition sweeps the filter down
+      to it; each section's Reset clears its changes (back to the loop's own values). */
+  private transEffectsSection(loop: Loop, tr: LoopTransition): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "trans-effects";
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = "These are the transition's END values — the transition morphs the sound from its own settings into these, along the Graph. Reset on a section reverts it to no change.";
+    wrap.append(hint);
+
+    const kit = this.transitionKitFor(loop, tr);
+    const view = new SoundView(kit, REF_DRUM, {
+      onChange: () => {
+        tr.snapshot = kit.get(REF_DRUM).capture();
+        this.recompile();
+        this.schedulePreview(loop, tr);
+      },
+      onRangeChange: () => { /* ranges don't apply to a fixed target snapshot */ },
+      // On release, (re)start the 4-bar looping preview with the latest changes.
+      onAudition: () => this.schedulePreview(loop, tr, true),
+    }, {
+      shuffle: false,                    // the target is shaped by hand, not shuffled
+      baseline: loop.snapshot,           // section Reset = "no transformation here"
+      initialTab: this.transFxTab,
+      onTabChange: (t) => { this.transFxTab = t; },
+    });
+    wrap.append(view.el);
+    return wrap;
+  }
+
+  /** The Speed tab: stack the timing warp on the morph — the window's hits rush (rate
+      > 1×) or drag (rate < 1×) across it — plus the rhythm being warped (the loop's own
+      hits/steps circles and sequencer grid, edited in place). */
+  private transSpeedSection(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "placement-controls trans-speed";
+    const on = !!tr.speedOn;
+
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Speed";
+    const controls = document.createElement("div");
+    controls.className = "fade-controls";
+    const toggle = document.createElement("button");
+    toggle.className = "seg-btn fade-toggle" + (on ? " on" : "");
+    toggle.textContent = on ? "On" : "Off";
+    toggle.onclick = () => {
+      tr.speedOn = on ? undefined : true;
+      if (tr.speedOn && tr.rate === undefined) tr.rate = 2;
+      this.recompile();
+      this.schedulePreview(loop, tr);
+      rerender();
+    };
+    controls.append(toggle);
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = on
+      ? "The hits re-time across each window — above 1× they rush together toward the end, below 1× they stretch apart — while the tone morphs."
+      : "Off — the hits keep the grid. Turn on to speed up or slow down the loop's hits across the transition.";
+    controls.append(hint);
+    if (on) {
+      // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
+      controls.append(this.numRow("Rate", () => Math.round((tr.rate ?? 2) * 100) / 100, (n) => {
+        tr.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
+        this.recompile();
+        this.schedulePreview(loop, tr);
+      }, rerender, () => `${(tr.rate ?? 2).toFixed(2)}×`, 0.05));
+    }
+    row.append(lbl, controls);
+    wrap.append(row);
+
+    // The rhythm the warp re-times: the loop's own circles + sequencer grid, live.
+    const rHead = document.createElement("span");
+    rHead.className = "placement-lbl transition-head";
+    rHead.textContent = "Rhythm";
+    wrap.append(rHead);
+    const detail = document.createElement("div");
+    detail.className = "euclid-detail";
+    detail.append(this.rhythmCircles(loop, rerender));
+    wrap.append(detail);
+    wrap.append(this.patternGrid(loop, rerender));
+    return wrap;
+  }
+
+  /** The per-transition param-editor kit: the surface the Effects tab edits, seeded from
+      the transition's target snapshot (falling back to the loop's own sound). */
+  private transitionKitFor(loop: Loop, tr: LoopTransition): DrumKit {
+    let kit = this.transitionKits.get(tr);
+    if (kit) return kit;
+    kit = new DrumKit([REF_DRUM]);
+    const p = kit.get(REF_DRUM);
+    p.applyPreset(FULL_RANGE_PRESET);
+    if (loop.preset) kit.adoptPresetByName(REF_DRUM, loop.preset);
+    if (loop.ranges) p.restoreRanges(loop.ranges.lo, loop.ranges.hi);
+    p.restore(tr.snapshot.length ? tr.snapshot : loop.snapshot);
+    this.transitionKits.set(tr, kit);
+    return kit;
+  }
+
+  // --- transition preview (the shortened 4-bar loop) ---------------------
+
+  /** Debounced: after edits settle, re-render the 4-bar preview and swap the loop to the
+      latest changes. `now` skips the debounce (slider releases / opening the editor). */
+  private schedulePreview(loop: Loop, tr: LoopTransition, now = false): void {
+    clearTimeout(this.previewTimer);
+    this.previewTimer = window.setTimeout(() => {
+      void this.playTransitionPreview(loop, tr);
+    }, now ? 0 : 350);
+  }
+
+  /** Render 4 bars of this loop morphing LINEARLY into the transition's transformed
+      sound (offline, so it's exact), then loop the buffer — a shortened stand-in for
+      the real transition while shaping it. Stale renders (the user kept editing, or the
+      editor closed) are dropped. */
+  private async playTransitionPreview(loop: Loop, tr: LoopTransition): Promise<void> {
+    if (loop.soundId < 0 || !loop.snapshot.length) return;
+    const token = ++this.previewToken;
+    const unit = loop.steps >= 1 ? loop.steps : STEPS_PER_BAR;
+    const reps = Math.max(1, Math.floor((4 * STEPS_PER_BAR) / unit));
+    const node = loopToNode(loop, reps);
+    node.soundId = 0;
+    node.intro = undefined;
+    node.outro = { reps, mode: "morph", toId: 1 }; // linear morph across the whole 4 bars
+    const lenSteps = reps * unit;
+
+    const withGain = (snap: number[]): number[] => {
+      const s = snap.slice();
+      if (loop.gain && loop.gain !== 1) s[ParamId.Volume] = (s[ParamId.Volume] ?? 0.85) * loop.gain;
+      return s;
+    };
+    const target = tr.snapshot.length ? tr.snapshot : loop.snapshot;
+    const sounds: EngineSound[] = [
+      { id: 0, snap: withGain(loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(loop.snapshot, this.tempo) },
+      { id: 1, snap: withGain(target), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(target, this.tempo) },
+    ];
+    const arr = new LineArrangement();
+    arr.setLanes([{ color: 0, nodes: [node] }], Math.ceil(lenSteps / STEPS_PER_BAR));
+    try {
+      const buffer = await this.engine.renderToBuffer({
+        lines: arr.linesMessage(),
+        sounds,
+        tempo: this.tempo,
+        maxSteps: lenSteps,
+        tailSec: 0.1,
+      });
+      // Stale? A newer edit re-rendered, or the editor was left — drop this one.
+      if (token !== this.previewToken || this.editTransition !== tr) return;
+      this.engine.playPreviewLoop(buffer, (lenSteps * 60) / Math.max(1, this.tempo) / 4);
+    } catch { /* the preview is best-effort */ }
+  }
+
+  /** Silence the looping transition preview and cancel any pending render. */
+  private stopPreview(): void {
+    this.previewToken++;
+    clearTimeout(this.previewTimer);
+    this.engine.stopPreview();
   }
 
   /** The rule editor block: Repeat-every (three-way), For-n-bars, overlap/solo. */
@@ -4129,6 +4792,8 @@ export class App {
 
   private applyRhythm(loop: Loop, field: RhythmField, n: number): void {
     if (Number.isNaN(n)) n = 0;
+    // Editing the circles hands the pattern back to the Euclid derivation.
+    loop.patternOv = undefined;
     if (field === "steps") loop.steps = clampSteps(n);
     else if (field === "hits") loop.hits = Math.max(0, Math.min(MAX_STEPS, Math.round(n)));
     else if (field === "rotation") loop.rotation = Math.round(n);
@@ -4549,9 +5214,10 @@ export class App {
     const sound = new SoundView(editor.kit, REF_DRUM, {
       onChange: () => this.writeLoopFromEditor(loop),
       onRangeChange: () => this.writeLoopFromEditor(loop),
+      onReplace: () => this.writeAndNormalizeLoop(loop),
       onAudition: () => this.auditionLoop(loop),
       context: () => this.shuffleContext(),
-    });
+    }, { settings: editor });
     v.append(sound.el);
   }
 }

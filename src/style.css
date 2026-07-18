@@ -1730,3 +1730,50 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   /* The toast is REMOVED by JS after 1.7s — keep it visible until then. */
   .toast { animation: none !important; opacity: 1; }
 }
+
+/* ================= voice popup redesign: Loop tab + per-loop transitions ========= */
+
+/* Loop tab: the rhythm circles + the ▦ Grid toggle share the top row. */
+.loop-rhythm { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.loop-rhythm .euclid-detail { flex: 0 1 auto; }
+.loop-rhythm .pattern-toggle { flex: 0 0 auto; align-self: center; padding: 10px 12px; }
+.pattern-toggle.on { border-color: var(--vc); color: var(--vc); background: color-mix(in srgb, var(--vc) 10%, var(--panel2)); }
+
+/* The sequencer pattern grid: one cell per step, hits lit in the voice colour. */
+.pattern-grid-wrap { --vc: var(--accent); display: flex; flex-direction: column; gap: 8px; }
+.pattern-grid {
+  display: grid; grid-template-columns: repeat(var(--cols, 16), 1fr); gap: 3px;
+  padding: 8px; background: var(--field); border: 1px solid var(--line-soft); border-radius: var(--r-md);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.pattern-cell {
+  aspect-ratio: 1 / 1; min-width: 0; padding: 0;
+  background: rgba(154, 168, 204, 0.10);
+  border: none; border-radius: 4px; box-shadow: none; cursor: pointer;
+}
+.pattern-cell.beat { background: rgba(154, 168, 204, 0.17); }
+.pattern-cell.on {
+  background: var(--vc);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--vc) 45%, transparent);
+}
+.pattern-euclid { width: auto; padding: 5px 10px; }
+
+/* Bar-square grid tool row: squares-worth picker, Start·End pick, row stepper. */
+.place-grid-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.place-grid-rowbtn.on { border-color: var(--vc); color: var(--vc); background: color-mix(in srgb, var(--vc) 10%, var(--panel2)); }
+.pick-btn { width: auto; padding: 5px 10px; font-size: 12px; white-space: nowrap; }
+.span-btn { font-size: 12.5px; }
+/* A square only partially covered by the selection (span > selected bars). */
+.place-cell.part { background: linear-gradient(135deg, var(--vc) 0 50%, rgba(154, 168, 204, 0.10) 50% 100%); }
+.place-grid.picking { cursor: crosshair; outline: 1.5px dashed color-mix(in srgb, var(--vc) 55%, transparent); outline-offset: 2px; }
+
+/* Transitions tab: the list rows reuse the loop-row card; On/Off sits inline. */
+.trans-list { display: flex; flex-direction: column; gap: 8px; }
+.trans-row.off .loop-body { opacity: 0.5; }
+.trans-onoff { flex: none; align-self: center; margin-right: 4px; }
+.trans-editor { display: flex; flex-direction: column; gap: 10px; }
+.trans-editor .loop-sub-head { margin-bottom: 0; }
+.trans-editor .loop-sub-head .transition-head { flex: 1 1 auto; }
+.trans-graph { display: flex; flex-direction: column; }
+.trans-effects { display: flex; flex-direction: column; gap: 10px; }
+.trans-speed { display: flex; flex-direction: column; }

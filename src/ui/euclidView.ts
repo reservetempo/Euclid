@@ -116,7 +116,11 @@ export class EuclidView {
       if (!v || v.soundId < 0) continue;
 
       const steps = Math.max(1, v.steps);
-      const pattern = voicePattern(v.hits, steps, v.rotation, v.split);
+      // A hand-edited pattern override (the sequencer grid) wins over the Euclid derivation.
+      const pattern: (boolean | number)[] =
+        v.patternOv && v.patternOv.length === steps
+          ? v.patternOv
+          : voicePattern(v.hits, steps, v.rotation, v.split);
       const active = st.step >= 0 ? st.step % steps : -1;
       // Hit pulse: 1 right when the line fired, decaying to 0 over PULSE_MS.
       const age = now - this.fireAt[i];
