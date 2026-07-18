@@ -20,8 +20,10 @@
 
 import {
   VoiceNode, IntroEnv, OutroEnv, LifePlacement, SweepWindow, TransitionMode, BlendShapeId,
+  GraphTransform,
   emptyNode, clampEnvelopes, STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
+import { ParamId } from "./params";
 import { MelodyNode, emptyMelody, melodyNoteNode, generateMelody, regatePhrase, EmittedNote, MELODY_COLOR_INDEX } from "./melody";
 import { rng01, randomSeed } from "./rng";
 
@@ -120,6 +122,80 @@ export function rowSweepWindows(sweeps: RowSweep[] | undefined, barLimit: number
   return out;
 }
 
+/** A per-LOOP transition: the sound transforming into ANOTHER sound across a set of bars.
+    `snapshot` is the TRANSFORMED sound's full param set (the Effects tab — every value
+    edited there is the transition's END value; the starting sound is the loop's own).
+    `bars` picks WHERE it runs (1-indexed; contiguous runs each become one window; the
+    default is the loop's whole placement). The blend follows the Graph tab's function:
+    the shape (shape/curve/dir/cycles, see BlendShapeId) plus the graph-calculator
+    transform (slope/shift/min/max — identity by default). `speedOn` stacks the timing
+    warp: hits rush toward `rate`× across each window while the tone morphs. */
+export interface LoopTransition extends GraphTransform {
+  on: boolean;
+  bars: number[];
+  snapshot: number[];
+  shape?: BlendShapeId;
+  curve?: number;
+  dir?: "in" | "out";
+  cycles?: number;
+  speedOn?: boolean;
+  rate?: number; // far-end hit-rate multiple of the tempo (speed only)
+}
+
+/** A fresh transition for `loop`: on, covering the loop's full placement (else the whole
+    track), transforming into an exact copy of the current sound (edit the Effects tab to
+    bend the end values away from it). */
+export function defaultLoopTransition(loop: Loop, barLimit: number): LoopTransition {
+  const limit = Math.max(1, Math.round(barLimit));
+  const bars = new Set<number>();
+  for (const iv of placementsFor(loop, limit)) {
+    for (let b = iv.startBar; b < Math.min(limit, iv.startBar + iv.forBars); b++) bars.add(b + 1);
+  }
+  const list = bars.size ? [...bars].sort((a, b) => a - b)
+    : Array.from({ length: limit }, (_, i) => i + 1);
+  return { on: true, bars: list, snapshot: loop.snapshot.slice() };
+}
+
+/** Compile one loop's transitions into engine sweep windows: each contiguous run of
+    selected bars becomes a "morph" window lerping the lane's hits toward the transition's
+    target snapshot (side "out": sound → transformed as the window progresses), following
+    the transition's blend graph. With `speedOn` the "speed" style stacks on top (the
+    window's hits are re-timed toward `rate`× — see warpSweepOnsets). The shipped
+    morphSnap's Volume slot is converted to a RATIO of the loop's own volume so mute /
+    solo / loudness-makeup scaling (applied to the sound table, not the lanes) still
+    lands — see sweptSnap in engine.js. */
+export function loopTransitionWindows(loop: Loop, barLimit: number): SweepWindow[] {
+  const out: SweepWindow[] = [];
+  const limit = Math.max(1, Math.round(barLimit));
+  for (const tr of loop.transitions ?? []) {
+    if (!tr.on || !tr.snapshot.length) continue;
+    const bars = [...new Set(tr.bars.map((b) => Math.round(b)).filter((b) => b >= 1 && b <= limit))]
+      .sort((a, b) => a - b);
+    if (!bars.length) continue;
+    const morphSnap = tr.snapshot.slice();
+    const ownVol = loop.snapshot[ParamId.Volume] ?? 0.85;
+    morphSnap[ParamId.Volume] = (morphSnap[ParamId.Volume] ?? 0.85) / Math.max(0.05, ownVol);
+    let i = 0;
+    while (i < bars.length) {
+      let j = i;
+      while (j + 1 < bars.length && bars[j + 1] === bars[j] + 1) j++;
+      out.push({
+        from: (bars[i] - 1) * STEPS_PER_BAR,
+        to: bars[j] * STEPS_PER_BAR,
+        mode: "morph",
+        modes: tr.speedOn ? ["morph", "speed"] : undefined,
+        side: "out",
+        morphSnap,
+        shape: tr.shape, curve: tr.curve, dir: tr.dir, cycles: tr.cycles,
+        yGain: tr.yGain, yBias: tr.yBias, yMin: tr.yMin, yMax: tr.yMax,
+        rate: tr.speedOn ? (tr.rate ?? 2) : undefined,
+      });
+      i = j + 1;
+    }
+  }
+  return out;
+}
+
 /** One loop: the sound/rhythm half of a VoiceNode plus its placement rule. `reps`/`wait`
     are gone — position and length now come from the rule, computed by compile(). */
 export interface Loop {
@@ -133,6 +209,9 @@ export interface Loop {
   steps: number;
   rotation: number;
   split?: number;
+  // Hand-edited pattern override (the Loop tab's sequencer grid); cleared whenever the
+  // rhythm circles are edited. See VoiceNode.patternOv.
+  patternOv?: number[];
   rhythm?: boolean;        // melody instrument only: re-time the phrase's notes onto the
                            // Euclid pattern above (see regatePhrase); unset = the notes'
                            // own lengths/rests. Voice loops ignore it (their pattern
@@ -140,6 +219,9 @@ export interface Loop {
   gain?: number;
   intro?: IntroEnv;
   outro?: OutroEnv;
+  // Per-loop transitions (sound → transformed sound across bar windows); compiled into
+  // "morph" sweep windows on the colour's lanes — see loopTransitionWindows.
+  transitions?: LoopTransition[];
   accent?: LifePlacement; // per-loop deterministic accent placement (overrides sound's own)
   ghost?: LifePlacement;  // per-loop deterministic ghost placement (overrides sound's own)
   preset?: string;
@@ -375,6 +457,7 @@ export function loopToNode(loop: Loop, reps = 1): VoiceNode {
   n.steps = loop.steps;
   n.rotation = loop.rotation;
   n.split = loop.split;
+  n.patternOv = loop.patternOv ? loop.patternOv.slice() : undefined;
   n.gain = loop.gain;
   n.reps = Math.max(1, Math.min(MAX_REPS, reps));
   n.intro = loop.intro ? { ...loop.intro, modes: loop.intro.modes?.slice() } : undefined;
@@ -551,9 +634,12 @@ export function compile(colors: ColorTrack[], barLimit: number): Lane[] {
     if (c === MELODY_COLOR_INDEX) continue; // the last colour is the melody (see toLanes)
     const loops = colors[c]?.loops ?? [];
     if (loops.length === 0) continue;
-    // The whole row's FX sweeps ride over every lane this colour compiles to. Windows may
-    // overlap — the engine composes them (each morphs the result of the previous).
+    // The whole row's FX sweeps ride over every lane this colour compiles to, and every
+    // loop's own transitions ("morph" windows toward a transformed sound) ride with
+    // them. Windows may overlap — the engine composes them (each morphs the result of
+    // the previous).
     const wins = rowSweepWindows(colors[c]?.sweeps, limit);
+    for (const lp of loops) wins.push(...loopTransitionWindows(lp, limit));
     const sweeps = wins.length ? wins : undefined;
     const add = (nodes: VoiceNode[]) => lanes.push({ color: c, nodes, sweeps });
     // Dice loops form a shared pool regardless of their solo/overlap mode.
@@ -600,10 +686,14 @@ export function cloneLoop(loop: Loop): Loop {
     steps: loop.steps,
     rotation: loop.rotation,
     split: loop.split,
+    patternOv: loop.patternOv ? loop.patternOv.slice() : undefined,
     rhythm: loop.rhythm,
     gain: loop.gain,
     intro: loop.intro ? { ...loop.intro, modes: loop.intro.modes?.slice() } : undefined,
     outro: loop.outro ? { ...loop.outro, modes: loop.outro.modes?.slice() } : undefined,
+    transitions: loop.transitions
+      ? loop.transitions.map((t) => ({ ...t, bars: t.bars.slice(), snapshot: t.snapshot.slice() }))
+      : undefined,
     accent: loop.accent ? { ...loop.accent } : undefined,
     ghost: loop.ghost ? { ...loop.ghost } : undefined,
     preset: loop.preset,

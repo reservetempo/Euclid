@@ -157,6 +157,16 @@ export function bendProgress(t: number, curve: number | undefined, dir: "in" | "
   return dir === "in" ? 1 - Math.pow(1 - t, exp) : Math.pow(t, exp);
 }
 
+/** The graph-calculator TRANSFORM riding on top of a blend function (see blendShapeY):
+    slope multiple, vertical shift, and a floor/ceiling — all defaulting to the identity
+    so the basic shapes are untouched until edited. */
+export interface GraphTransform {
+  yGain?: number; // slope multiple (1 = as drawn; negative flips the direction)
+  yBias?: number; // vertical shift added after the gain (0 = none)
+  yMin?: number;  // clamp floor (0 = none)
+  yMax?: number;  // clamp ceiling (1 = none)
+}
+
 /** Evaluate a transition's blend FUNCTION at span progress t∈[0,1] → blend position
     y∈[0,1] (see BlendShapeId for each shape). Single source of truth for the UI's curve
     graph and the speed warp; MUST match shapeT in engine.js (the per-hit morphs). */
@@ -211,6 +221,20 @@ export function blendShape(
   }
 }
 
+/** blendShape with the graph-calculator transform applied on top: y·gain + shift,
+    clamped to [min, max] and then to [0,1]. The transition Graph tab edits these like a
+    graph calculator — the defaults are the identity, so a plain shape is unchanged.
+    MUST match shapeY in engine.js. */
+export function blendShapeY(
+  env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number } & GraphTransform,
+  t: number,
+): number {
+  let y = blendShape(env, t) * (env.yGain ?? 1) + (env.yBias ?? 0);
+  const lo = env.yMin ?? 0, hi = env.yMax ?? 1;
+  y = Math.max(lo, Math.min(hi, y));
+  return Math.max(0, Math.min(1, y));
+}
+
 /** The editable sweep endpoints + blend shape shared by both fade sides (see
     TRANSITION_SWEEP for the swept parameter per mode):
     - `from` = the swept quantity's value at the near/steady end (undefined = the sound's
@@ -235,7 +259,7 @@ export interface TransitionShape {
     sound → the effect, "in" runs the effect → the sound. `fromV`/`toV` optionally override
     the swept param's near/far values; `curve`/`dir` bend the ramp (see engine bendT). Rides
     over the node chain without splitting it — a whole-row automation, not a per-node fade. */
-export interface SweepWindow {
+export interface SweepWindow extends GraphTransform {
   from: number; // inclusive start step
   to: number;   // exclusive end step
   mode: TransitionMode;
@@ -248,6 +272,12 @@ export interface SweepWindow {
   shape?: BlendShapeId; // blend function over the window (unset = "ramp")
   cycles?: number;      // wave/stair count for the periodic shapes
   rate?: number;        // "speed" style: the far end's hit-rate multiple of the tempo
+  // "morph" style (a per-loop transition, see LoopTransition in track.ts): the FULL
+  // parameter snapshot of the TRANSFORMED sound — every hit in the window is lerped
+  // between the lane's sound and this target by the window's progress. The Volume slot
+  // holds a RATIO of the loop's own volume (not an absolute level) so mute/solo and the
+  // loudness makeup keep working — see loopTransitionWindows and sweptSnap in engine.js.
+  morphSnap?: number[];
   // "speed" only, engine message only (built in linesMessage, never serialised): the
   // window's re-timed hit onsets replacing the grid — fractional lane steps `o` (absolute)
   // firing source node `ni`'s sound. See warpSweepOnsets.
@@ -308,6 +338,10 @@ export interface VoiceNode {
   steps: number;
   rotation: number;
   split?: number; // primary-gap override for an uneven hit split (undefined = even)
+  // Hand-edited pattern override (the Loop tab's sequencer grid): 0/1 per step,
+  // replacing the Euclid-derived pattern when its length matches `steps`. Cleared
+  // whenever hits/steps/start/split are edited (the circles win again).
+  patternOv?: number[];
   reps: number;   // how many times the pattern repeats (length = reps × steps)
   wait?: number;  // lead-in silence: quiet BARS BEFORE the pattern starts (adds
                   // wait × 16 steps to the length; the voice waits, then plays). 0/unset = none.
@@ -409,7 +443,7 @@ function warpOnsets(
   // gliding along the env's blend function (shape/curve/dir/cycles).
   const rateAt = (s: number) => {
     const x = Math.max(0, Math.min(1, s / spanSteps));
-    return 1 + (mult - 1) * blendShape(env, x);
+    return 1 + (mult - 1) * blendShapeY(env, x);
   };
   const anchorStep = side === "intro" ? spanSteps : activeLen - spanSteps;
   const bit = (pstep: number) => pattern[((Math.round(pstep) % vs) + vs) % vs];
@@ -453,7 +487,7 @@ function warpSweepOnsets(hits: number[], span: number, sw: SweepWindow): { o: nu
   if (span < 1) return out;
   const rate = sw.rate ?? 2;
   const mult = rate > 0 ? rate : 1;
-  const rateAt = (s: number) => 1 + (mult - 1) * blendShape(sw, Math.max(0, Math.min(1, s / span)));
+  const rateAt = (s: number) => 1 + (mult - 1) * blendShapeY(sw, Math.max(0, Math.min(1, s / span)));
   const at = (rel: number) => hits[((Math.round(rel) % span) + span) % span];
   // side "out" is anchored at the window start, which owns its own event; side "in" is
   // anchored at the window END — the first steady step AFTER it, owned by the grid — so
@@ -619,7 +653,9 @@ export class LineArrangement {
         const unit = n.steps >= 1 ? n.steps : STEPS_PER_BAR;
         const reps = Math.max(1, n.reps | 0);
         const pattern = n.steps >= 1 && n.soundId !== EMPTY
-          ? voicePattern(n.hits, n.steps, n.rotation, n.split).map((b) => (b ? 1 : 0))
+          ? (n.patternOv && n.patternOv.length === n.steps
+              ? n.patternOv.map((b) => (b ? 1 : 0))
+              : voicePattern(n.hits, n.steps, n.rotation, n.split).map((b) => (b ? 1 : 0)))
           : [];
         const activeLen = Math.max(1, nodeLen(n) - waitLen(n));
         const iSteps = n.intro ? Math.min(n.intro.reps, reps) * unit : 0;

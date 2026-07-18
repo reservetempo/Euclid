@@ -196,6 +196,15 @@ function shapeT(t, env) {
   }
 }
 
+// shapeT with the graph-calculator TRANSFORM applied on top (the transition Graph tab):
+// y·gain + shift, clamped to [min, max] and then to [0,1]. All fields default to the
+// identity so plain envelopes/sweeps are untouched. MUST match blendShapeY in lines.ts.
+function shapeY(t, env) {
+  let y = shapeT(t, env) * (env.yGain == null ? 1 : env.yGain) + (env.yBias == null ? 0 : env.yBias);
+  y = clamp(y, env.yMin == null ? 0 : env.yMin, env.yMax == null ? 1 : env.yMax);
+  return clamp(y, 0, 1);
+}
+
 // The ONE parameter each silence-end fade sweeps (see silentVariant / nearVariant and the
 // UI's TRANSITION_SWEEP). The far end may also touch secondary params (crush's Downsample,
 // echo's Feedback, wash's Size) — those stay automatic; only this primary one is From→To
@@ -1420,7 +1429,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       let snap = baseSnap;
       if (tonal.length) {
         const raw = clamp((o - spanStart) / Math.max(1, span), 0, 1);
-        const t = shapeT(raw, env);
+        const t = shapeY(raw, env);
         snap = this.sweptSnap(baseSnap, tonal, t, side === "intro" ? "in" : "out", env.from, env.to);
       }
       const hit = this.perHit(snap, life);
@@ -1466,7 +1475,7 @@ class EngineProcessor extends AudioWorkletProcessor {
             const raw = clamp((e.o - sw2.from) / Math.max(1, sw2.to - sw2.from), 0, 1);
             const modes = (sw2.modes && sw2.modes.length ? sw2.modes : [sw2.mode]).filter((m) => m !== "speed");
             if (!modes.length) continue;
-            snap = this.sweptSnap(snap, modes, shapeT(raw, sw2), sw2.side, sw2.fromV, sw2.toV);
+            snap = this.sweptSnap(snap, modes, shapeY(raw, sw2), sw2.side, sw2.fromV, sw2.toV, sw2.morphSnap);
           }
         }
         const span = Math.max(1, sw.to - sw.from);
@@ -1504,10 +1513,20 @@ class EngineProcessor extends AudioWorkletProcessor {
   // shape the hit (their level ducks compound — stacked extremes read as a deeper fade).
   // `side` "out" runs sound → effect as t rises; "in" runs effect → sound. The optional
   // From/To overrides (`nearV`/`farV`) apply to the PRIMARY (first) style only.
-  sweptSnap(snap, modes, t, side, nearV, farV) {
+  // The "morph" style (per-loop transitions) lerps toward `morphSnap` — a FULL target
+  // snapshot whose Volume slot holds a RATIO of the loop's own volume (so a muted /
+  // soloed-out row stays silent and the loudness makeup keeps riding along).
+  sweptSnap(snap, modes, t, side, nearV, farV, morphSnap) {
     let v = snap;
     for (let i = 0; i < modes.length; i++) {
       const m = modes[i];
+      if (m === "morph") {
+        if (!morphSnap) continue;
+        const tgt = morphSnap.slice();
+        tgt[P.Volume] = rd(v, P.Volume, 0) * rd(morphSnap, P.Volume, 1);
+        v = side === "in" ? this.lerpSnap(tgt, v, t) : this.lerpSnap(v, tgt, t);
+        continue;
+      }
       const near = this.nearVariant(v, m, i === 0 ? nearV : undefined);
       const ghost = this.silentVariant(v, m, i === 0 ? farV : undefined);
       v = side === "in" ? this.lerpSnap(ghost, near, t) : this.lerpSnap(near, ghost, t);
@@ -1647,7 +1666,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         const from = fromId >= 0 ? this.sounds.get(fromId) : null;
         if (fromId < 0 || from) {
           const raw = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
-          const t = shapeT(raw, nd.intro);
+          const t = shapeY(raw, nd.intro);
           this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.modes || nd.intro.mode, t, life, gate, beat, fired, nd.intro.from, nd.intro.to);
           continue;
         }
@@ -1661,7 +1680,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (toId < 0 || to) {
           const local = activeLocal - (activeLen - outroSteps);
           const raw = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
-          const t = shapeT(raw, nd.outro);
+          const t = shapeY(raw, nd.outro);
           this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.modes || nd.outro.mode, t, life, gate, beat, fired, nd.outro.from, nd.outro.to);
           continue;
         }
@@ -1682,9 +1701,9 @@ class EngineProcessor extends AudioWorkletProcessor {
         for (let si = 0; si < sws.length; si++) {
           const sw = sws[si];
           const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
-          const t = shapeT(raw, sw);
+          const t = shapeY(raw, sw);
           const modes = sw.modes && sw.modes.length ? sw.modes : [sw.mode];
-          snap = this.sweptSnap(snap, modes, t, sw.side, sw.fromV, sw.toV);
+          snap = this.sweptSnap(snap, modes, t, sw.side, sw.fromV, sw.toV, sw.morphSnap);
         }
         const hit = this.perHit(snap, life);
         if (!hit) continue;

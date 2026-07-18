@@ -24,6 +24,7 @@ export interface EngineSound {
 export class EngineHost {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  private previewSrc: AudioBufferSourceNode | null = null; // looping transition preview
 
   /** Called whenever the playing step changes (for grid highlighting). */
   onPlayhead: ((p: Playhead) => void) | null = null;
@@ -135,6 +136,31 @@ export class EngineHost {
 
   stop(): void {
     this.node?.port.postMessage({ type: "stop" });
+  }
+
+  /** Loop a pre-rendered buffer (the transition editor's 4-bar preview), replacing any
+      previous preview. `loopEndSec` trims the loop point to the musical length so the
+      render's ring-out tail doesn't add silence to every pass. */
+  playPreviewLoop(buffer: AudioBuffer, loopEndSec: number): void {
+    if (!this.ctx) return;
+    this.stopPreview();
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+    src.loopStart = 0;
+    src.loopEnd = Math.min(Math.max(0.05, loopEndSec), buffer.duration);
+    src.connect(this.ctx.destination);
+    src.start();
+    this.previewSrc = src;
+  }
+
+  /** Stop the looping preview (no-op when none is playing). */
+  stopPreview(): void {
+    const src = this.previewSrc;
+    if (!src) return;
+    this.previewSrc = null;
+    try { src.stop(); } catch { /* already stopped */ }
+    try { src.disconnect(); } catch { /* already gone */ }
   }
 
   /** Render the lines offline (faster than realtime) to an AudioBuffer: fire exactly
