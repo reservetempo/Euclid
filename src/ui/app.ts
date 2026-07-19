@@ -148,6 +148,9 @@ export class App {
   // on a fresh open, surviving in-place popup rebuilds).
   private popupSoundTab: SoundTab | undefined;
   private soundBaseline: number[] = [];
+  // The popup's view identity at the last rebuild — an unchanged key means an in-place
+  // rebuild (a value scrub, a toggle), whose scroll position is preserved.
+  private popupViewKey = "";
   // Transition editor state: the open transition, its tab, its Effects sub-tab, and one
   // param-editor kit per transition (the target snapshot's editing surface).
   private editTransition: LoopTransition | null = null;
@@ -3024,6 +3027,10 @@ export class App {
       Rebuilt in place on any change (it's appended to the root, so it survives a panel
       re-render). */
   private openPlacement(loop: Loop): void {
+    // The sheet is rebuilt from scratch on every change, which would snap its scroll
+    // back to the top — capture it before the old overlay goes, restore it below when
+    // the rebuild is IN-PLACE (same tab/sub-page; a genuine navigation starts at top).
+    const prevScroll = document.querySelector<HTMLElement>(".placement-overlay .voice-sheet")?.scrollTop ?? 0;
     document.querySelector(".placement-overlay")?.remove();
     const fresh = this.editLoop !== loop;
     if (fresh) {
@@ -3041,6 +3048,14 @@ export class App {
       this.soundBaseline = loop.snapshot.slice(); // each section's Reset reverts to this
     }
     this.editLoop = loop;
+    // The popup's view identity: scroll only survives while it's unchanged.
+    const viewKey = [
+      this.placementTab, this.loopSub,
+      this.editTransition ? (loop.transitions ?? []).indexOf(this.editTransition) : -1,
+      this.transTab,
+    ].join(":");
+    const sameView = !fresh && this.popupViewKey === viewKey;
+    this.popupViewKey = viewKey;
     const rerender = () => this.openPlacement(loop);
 
     const overlay = document.createElement("div");
@@ -3160,6 +3175,8 @@ export class App {
 
     overlay.append(sheet);
     this.root.append(overlay);
+    // In-place rebuild: stay where the user was scrolled to.
+    if (sameView && prevScroll) sheet.scrollTop = prevScroll;
   }
 
   /** A back header for a Loop-tab sub-panel (⚙ Options / Accents), returning to the grid. */
@@ -3820,8 +3837,17 @@ export class App {
       b.className = "seg-btn" + (spec.id === s.id ? " on" : "");
       b.textContent = s.label;
       b.onclick = () => {
+        // A fresh function starts from ITS OWN defaults — nothing carries over from
+        // editing another one: the whole formula (knob, ease, waves, slope, shift,
+        // min/max) resets to the identity.
         tr.shape = s.id === "ramp" ? undefined : s.id; // ramp = the default, stored lean
-        if (s.usesCycles && tr.cycles === undefined) tr.cycles = s.cyclesDefault;
+        tr.curve = undefined;
+        tr.dir = undefined;
+        tr.cycles = s.usesCycles ? s.cyclesDefault : undefined;
+        tr.yGain = undefined;
+        tr.yBias = undefined;
+        tr.yMin = undefined;
+        tr.yMax = undefined;
         this.recompile();
         touch();
       };
@@ -4680,8 +4706,12 @@ export class App {
       b.className = "seg-btn" + (spec.id === s.id ? " on" : "");
       b.textContent = s.label;
       b.onclick = () => {
+        // Switching functions starts from the new shape's defaults — the previous
+        // shape's knob/ease/waves don't carry over.
         env.shape = s.id === "ramp" ? undefined : s.id; // ramp = the default, stored lean
-        if (s.usesCycles && env.cycles === undefined) env.cycles = s.cyclesDefault;
+        env.curve = undefined;
+        env.dir = undefined;
+        env.cycles = s.usesCycles ? s.cyclesDefault : undefined;
         this.recompile();
         rerender();
       };
