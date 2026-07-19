@@ -32,6 +32,10 @@ export const NUM_LINES = EUCLID_VOICES; // one line per voice ring / logo letter
 export const STEPS_PER_BAR = 16;        // 4/4 at 16th-note steps
 export const MAX_REPS = 64;             // per node
 export const EMPTY = -1;
+// Safety ceiling on a SPEED warp's precomputed onset list: rates now go up to 32×, so an
+// extreme rate over a huge span could otherwise mint hundreds of thousands of onsets.
+// Hits past the cap are dropped (the span plays its first MAX onsets).
+const MAX_WARP_ONSETS = 4096;
 
 // Identity colour per voice line (inner ring → outer ring), and per logo letter —
 // one six-colour rainbow for the whole app (rings, rows, node dots, wordmark).
@@ -175,7 +179,7 @@ export function blendShape(
 ): number {
   t = Math.max(0, Math.min(1, t));
   const c = Math.max(0, Math.min(1, env.curve || 0));
-  const cyc = (def: number) => Math.max(0.25, Math.min(16, env.cycles ?? def));
+  const cyc = (def: number) => Math.max(0.25, Math.min(999, env.cycles ?? def));
   switch (env.shape) {
     case "scurve": {
       const k = 4 + c * 12;
@@ -456,7 +460,7 @@ function warpOnsets(
   for (let i = 1; i <= N; i++) {
     const s0 = (i - 1) * ds, s1 = i * ds;
     const psiNext = psi + 0.5 * (rateAt(s0) + rateAt(s1)) * ds; // trapezoid
-    while (nextM <= psiNext) {
+    while (nextM <= psiNext && onsets.length < MAX_WARP_ONSETS) {
       const frac = psiNext > psi ? (nextM - psi) / (psiNext - psi) : 0;
       const s = s0 + frac * ds;
       const o = side === "intro" ? spanSteps - s : anchorStep + s;
@@ -500,7 +504,7 @@ function warpSweepOnsets(hits: number[], span: number, sw: SweepWindow): { o: nu
   for (let i = 1; i <= N; i++) {
     const s0 = (i - 1) * ds, s1 = i * ds;
     const psiNext = psi + 0.5 * (rateAt(s0) + rateAt(s1)) * ds; // trapezoid
-    while (nextM <= psiNext) {
+    while (nextM <= psiNext && out.length < MAX_WARP_ONSETS) {
       const frac = psiNext > psi ? (nextM - psi) / (psiNext - psi) : 0;
       const s = s0 + frac * ds;
       const rel = sw.side === "out" ? nextM : span - nextM;

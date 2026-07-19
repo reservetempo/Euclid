@@ -148,12 +148,16 @@ export class App {
   // on a fresh open, surviving in-place popup rebuilds).
   private popupSoundTab: SoundTab | undefined;
   private soundBaseline: number[] = [];
+  // The popup's view identity at the last rebuild — an unchanged key means an in-place
+  // rebuild (a value scrub, a toggle), whose scroll position is preserved.
+  private popupViewKey = "";
   // Transition editor state: the open transition, its tab, its Effects sub-tab, and one
-  // param-editor kit per transition (the target snapshot's editing surface).
+  // param editor (kit + shuffle settings) per transition — the target snapshot's
+  // editing surface, shuffle included.
   private editTransition: LoopTransition | null = null;
   private transTab: "bars" | "graph" | "effects" | "speed" = "bars";
   private transFxTab: SoundTab | undefined;
-  private transitionKits = new Map<LoopTransition, DrumKit>();
+  private transitionKits = new Map<LoopTransition, VoiceEditor>();
   // Debounced looping preview of the transition being edited (offline render): hear the
   // whole TRANSITION over a loop of a chosen length, or just the transformed RESULT.
   private previewTimer = 0;
@@ -2766,7 +2770,7 @@ export class App {
     if (envHasSpeed(sweep)) {
       // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
       card.append(this.numRow("Rate", () => Math.round((sweep.rate ?? 2) * 100) / 100, (n) => {
-        sweep.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
+        sweep.rate = Math.round(Math.max(0.05, Math.min(32, n)) * 100) / 100;
         this.recompile();
       }, rerender, () => `${(sweep.rate ?? 2).toFixed(2)}×`, 0.05));
     }
@@ -3024,6 +3028,10 @@ export class App {
       Rebuilt in place on any change (it's appended to the root, so it survives a panel
       re-render). */
   private openPlacement(loop: Loop): void {
+    // The sheet is rebuilt from scratch on every change, which would snap its scroll
+    // back to the top — capture it before the old overlay goes, restore it below when
+    // the rebuild is IN-PLACE (same tab/sub-page; a genuine navigation starts at top).
+    const prevScroll = document.querySelector<HTMLElement>(".placement-overlay .voice-sheet")?.scrollTop ?? 0;
     document.querySelector(".placement-overlay")?.remove();
     const fresh = this.editLoop !== loop;
     if (fresh) {
@@ -3041,6 +3049,14 @@ export class App {
       this.soundBaseline = loop.snapshot.slice(); // each section's Reset reverts to this
     }
     this.editLoop = loop;
+    // The popup's view identity: scroll only survives while it's unchanged.
+    const viewKey = [
+      this.placementTab, this.loopSub,
+      this.editTransition ? (loop.transitions ?? []).indexOf(this.editTransition) : -1,
+      this.transTab,
+    ].join(":");
+    const sameView = !fresh && this.popupViewKey === viewKey;
+    this.popupViewKey = viewKey;
     const rerender = () => this.openPlacement(loop);
 
     const overlay = document.createElement("div");
@@ -3084,6 +3100,14 @@ export class App {
       sheet.append(sub);
     }
 
+    // While a transition's editor is open it takes the whole page — the popup's own
+    // Sound / Loop / Transitions nav hides (its ‹ Back returns to the list, which
+    // brings the nav back).
+    const trs = loop.transitions ?? (loop.transitions = []);
+    const openTr = this.placementTab === "transition" && this.editTransition && trs.includes(this.editTransition)
+      ? this.editTransition
+      : null;
+
     // Tab nav across the three sub-pages.
     const nav = document.createElement("div");
     nav.className = "placement-seg placement-nav";
@@ -3105,14 +3129,12 @@ export class App {
       return b;
     };
     nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transitions"));
-    sheet.append(nav);
+    if (!openTr) sheet.append(nav);
 
     if (this.placementTab === "sound") {
       this.appendSoundTab(loop, sheet);
     } else if (this.placementTab === "transition") {
-      const trs = loop.transitions ?? (loop.transitions = []);
-      const cur = this.editTransition && trs.includes(this.editTransition) ? this.editTransition : null;
-      if (cur) sheet.append(this.transitionEditor(loop, cur, rerender));
+      if (openTr) sheet.append(this.transitionEditor(loop, openTr, rerender));
       else { this.editTransition = null; sheet.append(this.transitionList(loop, rerender)); }
     } else if (this.loopSub === "options") {
       // Procedural placement options (behind the ⚙ button): the Repeat-every rule.
@@ -3160,6 +3182,8 @@ export class App {
 
     overlay.append(sheet);
     this.root.append(overlay);
+    // In-place rebuild: stay where the user was scrolled to.
+    if (sameView && prevScroll) sheet.scrollTop = prevScroll;
   }
 
   /** A back header for a Loop-tab sub-panel (⚙ Options / Accents), returning to the grid. */
@@ -3788,7 +3812,7 @@ export class App {
     );
     controls.append(seg);
     controls.append(this.numRow("Length", () => this.transPreviewBars, (n) => {
-      this.transPreviewBars = Math.max(1, Math.min(16, Math.round(n)));
+      this.transPreviewBars = Math.max(1, Math.min(64, Math.round(n)));
       this.schedulePreview(loop, tr);
     }, rerender, () => `${this.transPreviewBars} bar${this.transPreviewBars === 1 ? "" : "s"}`));
     row.append(lbl, controls);
@@ -3820,8 +3844,17 @@ export class App {
       b.className = "seg-btn" + (spec.id === s.id ? " on" : "");
       b.textContent = s.label;
       b.onclick = () => {
+        // A fresh function starts from ITS OWN defaults — nothing carries over from
+        // editing another one: the whole formula (knob, ease, waves, slope, shift,
+        // min/max) resets to the identity.
         tr.shape = s.id === "ramp" ? undefined : s.id; // ramp = the default, stored lean
-        if (s.usesCycles && tr.cycles === undefined) tr.cycles = s.cyclesDefault;
+        tr.curve = undefined;
+        tr.dir = undefined;
+        tr.cycles = s.usesCycles ? s.cyclesDefault : undefined;
+        tr.yGain = undefined;
+        tr.yBias = undefined;
+        tr.yMin = undefined;
+        tr.yMax = undefined;
         this.recompile();
         touch();
       };
@@ -3865,10 +3898,10 @@ export class App {
       ({ sym, read, write, step, help, show: show ?? (() => String(r2(read()))) });
 
     // The two transform variables every shape shares (y is drawn 0–100).
-    const A = fv("a", () => r2(tr.yGain ?? 1), (n) => { tr.yGain = lean(clamp(r2(n), -4, 4), 1); touch(); }, 0.05,
-      "Slope / height multiplier. 1 leaves the shape as drawn; 2 makes it climb twice as steeply (clamped at the top); negative flips it upside down — the transition starts transformed and comes back.");
-    const B = fv("b", () => Math.round((tr.yBias ?? 0) * 100), (n) => { tr.yBias = lean(clamp(Math.round(n), -100, 100) / 100, 0); touch(); }, 5,
-      "Vertical shift, in y units (0–100). +25 lifts the whole curve a quarter of the way toward the transformed sound before it even starts.",
+    const A = fv("a", () => r2(tr.yGain ?? 1), (n) => { tr.yGain = lean(clamp(r2(n), -100, 100), 1); touch(); }, 0.05,
+      "Slope / height multiplier. 1 leaves the shape as drawn; 2 makes it climb twice as steeply (clamped at the top — a big a makes the transformation snap early); negative flips it upside down — the transition starts transformed and comes back.");
+    const B = fv("b", () => Math.round((tr.yBias ?? 0) * 100), (n) => { tr.yBias = lean(clamp(Math.round(n), -1000, 1000) / 100, 0); touch(); }, 5,
+      "Vertical shift, in y units (0–100, but it can run far past either end). +25 lifts the whole curve a quarter of the way toward the transformed sound; a large negative b with a steep a holds the sound plain, then transforms late.",
       () => String(Math.round((tr.yBias ?? 0) * 100)));
 
     // The shape's own variables (each maps back onto the stored curve/cycles/dir).
@@ -3888,11 +3921,11 @@ export class App {
       touch();
     }, 0.05, "Where the arch peaks, as a fraction of the window (0.5 = the middle; 0.15 peaks early, 0.85 late). The curve goes out to the transformed sound and back.");
     const N_WAVE = fv("n", () => r2(tr.cycles ?? spec.cyclesDefault), (n) => {
-      tr.cycles = clamp(r2(n), 0.25, 16);
+      tr.cycles = clamp(r2(n), 0.25, 999);
       touch();
-    }, 0.25, "How many waves fit in the window. Half-integers land at the transformed end; whole numbers return home.");
+    }, 0.25, "How many waves fit in the window — as many as you like. Half-integers land at the transformed end; whole numbers return home.");
     const N_STEP = fv("n", () => Math.max(2, Math.round(tr.cycles ?? spec.cyclesDefault)), (n) => {
-      tr.cycles = clamp(Math.round(n), 2, 16);
+      tr.cycles = clamp(Math.round(n), 2, 99);
       touch();
     }, 1, "How many flat levels the staircase jumps through on its way to the transformed sound.", () => String(Math.max(2, Math.round(tr.cycles ?? spec.cyclesDefault))));
     const W_WARP = K_POW("Time warp exponent on x: 1 spaces the waves evenly; up to 4 squeezes them toward one end (an accelerating oscillation — the Ease buttons pick which end).");
@@ -4074,27 +4107,29 @@ export class App {
 
   /** The Effects tab: the sound's params section replicated — but every value here is
       the transition's END. Lower the filter and the transition sweeps the filter down
-      to it; each section's Reset clears its changes (back to the loop's own values). */
+      to it; each section's Reset clears its changes (back to the loop's own values).
+      The Shuffle panel is here too, rolling a whole new destination sound at once. */
   private transEffectsSection(loop: Loop, tr: LoopTransition): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "trans-effects";
     const hint = document.createElement("p");
     hint.className = "sing-hint";
-    hint.textContent = "These are the transition's END values — the transition morphs the sound from its own settings into these, along the Graph. Reset on a section reverts it to no change.";
+    hint.textContent = "These are the transition's END values — the transition morphs the sound from its own settings into these, along the Graph. Shuffle rolls a whole new destination; Reset on a section reverts it to no change.";
     wrap.append(hint);
 
-    const kit = this.transitionKitFor(loop, tr);
-    const view = new SoundView(kit, REF_DRUM, {
+    const ed = this.transitionKitFor(loop, tr);
+    const view = new SoundView(ed.kit, REF_DRUM, {
       onChange: () => {
-        tr.snapshot = kit.get(REF_DRUM).capture();
+        tr.snapshot = ed.kit.get(REF_DRUM).capture();
         this.recompile();
         this.schedulePreview(loop, tr);
       },
       onRangeChange: () => { /* ranges don't apply to a fixed target snapshot */ },
-      // On release, (re)start the 4-bar looping preview with the latest changes.
+      // On release / after a shuffle, (re)start the looping preview with the changes.
       onAudition: () => this.schedulePreview(loop, tr, true),
+      context: () => this.shuffleContext(),
     }, {
-      shuffle: false,                    // the target is shaped by hand, not shuffled
+      settings: ed,                      // shuffle settings persist across rebuilds
       baseline: loop.snapshot,           // section Reset = "no transformation here"
       initialTab: this.transFxTab,
       onTabChange: (t) => { this.transFxTab = t; },
@@ -4183,7 +4218,7 @@ export class App {
     if (on) {
       // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
       controls.append(this.numRow("Rate", () => Math.round((tr.rate ?? 2) * 100) / 100, (n) => {
-        tr.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
+        tr.rate = Math.round(Math.max(0.05, Math.min(32, n)) * 100) / 100;
         this.recompile();
         this.schedulePreview(loop, tr);
       }, rerender, () => `${(tr.rate ?? 2).toFixed(2)}×`, 0.05));
@@ -4204,19 +4239,21 @@ export class App {
     return wrap;
   }
 
-  /** The per-transition param-editor kit: the surface the Effects tab edits, seeded from
-      the transition's target snapshot (falling back to the loop's own sound). */
-  private transitionKitFor(loop: Loop, tr: LoopTransition): DrumKit {
-    let kit = this.transitionKits.get(tr);
-    if (kit) return kit;
-    kit = new DrumKit([REF_DRUM]);
+  /** The per-transition param editor (kit + shuffle settings): the surface the Effects
+      tab edits, seeded from the transition's target snapshot (falling back to the
+      loop's own sound). */
+  private transitionKitFor(loop: Loop, tr: LoopTransition): VoiceEditor {
+    let ed = this.transitionKits.get(tr);
+    if (ed) return ed;
+    const kit = new DrumKit([REF_DRUM]);
     const p = kit.get(REF_DRUM);
     p.applyPreset(FULL_RANGE_PRESET);
     if (loop.preset) kit.adoptPresetByName(REF_DRUM, loop.preset);
     if (loop.ranges) p.restoreRanges(loop.ranges.lo, loop.ranges.hi);
     p.restore(tr.snapshot.length ? tr.snapshot : loop.snapshot);
-    this.transitionKits.set(tr, kit);
-    return kit;
+    ed = { kit, ...defaultShuffleSettings() };
+    this.transitionKits.set(tr, ed);
+    return ed;
   }
 
   // --- transition preview (the shortened 4-bar loop) ---------------------
@@ -4239,7 +4276,7 @@ export class App {
     if (loop.soundId < 0 || !loop.snapshot.length) return;
     const token = ++this.previewToken;
     const resultOnly = this.transPreviewMode === "result";
-    const bars = Math.max(1, Math.min(16, Math.round(this.transPreviewBars)));
+    const bars = Math.max(1, Math.min(64, Math.round(this.transPreviewBars)));
     const unit = loop.steps >= 1 ? loop.steps : STEPS_PER_BAR;
     const reps = Math.max(1, Math.floor((bars * STEPS_PER_BAR) / unit));
     const node = loopToNode(loop, reps);
@@ -4607,7 +4644,7 @@ export class App {
       if (active.includes("speed")) {
         // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
         controls.append(this.numRow("Rate", () => Math.round((env.rate ?? 2) * 100) / 100, (n) => {
-          env.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
+          env.rate = Math.round(Math.max(0.05, Math.min(32, n)) * 100) / 100;
           this.recompile();
         }, rerender, () => `${(env.rate ?? 2).toFixed(2)}×`, 0.05));
       }
@@ -4680,8 +4717,12 @@ export class App {
       b.className = "seg-btn" + (spec.id === s.id ? " on" : "");
       b.textContent = s.label;
       b.onclick = () => {
+        // Switching functions starts from the new shape's defaults — the previous
+        // shape's knob/ease/waves don't carry over.
         env.shape = s.id === "ramp" ? undefined : s.id; // ramp = the default, stored lean
-        if (s.usesCycles && env.cycles === undefined) env.cycles = s.cyclesDefault;
+        env.curve = undefined;
+        env.dir = undefined;
+        env.cycles = s.usesCycles ? s.cyclesDefault : undefined;
         this.recompile();
         rerender();
       };
@@ -4699,7 +4740,7 @@ export class App {
     if (spec.usesCycles) {
       if (spec.id === "steps") {
         out.push(this.numRow("Stairs", () => Math.round(env.cycles ?? spec.cyclesDefault), (n) => {
-          env.cycles = Math.max(2, Math.min(16, Math.round(n)));
+          env.cycles = Math.max(2, Math.min(99, Math.round(n)));
           this.recompile();
         }, rerender, () => `${Math.round(env.cycles ?? spec.cyclesDefault)} levels`));
       } else {
@@ -4707,7 +4748,7 @@ export class App {
         // scrubbing steps by quarter waves (half-integers land at the far end,
         // integers return home).
         out.push(this.numRow("Waves", () => Math.round((env.cycles ?? spec.cyclesDefault) * 100) / 100, (n) => {
-          env.cycles = Math.round(Math.max(0.25, Math.min(16, n)) * 100) / 100;
+          env.cycles = Math.round(Math.max(0.25, Math.min(999, n)) * 100) / 100;
           this.recompile();
         }, rerender, () => {
           const w = Math.round((env.cycles ?? spec.cyclesDefault) * 100) / 100;
