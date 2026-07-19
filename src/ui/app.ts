@@ -47,6 +47,7 @@ import {
 } from "../model/melodyGraph";
 import { detectPitchHz, SingTracker, SungNote, sungToMelodyNotes, midiName } from "../model/sing";
 import { EuclidView, RingState } from "./euclidView";
+import { helpButton, HelpItem } from "./soundHelp";
 import { SoundView, SoundTab } from "./soundView";
 import { defaultShuffleSettings, shuffleOptions, randomSeed } from "./controls";
 import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
@@ -102,8 +103,7 @@ export class App {
   private view: View = "track";
   private lastViewKey = "";             // view identity at the previous render (scroll-preserve guard)
   private openColor = 0;               // which colour panel is open
-  // Colour-panel sub-tab (Loops / Transition / Mixer) and its melody-list twin.
-  private colorTab: "loops" | "transition" | "mixer" = "loops";
+  // Melody-list sub-tab (the voice colour panel lost its tabs — it's just the loop list).
   private melodyListTab: "melodies" | "transition" | "mixer" = "melodies";
   private melodyPath: MelodyNote[] = []; // notes descended into (branch drill-down); [] = root
   private melodyItemIndex = -1;          // which melody in the list is open (-1 = the list/menu)
@@ -139,10 +139,11 @@ export class App {
   private placeGridRows = 8;
   // Loop tab: whether the sequencer pattern grid is unfolded.
   private patternOpen = false;
-  // Bar-square grids (loop placement / transition bars): how many bars one square is
-  // worth (1 / 2 / 4), and the armed Start→End range pick (start 0 = awaiting start).
-  private gridSpan: Record<"place" | "trans", number> = { place: 2, trans: 2 };
-  private gridPick: { key: "place" | "trans"; start: number } | null = null;
+  // Bar-square grids (loop placement / transition bars / the play range): how many bars
+  // one square is worth (1 / 2 / 4), and the armed Start→End pick (start 0 = awaiting
+  // the start square).
+  private gridSpan: Record<"place" | "trans" | "range", number> = { place: 2, trans: 2, range: 2 };
+  private gridPick: { key: "place" | "trans" | "range"; start: number } | null = null;
   // Voice popup Sound tab: the active editor sub-tab + the Reset baseline (both captured
   // on a fresh open, surviving in-place popup rebuilds).
   private popupSoundTab: SoundTab | undefined;
@@ -153,9 +154,12 @@ export class App {
   private transTab: "bars" | "graph" | "effects" | "speed" = "bars";
   private transFxTab: SoundTab | undefined;
   private transitionKits = new Map<LoopTransition, DrumKit>();
-  // Debounced looping 4-bar preview of the transition being edited (offline render).
+  // Debounced looping preview of the transition being edited (offline render): hear the
+  // whole TRANSITION over a loop of a chosen length, or just the transformed RESULT.
   private previewTimer = 0;
   private previewToken = 0;
+  private transPreviewMode: "transition" | "result" = "transition";
+  private transPreviewBars = 4;
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
   private soundName = "";
@@ -532,8 +536,7 @@ export class App {
     let viewKey = this.view;
     // Each melody sub-tab is its own scroll context (distinct from the notes page).
     if (this.view === "melody" && this.currentMelodyItem()) viewKey += ":" + this.melodyTab;
-    // Likewise the colour panel's and melody list's sub-tabs.
-    if (this.view === "color") viewKey += ":" + this.colorTab;
+    // Likewise the melody list's sub-tabs.
     if (this.view === "melody" && !this.currentMelodyItem()) viewKey += ":list:" + this.melodyListTab;
     const sameView = this.lastViewKey === viewKey;
     this.lastViewKey = viewKey;
@@ -782,19 +785,63 @@ export class App {
     return b;
   }
 
-  /** Pop up the play-range strip (drag to loop bars n→m) over the rings — kept out of the
-      main column so the track view stays compact. */
+  /** Pop up the play-range editor over the rings — the same bar-SQUARE grid the voice
+      loops place on (1/2/4-bar squares, Start·End pick), looping just the picked bars.
+      Kept out of the main column so the track view stays compact. */
   private openPlayRangePopup(): void {
     document.querySelector(".playrange-overlay")?.remove();
     const overlay = document.createElement("div");
     overlay.className = "playrange-overlay";
     // Closing re-renders so the rings' play-range button reflects the new on/off state.
-    overlay.onclick = (e) => { if (e.target === overlay) this.render(); };
+    overlay.onclick = (e) => { if (e.target === overlay) { this.gridPick = null; this.render(); } };
     const card = document.createElement("div");
     card.className = "playrange-card";
-    card.append(this.playRangeStrip());
+    card.append(this.playRangeGrid());
     overlay.append(card);
     this.root.append(overlay);
+  }
+
+  /** The play-range as a bar grid: the picked squares are the section that loops (a
+      contiguous from→to range — painting gaps spans across them). Applied to the engine
+      live; not saved with the project. */
+  private playRangeGrid(): HTMLElement {
+    const isOn = () => this.playFromBar >= 1 && this.playToBar >= this.playFromBar;
+    const wrap = document.createElement("div");
+    wrap.className = "track-barlimit play-range" + (isOn() ? " on" : "");
+
+    const head = document.createElement("div");
+    head.className = "play-range-head";
+    const lbl = document.createElement("span");
+    lbl.className = "play-range-lbl";
+    lbl.textContent = "Play range";
+    const readout = document.createElement("span");
+    readout.className = "play-range-readout";
+    readout.textContent = isOn()
+      ? `bars ${this.playFromBar}–${this.playToBar}`
+      : "whole track — pick a section to loop";
+    head.append(lbl, readout);
+    wrap.append(head);
+
+    const barLimit = Math.max(1, this.track.barLimit);
+    wrap.append(this.barGrid({
+      key: "range",
+      color: "var(--accent)",
+      read: () => {
+        if (!isOn()) return [];
+        const to = Math.min(this.playToBar, barLimit);
+        return Array.from({ length: Math.max(0, to - this.playFromBar + 1) }, (_, i) => this.playFromBar + i);
+      },
+      write: (bars) => {
+        // The range is contiguous from→to: painting with gaps spans across them.
+        if (!bars.length) { this.playFromBar = 0; this.playToBar = 0; }
+        else { this.playFromBar = bars[0]; this.playToBar = bars[bars.length - 1]; }
+        this.applySection(); // follow along live while playing
+      },
+      commit: () => this.openPlayRangePopup(),
+      occupied: new Set(),
+      grow: false,
+    }));
+    return wrap;
   }
 
   private mixerOpenBtn(from: View): HTMLElement {
@@ -948,54 +995,6 @@ export class App {
     return strip;
   }
 
-  /** Play-range: DRAG across a bar strip to loop just bars n→m. A whole-track mini-timeline
-      (one row, whatever the bar limit) with a highlight band, a readout, and a clear. Applied
-      live to the engine while dragging. A rehearsal aid, kept in app state only (not saved). */
-  private playRangeStrip(): HTMLElement {
-    const barLimit = Math.max(1, this.track.barLimit);
-    const isOn = () => this.playFromBar >= 1 && this.playToBar >= this.playFromBar;
-
-    const wrap = document.createElement("div");
-    wrap.className = "track-barlimit play-range" + (isOn() ? " on" : "");
-
-    const head = document.createElement("div");
-    head.className = "play-range-head";
-    const lbl = document.createElement("span");
-    lbl.className = "play-range-lbl";
-    lbl.textContent = "Play range";
-    const readout = document.createElement("span");
-    readout.className = "play-range-readout";
-    const readoutText = () => isOn()
-      ? `bars ${this.playFromBar}–${this.playToBar}`
-      : "whole track — drag to loop a section";
-    readout.textContent = readoutText();
-    const clear = document.createElement("button");
-    clear.className = "play-range-clear";
-    clear.textContent = "✕";
-    clear.title = "Clear the play range";
-    clear.disabled = !isOn();
-    clear.onclick = () => { this.playFromBar = 0; this.playToBar = 0; this.applySection(); this.render(); };
-    head.append(lbl, readout, clear);
-    wrap.append(head);
-
-    const syncHead = () => {
-      readout.textContent = readoutText();
-      clear.disabled = !isOn();
-      wrap.classList.toggle("on", isOn());
-    };
-    wrap.append(this.barStrip(
-      barLimit,
-      () => (isOn() ? { from: this.playFromBar, to: this.playToBar } : null),
-      (from, to) => {
-        this.playFromBar = from;
-        this.playToBar = to;
-        this.applySection(); // follow the drag live while playing
-        syncHead();
-      },
-    ));
-    return wrap;
-  }
-
   private renderTrackPanel(): void {
     const v = this.viewRoot;
     const rings = document.createElement("div");
@@ -1047,7 +1046,7 @@ export class App {
       row.append(strip);
       for (const l of ct.loops) if (l.soundId >= 0) this.voiceBtns.set(l.soundId, row);
 
-      row.onclick = () => { this.openColor = c; this.colorTab = "loops"; this.view = "color"; this.editLoop = null; this.render(); };
+      row.onclick = () => { this.openColor = c; this.view = "color"; this.editLoop = null; this.render(); };
       overview.append(row);
     }
     v.append(overview);
@@ -2618,29 +2617,13 @@ export class App {
     head.append(back, title);
     v.append(head);
 
-    // Sub-tabs: the loop list, the row's transitions, and the mixer.
-    v.append(this.tabNav<"loops" | "transition" | "mixer">(
-      [["loops", "Loops"], ["transition", "Transition"], ["mixer", "Mixer"]],
-      this.colorTab,
-      (t) => { this.colorTab = t; this.render(); },
-      VOICE_COLORS[c],
-    ));
-
-    if (this.colorTab === "mixer") {
-      v.append(this.mixerStripList());
-      return;
-    }
-
+    // Just the loop list — mixing lives in the main-menu mixer, transitions in each
+    // voice's own settings, so the old Transition / Mixer sub-tabs are gone.
     const loops = this.track.colors[c].loops;
 
     // Read-only timeline: the colour's compiled lanes across the whole track, so the
     // procedural placement is visible (one row per lane; a bar is lit where it sounds).
     if (loops.some((l) => l.soundId >= 0)) v.append(this.colorPreview(c));
-
-    if (this.colorTab === "transition") {
-      v.append(this.rowTransitionEditor(c));
-      return;
-    }
 
     const list = document.createElement("div");
     list.className = "loop-list";
@@ -3052,6 +3035,7 @@ export class App {
       this.gridPick = null;
       this.editTransition = null;
       this.transTab = "bars";
+      this.transPreviewMode = "transition";
       this.popupSoundTab = undefined;
       this.transFxTab = undefined;
       this.soundBaseline = loop.snapshot.slice(); // each section's Reset reverts to this
@@ -3062,6 +3046,10 @@ export class App {
     const overlay = document.createElement("div");
     // .sheet-enter animates the card in — only on a fresh open, not in-place rebuilds.
     overlay.className = "placement-overlay voice-sheet-overlay" + (fresh ? " sheet-enter" : "");
+    // The sheet fills the page BELOW the top bar (the nav stays visible/usable), so the
+    // editor gets the whole rest of the screen.
+    const topbar = this.root.querySelector(".topbar");
+    overlay.style.setProperty("--popup-top", `${Math.max(0, Math.round(topbar?.getBoundingClientRect().bottom ?? 0))}px`);
     overlay.onclick = (e) => { if (e.target === overlay) this.closePlacement(); };
 
     const sheet = document.createElement("div");
@@ -3257,7 +3245,7 @@ export class App {
       itself sounds). With `grow`, painting past the track lengthens it (loop placement
       only); otherwise the grid is clamped to the track. */
   private barGrid(cfg: {
-    key: "place" | "trans";
+    key: "place" | "trans" | "range";
     color: string;
     read: () => number[];
     write: (bars: number[]) => void; // live during a drag (engine follows along)
@@ -3750,6 +3738,8 @@ export class App {
     nav.append(mkTab("bars", "Bars"), mkTab("graph", "Graph"), mkTab("effects", "Effects"), mkTab("speed", "Speed"));
     wrap.append(nav);
 
+    wrap.append(this.transPreviewRow(loop, tr, rerender));
+
     if (this.transTab === "bars") {
       const hint = document.createElement("p");
       hint.className = "sing-hint";
@@ -3766,10 +3756,49 @@ export class App {
     return wrap;
   }
 
+  /** The preview picker shown on every transition tab: hear the whole TRANSITION over a
+      loop of a chosen length (sound → transformed, linearly), or just the transformed
+      RESULT looping — for shaping the destination on its own. */
+  private transPreviewRow(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row trans-preview-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Preview";
+    const controls = document.createElement("div");
+    controls.className = "fade-controls trans-preview-ctl";
+    const seg = document.createElement("div");
+    seg.className = "placement-seg fade-modes";
+    const mkMode = (m: "transition" | "result", text: string, title: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (this.transPreviewMode === m ? " on" : "");
+      b.textContent = text;
+      b.title = title;
+      b.onclick = () => {
+        if (this.transPreviewMode === m) return;
+        this.transPreviewMode = m;
+        this.schedulePreview(loop, tr, true);
+        rerender();
+      };
+      return b;
+    };
+    seg.append(
+      mkMode("transition", "Transition", "Loop the sound morphing into the transformed sound"),
+      mkMode("result", "Result only", "Loop just the transformed sound, no morph"),
+    );
+    controls.append(seg);
+    controls.append(this.numRow("Length", () => this.transPreviewBars, (n) => {
+      this.transPreviewBars = Math.max(1, Math.min(16, Math.round(n)));
+      this.schedulePreview(loop, tr);
+    }, rerender, () => `${this.transPreviewBars} bar${this.transPreviewBars === 1 ? "" : "s"}`));
+    row.append(lbl, controls);
+    return row;
+  }
+
   /** The Graph tab: the blend curve (x = the transition's length, y = 0 the starting
-      sound → 100 the transformed sound), the blend-function pickers, and the
-      graph-calculator extras — slope, vertical shift, min/max — whose defaults leave
-      the basic shapes untouched. */
+      sound → 100 the transformed sound), the shape picker, and the function written out
+      as its FORMULA — every variable an inline input, with the min/max bounds shown as
+      an inequality next to it and a ? explaining the function and each variable. */
   private transGraphSection(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "placement-controls trans-graph";
@@ -3777,36 +3806,218 @@ export class App {
 
     const hint = document.createElement("p");
     hint.className = "sing-hint";
-    hint.textContent = "y is how far the sound has transformed (0 = as it is, 100 = the Effects values); x runs across each bar window. Slope, shift and min/max bend the function like a graph calculator.";
+    hint.textContent = "y is how far the sound has transformed (0 = as it is, 100 = the Effects values); x runs 0→1 across each bar window. Tap any number in the formula to change it.";
     wrap.append(hint);
 
-    // The blend function itself (shape / knob / waves / ease — shared controls).
     const touch = () => { this.schedulePreview(loop, tr); rerender(); };
-    for (const row of this.shapeControls(tr, touch)) wrap.append(row);
 
-    // Graph-calculator extras. Stored lean: the identity default is `undefined`.
-    const setOr = (v: number, def: number): number | undefined => (Math.abs(v - def) < 1e-9 ? undefined : v);
-    wrap.append(this.numRow("Slope", () => Math.round((tr.yGain ?? 1) * 100), (n) => {
-      tr.yGain = setOr(Math.max(-4, Math.min(4, Math.round(n) / 100)), 1);
-      this.recompile();
-      this.schedulePreview(loop, tr);
-    }, rerender, () => `${Math.round((tr.yGain ?? 1) * 100)}%`, 5));
-    wrap.append(this.numRow("Shift", () => Math.round((tr.yBias ?? 0) * 100), (n) => {
-      tr.yBias = setOr(Math.max(-1, Math.min(1, Math.round(n) / 100)), 0);
-      this.recompile();
-      this.schedulePreview(loop, tr);
-    }, rerender, () => `${Math.round((tr.yBias ?? 0) * 100)}%`, 5));
-    wrap.append(this.numRow("Min", () => Math.round((tr.yMin ?? 0) * 100), (n) => {
-      tr.yMin = setOr(Math.max(0, Math.min(1, Math.round(n) / 100)), 0);
-      this.recompile();
-      this.schedulePreview(loop, tr);
-    }, rerender, () => `${Math.round((tr.yMin ?? 0) * 100)}%`, 5));
-    wrap.append(this.numRow("Max", () => Math.round((tr.yMax ?? 1) * 100), (n) => {
-      tr.yMax = setOr(Math.max(0, Math.min(1, Math.round(n) / 100)), 1);
-      this.recompile();
-      this.schedulePreview(loop, tr);
-    }, rerender, () => `${Math.round((tr.yMax ?? 1) * 100)}%`, 5));
+    // Shape picker (the same shapes every transition surface offers).
+    const shapeSeg = document.createElement("div");
+    shapeSeg.className = "placement-seg fade-modes";
+    const spec = blendShapeSpec(tr.shape);
+    for (const s of BLEND_SHAPES) {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (spec.id === s.id ? " on" : "");
+      b.textContent = s.label;
+      b.onclick = () => {
+        tr.shape = s.id === "ramp" ? undefined : s.id; // ramp = the default, stored lean
+        if (s.usesCycles && tr.cycles === undefined) tr.cycles = s.cyclesDefault;
+        this.recompile();
+        touch();
+      };
+      shapeSeg.append(b);
+    }
+    wrap.append(this.labeledRow("Shape", shapeSeg));
+
+    wrap.append(this.transFormula(loop, tr, rerender));
+
+    // Ease direction, where the shape bends time toward one end (parabola's skew lives
+    // in the formula's `p` instead).
+    if (spec.usesDir && spec.id !== "parabola") {
+      const dirSeg = document.createElement("div");
+      dirSeg.className = "placement-seg fade-modes";
+      const mkDir = (d: "out" | "in", text: string) => {
+        const b = document.createElement("button");
+        b.className = "seg-btn" + ((tr.dir ?? "out") === d ? " on" : "");
+        b.textContent = text;
+        b.onclick = () => { tr.dir = d; this.recompile(); touch(); };
+        return b;
+      };
+      dirSeg.append(mkDir("out", "Ease out"), mkDir("in", "Ease in"));
+      wrap.append(this.labeledRow("Ease", dirSeg));
+    }
     return wrap;
+  }
+
+  /** The transition's blend function written out as an editable FORMULA: interleaved
+      text and inline variable inputs (tap = numpad, drag = scrub), the min/max bounds
+      as an inequality chip beside it, and a ? that explains the function and what each
+      variable does. Defaults are the identity — the plain shape until edited. */
+  private transFormula(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
+    const spec = blendShapeSpec(tr.shape);
+    const touch = () => { this.recompile(); this.schedulePreview(loop, tr); };
+    const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+    const lean = (v: number, def: number): number | undefined => (Math.abs(v - def) < 1e-9 ? undefined : v);
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+
+    interface FVar { sym: string; read: () => number; write: (n: number) => void; step: number; show: () => string; help: string; }
+    const fv = (sym: string, read: () => number, write: (n: number) => void, step: number, help: string, show?: () => string): FVar =>
+      ({ sym, read, write, step, help, show: show ?? (() => String(r2(read()))) });
+
+    // The two transform variables every shape shares (y is drawn 0–100).
+    const A = fv("a", () => r2(tr.yGain ?? 1), (n) => { tr.yGain = lean(clamp(r2(n), -4, 4), 1); touch(); }, 0.05,
+      "Slope / height multiplier. 1 leaves the shape as drawn; 2 makes it climb twice as steeply (clamped at the top); negative flips it upside down — the transition starts transformed and comes back.");
+    const B = fv("b", () => Math.round((tr.yBias ?? 0) * 100), (n) => { tr.yBias = lean(clamp(Math.round(n), -100, 100) / 100, 0); touch(); }, 5,
+      "Vertical shift, in y units (0–100). +25 lifts the whole curve a quarter of the way toward the transformed sound before it even starts.",
+      () => String(Math.round((tr.yBias ?? 0) * 100)));
+
+    // The shape's own variables (each maps back onto the stored curve/cycles/dir).
+    const curve01 = () => tr.curve ?? 0;
+    const K_POW = (help: string) => fv("k", () => r2(Math.pow(4, curve01())), (n) => {
+      tr.curve = lean(clamp(Math.log(clamp(r2(n), 1, 4)) / Math.log(4), 0, 1), 0);
+      touch();
+    }, 0.05, help);
+    const K_SIG = fv("k", () => r2(4 + 12 * curve01()), (n) => {
+      tr.curve = lean(clamp((clamp(r2(n), 4, 16) - 4) / 12, 0, 1), 0);
+      touch();
+    }, 0.5, "Steepness of the S: 4 is a gentle lean, 16 snaps almost straight from 0 to 100 at the midpoint.");
+    const P_PEAK = fv("p", () => r2(0.5 + (tr.dir === "in" ? 1 : -1) * 0.35 * curve01()), (n) => {
+      const v = clamp(r2(n), 0.15, 0.85);
+      tr.dir = v >= 0.5 ? "in" : "out";
+      tr.curve = lean(clamp(Math.abs(v - 0.5) / 0.35, 0, 1), 0);
+      touch();
+    }, 0.05, "Where the arch peaks, as a fraction of the window (0.5 = the middle; 0.15 peaks early, 0.85 late). The curve goes out to the transformed sound and back.");
+    const N_WAVE = fv("n", () => r2(tr.cycles ?? spec.cyclesDefault), (n) => {
+      tr.cycles = clamp(r2(n), 0.25, 16);
+      touch();
+    }, 0.25, "How many waves fit in the window. Half-integers land at the transformed end; whole numbers return home.");
+    const N_STEP = fv("n", () => Math.max(2, Math.round(tr.cycles ?? spec.cyclesDefault)), (n) => {
+      tr.cycles = clamp(Math.round(n), 2, 16);
+      touch();
+    }, 1, "How many flat levels the staircase jumps through on its way to the transformed sound.", () => String(Math.max(2, Math.round(tr.cycles ?? spec.cyclesDefault))));
+    const W_WARP = K_POW("Time warp exponent on x: 1 spaces the waves evenly; up to 4 squeezes them toward one end (an accelerating oscillation — the Ease buttons pick which end).");
+    const D_DEPTH = fv("d", () => r2(0.15 + 0.85 * curve01()), (n) => {
+      tr.curve = lean(clamp((clamp(r2(n), 0.15, 1) - 0.15) / 0.85, 0, 1), 0);
+      touch();
+    }, 0.05, "How hard the wobble swings around the underlying ramp; it always lands exactly on the transformed sound.");
+    const G_GAP = fv("g", () => r2(curve01()), (n) => {
+      tr.curve = lean(clamp(r2(n), 0, 1), 0);
+      touch();
+    }, 0.05, "The rest between humps: 0 and they touch (a continuous |sin|), 1 leaves thin spikes with mostly untransformed sound between them.");
+
+    // The formula, as text pieces interleaved with variables, plus what the function is.
+    let parts: (string | FVar)[];
+    let fnHelp: string;
+    switch (spec.id) {
+      case "scurve":
+        parts = ["y = ", A, " · σ(", K_SIG, "·(x−½)) + ", B];
+        fnHelp = "A logistic S-curve: slow start, steep middle, slow landing — σ is the sigmoid 1/(1+e⁻ᵗ), normalised to run 0→100 across the window.";
+        break;
+      case "parabola":
+        parts = ["y = ", A, " · arch(x, ", P_PEAK, ") + ", B];
+        fnHelp = "A smooth arch out and back: the sound transforms fully at the peak and returns to itself by the end (y goes 0 → 100 → 0).";
+        break;
+      case "sine":
+        parts = ["y = ", A, " · (½ − ½·cos(2π·", N_WAVE, "·x^", W_WARP, ")) + ", B];
+        fnHelp = "A smooth wave starting at the plain sound: it swings to the transformed sound and back n times across the window.";
+        break;
+      case "cos":
+        parts = ["y = ", A, " · (½ + ½·cos(2π·", N_WAVE, "·x^", W_WARP, ")) + ", B];
+        fnHelp = "The same wave starting AT the transformed sound: a dip back to the plain sound and return, n times across the window.";
+        break;
+      case "zigzag":
+        parts = ["y = ", A, " · tri(", N_WAVE, "·x^", W_WARP, ") + ", B];
+        fnHelp = "The triangle cousin of the sine: straight lines back and forth between the two sounds — tri is a 0→1→0 triangle wave.";
+        break;
+      case "wobble":
+        parts = ["y = ", A, " · (x + ", D_DEPTH, "·sin(2π·", N_WAVE, "·x)·(1−x)) + ", B];
+        fnHelp = "A straight ramp with a damped swing riding it: it oscillates on the way but the (1−x) term fades the swing so it lands exactly.";
+        break;
+      case "steps":
+        parts = ["y = ", A, " · ⌊", N_STEP, "·x^", W_WARP, "⌋ / (n−1) + ", B];
+        fnHelp = "A staircase: the sound jumps through n flat levels instead of gliding — each ⌊⌋ step is a sudden move toward the transformed sound.";
+        break;
+      case "halfwave":
+        parts = ["y = ", A, " · hump(", N_WAVE, ", ", G_GAP, ", x) + ", B];
+        fnHelp = "n half-sine humps with flat rests between them: the sound bulges into the transformed sound and back, g setting the gap between bulges.";
+        break;
+      default: {
+        const K = K_POW("Curve exponent on x: 1 is a straight line; up to 4 bends it exponential — barely moving at first, then rushing the end (flip with Ease in).");
+        parts = tr.dir === "in"
+          ? ["y = ", A, " · (1−(1−x)^", K, ") + ", B]
+          : ["y = ", A, " · x^", K, " + ", B];
+        fnHelp = "The straight line from the plain sound (y=0) to the transformed sound (y=100), bent toward exponential by k.";
+      }
+    }
+
+    const MIN = fv("min", () => Math.round((tr.yMin ?? 0) * 100), (n) => {
+      tr.yMin = lean(clamp(Math.round(n), 0, 100) / 100, 0);
+      touch();
+    }, 5, "The floor: y never drops below this — the sound always stays at least this transformed inside the window.",
+      () => String(Math.round((tr.yMin ?? 0) * 100)));
+    const MAX = fv("max", () => Math.round((tr.yMax ?? 1) * 100), (n) => {
+      tr.yMax = lean(clamp(Math.round(n), 0, 100) / 100, 1);
+      touch();
+    }, 5, "The ceiling: y never rises above this — the transformation is capped here even where the curve wants to go further.",
+      () => String(Math.round((tr.yMax ?? 1) * 100)));
+
+    const varInput = (v: FVar): HTMLInputElement => {
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.readOnly = true;
+      inp.inputMode = "none";
+      inp.className = "formula-var";
+      inp.value = v.show();
+      inp.size = Math.max(1, v.show().length);
+      this.attachScrub(inp, {
+        label: v.sym, read: v.read, write: v.write, show: v.show, step: v.step, commit: rerender,
+      });
+      return inp;
+    };
+
+    const block = document.createElement("div");
+    block.className = "formula-block";
+    const head = document.createElement("div");
+    head.className = "formula-head";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Formula";
+    // The ? glossary: the function first, then every variable in it (+ the bounds).
+    const usedVars = parts.filter((p): p is FVar => typeof p !== "string");
+    const items: HelpItem[] = [
+      { name: `${spec.label} — the function`, desc: fnHelp, code: parts.map((p) => (typeof p === "string" ? p : p.sym)).join("") },
+      ...usedVars.map((v) => ({ name: `${v.sym} (now ${v.show()})`, desc: v.help })),
+      { name: "min / max", desc: `${MIN.help} ${MAX.help} Written beside the formula the graph-calculator way: min ≤ y ≤ max.` },
+    ];
+    head.append(lbl, helpButton(`${spec.label} formula`, items));
+    block.append(head);
+
+    const row = document.createElement("div");
+    row.className = "formula-row";
+    for (const p of parts) {
+      if (typeof p === "string") {
+        const t = document.createElement("span");
+        t.className = "formula-text";
+        t.textContent = p;
+        row.append(t);
+      } else {
+        row.append(varInput(p));
+      }
+    }
+    block.append(row);
+
+    // The bounds, in inequality notation next to the formula (identity: 0 ≤ y ≤ 100).
+    const bounds = document.createElement("div");
+    bounds.className = "formula-row formula-bounds";
+    const open = document.createElement("span");
+    open.className = "formula-text";
+    open.textContent = "where ";
+    const mid = document.createElement("span");
+    mid.className = "formula-text";
+    mid.textContent = " ≤ y ≤ ";
+    bounds.append(open, varInput(MIN), mid, varInput(MAX));
+    block.append(bounds);
+    return block;
   }
 
   /** The transition's blend graph with its transform applied: a 0–100 y axis (0 = the
@@ -3889,7 +4100,52 @@ export class App {
       onTabChange: (t) => { this.transFxTab = t; },
     });
     wrap.append(view.el);
+
+    // Land the destination: a NEW loop carrying the transformed sound, placed right
+    // after the transition — initial sound, the transition, then the new sound looping.
+    const copy = document.createElement("button");
+    copy.className = "loop-add copy-loop-btn";
+    copy.textContent = "⧉ New loop from the transformed sound";
+    copy.title = "Copy the transformed sound into a new loop on this row, placed from the bar after the transition to the end of the track";
+    copy.onclick = () => this.copyTransformedSound(loop, tr);
+    wrap.append(copy);
     return wrap;
+  }
+
+  /** Copy a transition's TRANSFORMED sound into a new loop on the same row, placed from
+      the bar after the transition through the end of the track — so the row plays the
+      initial sound, transitions, then loops the new sound. The copy keeps the source
+      loop's rhythm; it gets its own sound id, name and loudness make-up. */
+  private copyTransformedSound(loop: Loop, tr: LoopTransition): void {
+    const c = this.colorOf(loop);
+    const clone = cloneLoop(loop);
+    clone.soundId = this.nextSoundId++;
+    clone.snapshot = tr.snapshot.slice();
+    clone.transitions = undefined; // the new sound starts with a clean slate
+    clone.label = generateName();
+    clone.gain = undefined;        // re-measured below for the new sound
+    const barLimit = Math.max(1, this.track.barLimit);
+    const last = tr.bars.reduce((m, b) => (b >= 1 && b <= barLimit ? Math.max(m, b) : m), 0);
+    const bars: number[] = [];
+    for (let b = last + 1; b <= barLimit; b++) bars.push(b);
+    clone.rule = {
+      every: { kind: "at", bars },
+      forBars: 1,
+      mode: loop.rule.mode,
+      seed: newSeed(),
+      seedHistory: [],
+    };
+    this.track.colors[c].loops.push(clone);
+    // Name it from its own sound (a fresh editor restores the transformed snapshot).
+    const ed = this.voiceEditorFor(clone);
+    clone.name = ed.kit.get(REF_DRUM).describe().join(" · ");
+    this.pushSounds();
+    this.recompile();
+    void this.normalizeLoop(clone);
+    this.render(); // refresh the loop list under the popup (the popup itself survives)
+    this.toast(bars.length
+      ? `“${clone.label}” added after the transition (bars ${bars[0]}–${barLimit})`
+      : `“${clone.label}” added — the transition reaches the track end, so place it on its Loop tab`);
   }
 
   /** The Speed tab: stack the timing warp on the morph — the window's hits rush (rate
@@ -3974,19 +4230,23 @@ export class App {
     }, now ? 0 : 350);
   }
 
-  /** Render 4 bars of this loop morphing LINEARLY into the transition's transformed
-      sound (offline, so it's exact), then loop the buffer — a shortened stand-in for
-      the real transition while shaping it. Stale renders (the user kept editing, or the
-      editor closed) are dropped. */
+  /** Render a short loop of the transition offline (so it's exact), then loop the
+      buffer — a shortened stand-in for the real thing while shaping it. "transition"
+      mode plays the loop's sound morphing LINEARLY into the transformed sound across
+      the chosen preview length; "result" mode plays just the transformed sound. Stale
+      renders (the user kept editing, or the editor closed) are dropped. */
   private async playTransitionPreview(loop: Loop, tr: LoopTransition): Promise<void> {
     if (loop.soundId < 0 || !loop.snapshot.length) return;
     const token = ++this.previewToken;
+    const resultOnly = this.transPreviewMode === "result";
+    const bars = Math.max(1, Math.min(16, Math.round(this.transPreviewBars)));
     const unit = loop.steps >= 1 ? loop.steps : STEPS_PER_BAR;
-    const reps = Math.max(1, Math.floor((4 * STEPS_PER_BAR) / unit));
+    const reps = Math.max(1, Math.floor((bars * STEPS_PER_BAR) / unit));
     const node = loopToNode(loop, reps);
     node.soundId = 0;
     node.intro = undefined;
-    node.outro = { reps, mode: "morph", toId: 1 }; // linear morph across the whole 4 bars
+    // A linear morph across the whole loop — or none at all when only the result plays.
+    node.outro = resultOnly ? undefined : { reps, mode: "morph", toId: 1 };
     const lenSteps = reps * unit;
 
     const withGain = (snap: number[]): number[] => {
@@ -3995,8 +4255,9 @@ export class App {
       return s;
     };
     const target = tr.snapshot.length ? tr.snapshot : loop.snapshot;
+    // In result-only mode the node's own sound (id 0) IS the transformed sound.
     const sounds: EngineSound[] = [
-      { id: 0, snap: withGain(loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(loop.snapshot, this.tempo) },
+      { id: 0, snap: withGain(resultOnly ? target : loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(resultOnly ? target : loop.snapshot, this.tempo) },
       { id: 1, snap: withGain(target), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(target, this.tempo) },
     ];
     const arr = new LineArrangement();
