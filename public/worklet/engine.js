@@ -148,11 +148,25 @@ function bendT(t, curve, dir) {
 // y∈[0,1]. `env` carries shape/curve/dir/cycles (see BlendShapeId in lines.ts); unset
 // shape = "ramp", the old bent line, so bendT keeps its meaning. MUST match blendShape
 // in lines.ts (the UI's curve graph and the speed warp use that copy).
+// A freehand-drawn function (uniformly sampled y values 0..1), read back by linear
+// interpolation. MUST match drawnShapeY in lines.ts.
+function drawnY(points, t) {
+  const n = points.length;
+  if (!n) return clamp(t, 0, 1);
+  if (n === 1) return clamp(points[0], 0, 1);
+  const x = clamp(t, 0, 1) * (n - 1);
+  const i = Math.min(n - 2, Math.floor(x));
+  return clamp(points[i] + (points[i + 1] - points[i]) * (x - i), 0, 1);
+}
+
 function shapeT(t, env) {
   t = clamp(t, 0, 1);
   const c = clamp(env.curve || 0, 0, 1);
   const cyc = (def) => Math.max(0.25, Math.min(999, env.cycles == null ? def : env.cycles));
   switch (env.shape) {
+    case "drawn":
+      if (env.points && env.points.length) return drawnY(env.points, t);
+      return bendT(t, c, env.dir);
     case "scurve": {
       const k = 4 + c * 12;
       const s = (x) => 1 / (1 + Math.exp(-k * (x - 0.5)));
@@ -466,15 +480,25 @@ class Voice {
     // Sub-step onset delay (samples): silence before the note begins, so a speed
     // transition's warped hits land BETWEEN grid steps instead of snapping to them.
     this.startDelay = 0;
+    // Per-note pitch TRACK: a sampled multiplier curve the note's pitch keeps following
+    // AFTER note-on (a held drone inside a morph transition glides with the function
+    // instead of freezing at its note-on pitch). { mults, durSamples } or null.
+    this.pitchTrack = null;
+    this.trackPos = 0;
   }
   // `vel` scales the hit (accents/ghosts/humanize); `ratchetCount`/`ratchetInterval`
   // (samples) re-strike the envelope for drum-roll bursts within the step.
   // `beatPos` is the transport position in BEATS at the hit (0 when not sequenced),
   // used to phase-lock tempo-synced LFOs to the beat grid. `startDelay` (samples) holds
   // the note off for a fraction of a step (speed-transition sub-step timing).
-  start(s, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay) {
+  // `pitchTrack` ({ mults, durSamples }) keeps the note's pitch following a transition's
+  // blend function across its hold — see morphPitchTrack.
+  start(s, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack) {
     this.vel = vel === undefined ? 1 : vel;
     this.startDelay = Math.max(0, startDelay | 0);
+    this.pitchTrack = pitchTrack && pitchTrack.mults && pitchTrack.mults.length > 1 && pitchTrack.durSamples > 0
+      ? pitchTrack : null;
+    this.trackPos = 0;
     this.ratchetLeft = (ratchetCount | 0) > 1 ? (ratchetCount | 0) - 1 : 0;
     this.ratchetInterval = Math.max(1, ratchetInterval | 0);
     this.ratchetCountdown = this.ratchetInterval;
@@ -682,9 +706,27 @@ class Voice {
         }
       }
 
+      // Pitch track: keep gliding along the transition's function through the hold
+      // (linear interpolation over the sampled multiplier curve; holds its final
+      // value past the end). Rides UNDER the pitch env / LFOs — they modulate around
+      // the moving centre. Ratchet re-strikes don't reset it (time keeps flowing).
+      let trackMul = 1;
+      if (this.pitchTrack) {
+        const tr = this.pitchTrack;
+        const last = tr.mults.length - 1;
+        if (this.trackPos >= tr.durSamples) {
+          trackMul = tr.mults[last];
+        } else {
+          const x = (this.trackPos / tr.durSamples) * last;
+          const i0 = Math.min(last - 1, x | 0);
+          trackMul = tr.mults[i0] + (tr.mults[i0 + 1] - tr.mults[i0]) * (x - i0);
+        }
+        this.trackPos++;
+      }
+
       // Bipolar pitch env: positive drops from above; negative starts low/pinned at
       // the 5Hz floor and RISES into the note as the envelope decays (swells/zaps).
-      let freq = this.basePitch * (1 + this.pitchEnvAmount * this.pitchEnv) * pitchMul;
+      let freq = this.basePitch * trackMul * (1 + this.pitchEnvAmount * this.pitchEnv) * pitchMul;
       if (freq < 5) freq = 5;
       this.pitchEnv *= this.pitchEnvCoef;
 
@@ -925,11 +967,11 @@ class Channel {
   }
   killVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].active = false; }
   chokeVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].choke(); }
-  trigger(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay) {
+  trigger(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack) {
     for (let i = 0; i < NUM_VOICES; i++) {
-      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay); return; }
+      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack); return; }
     }
-    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay);
+    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack);
     this.next = (this.next + 1) % NUM_VOICES;
   }
   // Render `n` samples and ADD into the STEREO master at `offset`. `scratch` is
@@ -1168,7 +1210,8 @@ class EngineProcessor extends AudioWorkletProcessor {
   // `vel` and the ratchet pair come from perHit (accents/ghosts/humanize/rolls);
   // `beatPos` (transport beats at the hit) phase-locks tempo-synced LFOs to the grid.
   // `startDelay` (samples) holds a warped speed-transition hit off the grid.
-  triggerSound(id, baseSnap, voiceSnap, gate, tailSec, vel, ratchetCount, ratchetInterval, beatPos, startDelay) {
+  // `pitchTrack` keeps a held note's pitch following a morph window (see morphPitchTrack).
+  triggerSound(id, baseSnap, voiceSnap, gate, tailSec, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack) {
     // Choke groups: this hit silences every other sound in its group (fast-release,
     // not a hard cut) — the classic closed-hat-chokes-open-hat relationship.
     const group = Math.round(rd(baseSnap, P.ChokeGroup, 0));
@@ -1187,7 +1230,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     const gateSec = rd(baseSnap, P.Gate, 0);
     const holdSamples = gateSec > 0 ? (gateSec * this.sr) | 0 : gate;
     ch.busyUntil = this.clock + holdSamples + Math.max(0, tailSec || 0) * this.sr;
-    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay);
+    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack);
   }
 
   // Per-hit Life: given a sound's snapshot and the hit CONTEXT, roll velocity/
@@ -1464,6 +1507,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         const snd = nd ? this.sounds.get(nd.soundId) : null;
         if (!snd) continue;
         let snap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+        const preSweepPitch = rd(snap, P.Pitch, 0);
         // Compose every covering window's tonal morph at the onset's own position —
         // the speed window's own tonal styles included (a "Rush + Filter" sweep rushes
         // WHILE the filter closes), other windows at the same progress they'd give a
@@ -1486,7 +1530,9 @@ class EngineProcessor extends AudioWorkletProcessor {
         const delay = Math.round((e.o - pos) * spb);
         const voiceSnap = snap.slice();
         this.jitterSnap(voiceSnap, hit.human);
-        this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, delay);
+        // Held notes keep gliding with the morph windows through their hold.
+        const track = this.morphPitchTrack(sws, e.o, preSweepPitch, snap);
+        this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, delay, track);
         fired.push(nd.soundId);
       }
     }
@@ -1516,6 +1562,57 @@ class EngineProcessor extends AudioWorkletProcessor {
   // The "morph" style (per-loop transitions) lerps toward `morphSnap` — a FULL target
   // snapshot whose Volume slot holds a RATIO of the loop's own volume (so a muted /
   // soloed-out row stays silent and the loudness makeup keeps riding along).
+  // A held note fired inside "morph" sweep windows keeps FOLLOWING the blend function
+  // through its hold: sample the composed swept PITCH across the note's gate and ship
+  // it to the voice as a multiplier curve (relative to its note-on pitch), so a
+  // long-gate drone glides with the transition — one hit every 4 bars still traces the
+  // whole function — instead of freezing at note-on. Pitch is the one param a sounding
+  // voice can keep tracking; the other swept params stay per-hit.
+  // `sws` = the windows covering the hit, `posFloat` the hit's (fractional) lane step,
+  // `basePitch` the PRE-sweep pitch, `snap` the hit's final swept snapshot (its Gate
+  // sets the hold). Windows are evaluated with their progress CLAMPED to [0,1], so a
+  // hold running past the window's end settles on the function's final value.
+  morphPitchTrack(sws, posFloat, basePitch, snap) {
+    if (!sws || !(basePitch > 0)) return null;
+    let hasMorph = false;
+    for (let i = 0; i < sws.length && !hasMorph; i++) {
+      const sw = sws[i];
+      const modes = sw.modes && sw.modes.length ? sw.modes : [sw.mode];
+      hasMorph = modes.includes("morph") && !!sw.morphSnap;
+    }
+    if (!hasMorph) return null;
+    const gateSec = rd(snap, P.Gate, 0);
+    const durSamples = gateSec > 0 ? Math.max(1, (gateSec * this.sr) | 0) : Math.max(1, (this.sr * STEP_GATE_SEC) | 0);
+    const durSteps = durSamples / this.samplesPerStep();
+    // Composed swept pitch at lane position `fp` — mirrors sweptSnap's morph lerp,
+    // pitch only (no other style touches P.Pitch).
+    const pitchAt = (fp) => {
+      let p = basePitch;
+      for (let i = 0; i < sws.length; i++) {
+        const sw = sws[i];
+        const modes = sw.modes && sw.modes.length ? sw.modes : [sw.mode];
+        if (!modes.includes("morph") || !sw.morphSnap) continue;
+        const raw = clamp((fp - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
+        const t = shapeY(raw, sw);
+        const tgt = rd(sw.morphSnap, P.Pitch, p);
+        p = sw.side === "in" ? tgt + (p - tgt) * t : p + (tgt - p) * t;
+      }
+      return Math.max(1, p);
+    };
+    // Sample density: ~8 points per second of hold keeps even wavy functions smooth
+    // over a 30s drone without bloating short notes.
+    const K = Math.max(9, Math.min(257, Math.ceil((durSamples / this.sr) * 8) + 1));
+    const p0 = pitchAt(posFloat);
+    const mults = new Float32Array(K);
+    let moves = false;
+    for (let k = 0; k < K; k++) {
+      const m = pitchAt(posFloat + (k / (K - 1)) * durSteps) / p0;
+      mults[k] = m;
+      if (m > 1.0005 || m < 0.9995) moves = true;
+    }
+    return moves ? { mults, durSamples } : null;
+  }
+
   sweptSnap(snap, modes, t, side, nearV, farV, morphSnap) {
     let v = snap;
     for (let i = 0; i < modes.length; i++) {
@@ -1698,6 +1795,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (sws) {
         // Melody notes carry their own pitch: sweep a pitched copy so the fade keeps the tune.
         let snap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+        const preSweepPitch = rd(snap, P.Pitch, 0);
         for (let si = 0; si < sws.length; si++) {
           const sw = sws[si];
           const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
@@ -1709,7 +1807,9 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (!hit) continue;
         const voiceSnap = snap.slice();
         this.jitterSnap(voiceSnap, hit.human);
-        this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat);
+        // A long-held note keeps following the morph windows' function (drone glide).
+        const track = this.morphPitchTrack(sws, pos, preSweepPitch, snap);
+        this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, 0, track);
         fired.push(nd.soundId);
         continue;
       }

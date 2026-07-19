@@ -36,6 +36,7 @@ export interface LoopTransitionJSON {
   curve?: number;
   dir?: "in" | "out";
   cycles?: number;
+  points?: number[]; // "drawn" shape: the freehand blend function samples
   yGain?: number;
   yBias?: number;
   yMin?: number;
@@ -137,6 +138,7 @@ function cloneMelody(m: MelodyNode): MelodyJSON {
 const cloneTransition = (t: LoopTransition): LoopTransitionJSON => ({
   on: t.on, bars: t.bars.slice(), snapshot: t.snapshot.slice(),
   shape: t.shape, curve: t.curve, dir: t.dir, cycles: t.cycles,
+  points: t.points ? t.points.slice() : undefined,
   yGain: t.yGain, yBias: t.yBias, yMin: t.yMin, yMax: t.yMax,
   speedOn: t.speedOn, rate: t.rate,
 });
@@ -211,9 +213,20 @@ function readModes(mv: unknown, allowed: TransitionMode[]): TransitionMode[] {
 }
 
 /** Validate a stored blend-shape id (see BlendShapeId in lines.ts); "ramp" (the default)
-    normalizes to undefined so plain saves stay lean and old readers see nothing new. */
+    normalizes to undefined so plain saves stay lean and old readers see nothing new.
+    "drawn" is valid only where a points list travels with it (loop transitions). */
 function readShape(sv: unknown): BlendShapeId | undefined {
+  if (sv === "drawn") return "drawn";
   return sv !== "ramp" && BLEND_SHAPES.some((s) => s.id === sv) ? (sv as BlendShapeId) : undefined;
+}
+
+/** Validate a stored freehand-function sample list: 2..257 finite numbers, clamped
+    to 0..1. Undefined for anything else. */
+function readPoints(pv: unknown): number[] | undefined {
+  if (!Array.isArray(pv) || pv.length < 2 || pv.length > 257) return undefined;
+  const out = pv.map((x) => Number(x));
+  if (out.some((x) => !isFinite(x))) return undefined;
+  return out.map((x) => Math.max(0, Math.min(1, x)));
 }
 
 /** Validate a stored wave/stair count for the periodic blend shapes. */
@@ -370,14 +383,18 @@ function readTransition(tv: unknown): LoopTransition | undefined {
     return n === undefined ? undefined : Math.max(lo, Math.min(hi, n));
   };
   const speedOn = t.speedOn === true ? true : undefined;
+  const points = readPoints(t.points);
+  let shape = readShape(t.shape);
+  if (shape === "drawn" && !points) shape = undefined; // a drawing IS its points
   return {
     on: t.on !== false,
     bars,
     snapshot,
-    shape: readShape(t.shape),
+    shape,
     curve: clampNum(t.curve, 0, 1),
     dir: t.dir === "in" || t.dir === "out" ? t.dir : undefined,
     cycles: readCycles(t.cycles),
+    points: shape === "drawn" ? points : undefined,
     yGain: clampNum(t.yGain, -100, 100),
     yBias: clampNum(t.yBias, -10, 10),
     yMin: clampNum(t.yMin, 0, 1),

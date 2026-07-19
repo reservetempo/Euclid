@@ -62,8 +62,9 @@ function presetForDrum(drum: DrumType, name: string, color: string): Preset {
 }
 
 // Widest possible ranges, values at the centre of each range. Discrete params,
-// Volume, and HitChance keep their base default (centring a "type", going quiet,
-// or silently dropping hits makes no sense as a starting value).
+// Volume, HitChance, and Gate keep their base default (centring a "type", going
+// quiet, silently dropping hits, or a 15-second note-hold makes no sense as a
+// starting value).
 function fullRangePreset(): Preset {
   const ranges: { lo: number; hi: number }[] = [];
   const values: number[] = [];
@@ -71,7 +72,7 @@ function fullRangePreset(): Preset {
     const id = i as ParamId;
     const s = baseSpec(id);
     ranges.push({ lo: s.min, hi: s.max });
-    const centred = isDiscrete(s) || id === ParamId.Volume || id === ParamId.HitChance;
+    const centred = isDiscrete(s) || id === ParamId.Volume || id === ParamId.HitChance || id === ParamId.Gate;
     values.push(centred ? s.def : (s.min + s.max) / 2);
   }
   return { name: "Full Range", color: "#ffffff", values, ranges };

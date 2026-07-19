@@ -72,7 +72,7 @@ function paramDesc(id: ParamId): string {
     case ParamId.NoiseDecay:
       return "A separate decay for just the noise layer — e.g. a short tone with a longer sizzle tail. 0 = follow the main envelope.";
     case ParamId.Gate:
-      return "How long each hit is held 'on' before it releases, in seconds — the note-length control. With Sustain at 0 the hit already dies during its Decay, so gate barely matters; with any Sustain the sound holds for the whole gate and then Release fades it. Short gate = choked/staccato; long = it rings for the full hit.";
+      return "How long each hit is held 'on' before it releases, in seconds — the note-length control. With Sustain at 0 the hit already dies during its Decay, so gate barely matters; with any Sustain the sound holds for the whole gate and then Release fades it. Short gate = choked/staccato; long (up to 30s) = a drone that rings across bars — and keeps gliding with any transition running over it.";
 
     // --- Filter & resonators ---
     case ParamId.FilterType:

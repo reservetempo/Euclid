@@ -118,11 +118,13 @@ export interface LifePlacement {
 //   steps    — a staircase: `cycles` flat levels jumping to the far end
 //   halfwave — `cycles` half-sine humps (0→1→0) with FLAT space between them; `curve` =
 //              the gap — 0 humps touch (|sin|), 1 thin spikes with mostly rest between
+//   drawn    — a FREEHAND function: the user's smoothed drawing, sampled uniformly into
+//              `points` (y values 0..1) and played back by linear interpolation
 // For sine/cos/zigzag/steps, `curve` + `dir` WARP TIME instead (the same power bend),
 // squeezing the waves/stairs toward one end — an accelerating oscillation.
 export type BlendShapeId =
   | "ramp" | "scurve" | "parabola" | "sine" | "cos" | "zigzag" | "wobble" | "steps"
-  | "halfwave";
+  | "halfwave" | "drawn";
 
 /** Per-shape UI spec: what the `curve` knob means for it, and whether the ease
     direction / wave count apply (the UI hides the rows that don't). */
@@ -147,8 +149,26 @@ export const BLEND_SHAPES: BlendShapeSpec[] = [
   { id: "halfwave", label: "Half wave", curveLabel: "Gap",  usesDir: false, usesCycles: true,  cyclesDefault: 3 },
 ];
 
+/** The freehand shape's spec. Not in BLEND_SHAPES (the generic pickers) — only surfaces
+    with a drawing screen offer it, but blendShapeSpec still resolves it for rendering. */
+export const DRAWN_SHAPE: BlendShapeSpec =
+  { id: "drawn", label: "Drawn", curveLabel: "", usesDir: false, usesCycles: false, cyclesDefault: 0 };
+
 export const blendShapeSpec = (id: BlendShapeId | undefined): BlendShapeSpec =>
-  BLEND_SHAPES.find((s) => s.id === (id ?? "ramp")) ?? BLEND_SHAPES[0];
+  id === "drawn" ? DRAWN_SHAPE
+    : BLEND_SHAPES.find((s) => s.id === (id ?? "ramp")) ?? BLEND_SHAPES[0];
+
+/** Evaluate a freehand-drawn function (uniformly sampled y values) at t∈[0,1] by
+    linear interpolation. MUST match drawnY in engine.js. */
+export function drawnShapeY(points: number[], t: number): number {
+  const n = points.length;
+  if (!n) return t;
+  if (n === 1) return Math.max(0, Math.min(1, points[0]));
+  const x = Math.max(0, Math.min(1, t)) * (n - 1);
+  const i = Math.min(n - 2, Math.floor(x));
+  const f = x - i;
+  return Math.max(0, Math.min(1, points[i] + (points[i + 1] - points[i]) * f));
+}
 
 /** The classic power bend of a blend progress t∈[0,1] — must match bendT in engine.js:
     `curve` 0 (linear) → 1 (exponential); `dir` "out" eases out of the start then rushes
@@ -175,12 +195,14 @@ export interface GraphTransform {
     y∈[0,1] (see BlendShapeId for each shape). Single source of truth for the UI's curve
     graph and the speed warp; MUST match shapeT in engine.js (the per-hit morphs). */
 export function blendShape(
-  env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number }, t: number,
+  env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number; points?: number[] }, t: number,
 ): number {
   t = Math.max(0, Math.min(1, t));
   const c = Math.max(0, Math.min(1, env.curve || 0));
   const cyc = (def: number) => Math.max(0.25, Math.min(999, env.cycles ?? def));
   switch (env.shape) {
+    case "drawn":
+      return env.points && env.points.length ? drawnShapeY(env.points, t) : bendProgress(t, c, env.dir);
     case "scurve": {
       const k = 4 + c * 12;
       const s = (x: number) => 1 / (1 + Math.exp(-k * (x - 0.5)));
@@ -230,7 +252,7 @@ export function blendShape(
     graph calculator — the defaults are the identity, so a plain shape is unchanged.
     MUST match shapeY in engine.js. */
 export function blendShapeY(
-  env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number } & GraphTransform,
+  env: { shape?: BlendShapeId; curve?: number; dir?: "in" | "out"; cycles?: number; points?: number[] } & GraphTransform,
   t: number,
 ): number {
   let y = blendShape(env, t) * (env.yGain ?? 1) + (env.yBias ?? 0);
@@ -255,6 +277,7 @@ export function blendShapeY(
 export interface TransitionShape {
   rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out";
   shape?: BlendShapeId; cycles?: number;
+  points?: number[]; // "drawn" shape only: the freehand function, uniformly sampled y∈[0,1]
 }
 
 /** A row-wide FX SWEEP window, in engine STEP positions over the loop: while the global
@@ -275,6 +298,7 @@ export interface SweepWindow extends GraphTransform {
   dir?: "in" | "out";
   shape?: BlendShapeId; // blend function over the window (unset = "ramp")
   cycles?: number;      // wave/stair count for the periodic shapes
+  points?: number[];    // "drawn" shape: the freehand function, uniformly sampled y∈[0,1]
   rate?: number;        // "speed" style: the far end's hit-rate multiple of the tempo
   // "morph" style (a per-loop transition, see LoopTransition in track.ts): the FULL
   // parameter snapshot of the TRANSFORMED sound — every hit in the window is lerped

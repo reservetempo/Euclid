@@ -26,8 +26,9 @@ import { addReport, reportCount, exportReports, clearReports, ReportKind } from 
 import {
   LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
   TransitionMode, FADE_MODES, TRANSITION_SWEEP, TransitionShape, envModes, setEnvModes, envHasSpeed,
-  BlendShapeId, BLEND_SHAPES, blendShapeSpec, blendShape, blendShapeY,
+  BlendShapeId, BLEND_SHAPES, blendShapeSpec, blendShape, blendShapeY, SweepWindow,
 } from "../model/lines";
+import { smoothStroke, fitBlendShape, DRAWN_POINTS } from "../model/curveFit";
 import {
   Track, Loop, EveryRule, RowSweep, LoopTransition, emptyLoop, cloneLoop, loopToNode,
   randomSeed as newSeed, ruleLengths, defaultRowSweep, defaultLoopTransition,
@@ -412,8 +413,9 @@ export class App {
     this.melodySoloItem = null;
     const sounds = this.buildSounds();
     this.melodySoloItem = hs;
+    // Cap at 40s so a drone-length Gate near the end still rings out in the export.
     const maxTail = sounds.reduce((m, s) => Math.max(m, s.tail || 0), 0);
-    const tailSec = Math.min(8, Math.max(1.5, maxTail + 0.5));
+    const tailSec = Math.min(40, Math.max(1.5, maxTail + 0.5));
     const buffer = await this.engine.renderToBuffer({
       lines: this.arr.linesMessage(),
       sounds,
@@ -3835,7 +3837,8 @@ export class App {
 
     const touch = () => { this.schedulePreview(loop, tr); rerender(); };
 
-    // Shape picker (the same shapes every transition surface offers).
+    // Shape picker (the same shapes every transition surface offers), plus Draw —
+    // a freehand function sketched on its own screen (see openDrawOverlay).
     const shapeSeg = document.createElement("div");
     shapeSeg.className = "placement-seg fade-modes";
     const spec = blendShapeSpec(tr.shape);
@@ -3851,6 +3854,7 @@ export class App {
         tr.curve = undefined;
         tr.dir = undefined;
         tr.cycles = s.usesCycles ? s.cyclesDefault : undefined;
+        tr.points = undefined;
         tr.yGain = undefined;
         tr.yBias = undefined;
         tr.yMin = undefined;
@@ -3860,6 +3864,12 @@ export class App {
       };
       shapeSeg.append(b);
     }
+    const drawBtn = document.createElement("button");
+    drawBtn.className = "seg-btn" + (tr.shape === "drawn" ? " on" : "");
+    drawBtn.textContent = "✏ Draw";
+    drawBtn.title = "Draw the function by hand — it's cleaned up and matched to a formula";
+    drawBtn.onclick = () => this.openDrawOverlay(loop, tr, rerender);
+    shapeSeg.append(drawBtn);
     wrap.append(this.labeledRow("Shape", shapeSeg));
 
     wrap.append(this.transFormula(loop, tr, rerender));
@@ -3974,6 +3984,13 @@ export class App {
         parts = ["y = ", A, " · hump(", N_WAVE, ", ", G_GAP, ", x) + ", B];
         fnHelp = "n half-sine humps with flat rests between them: the sound bulges into the transformed sound and back, g setting the gap between bulges.";
         break;
+      case "drawn": {
+        parts = ["y = ", A, " · draw(x) + ", B];
+        const fit = tr.points && tr.points.length ? fitBlendShape(tr.points) : null;
+        fnHelp = "Your hand-drawn function, cleaned up and played back exactly as drawn."
+          + (fit ? ` Closest named formula: ${fit.label} (off by ~${Math.round(fit.rmse * 100)} y-units on average) — pick that shape above to switch to the pure formula.` : "");
+        break;
+      }
       default: {
         const K = K_POW("Curve exponent on x: 1 is a straight line; up to 4 bends it exponential — barely moving at first, then rushing the end (flip with Ease in).");
         parts = tr.dir === "in"
@@ -4103,6 +4120,253 @@ export class App {
     box.className = "curve-viz-box";
     box.append(svg);
     return box;
+  }
+
+  /** A fitted formula written out with its numbers inline (the draw screen's caption —
+      the same notation the Formula row uses, y in 0–100 units). */
+  private fitFormulaText(fit: ReturnType<typeof fitBlendShape>): string {
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    const c = fit.curve ?? 0;
+    const kPow = r2(Math.pow(4, c));
+    const warp = kPow !== 1 ? `^${kPow}` : "";
+    let core: string;
+    switch (fit.shape) {
+      case "scurve": core = `σ(${r2(4 + 12 * c)}·(x−½))`; break;
+      case "parabola": core = `arch(x, ${r2(0.5 + (fit.dir === "in" ? 1 : -1) * 0.35 * c)})`; break;
+      case "sine": core = `½ − ½·cos(2π·${r2(fit.cycles ?? 1.5)}·x${warp})`; break;
+      case "cos": core = `½ + ½·cos(2π·${r2(fit.cycles ?? 1)}·x${warp})`; break;
+      case "zigzag": core = `tri(${r2(fit.cycles ?? 1.5)}·x${warp})`; break;
+      case "wobble": core = `x + ${r2(0.15 + 0.85 * c)}·sin(2π·${r2(fit.cycles ?? 2)}·x)·(1−x)`; break;
+      case "steps": { const n = Math.max(2, Math.round(fit.cycles ?? 4)); core = `⌊${n}·x${warp}⌋/${n - 1}`; break; }
+      case "halfwave": core = `hump(${r2(fit.cycles ?? 3)}, ${r2(c)}, x)`; break;
+      default: core = fit.dir === "in" && kPow !== 1 ? `(1−(1−x)^${kPow})` : kPow !== 1 ? `x^${kPow}` : "x";
+    }
+    const a = fit.yGain !== 1 ? `${r2(fit.yGain)} · ` : "";
+    const bU = Math.round(fit.yBias * 100);
+    const b = bU ? (bU > 0 ? ` + ${bU}` : ` − ${-bU}`) : "";
+    return `y = ${a}${core}${b}`;
+  }
+
+  /** The freehand DRAW screen for a transition's blend function: sketch y(x) with a
+      finger/mouse, the stroke is de-shaken into a clean function (smoothStroke), and
+      it's matched against the shape family (fitBlendShape) — keep the exact drawing,
+      or snap to the matched formula. */
+  private openDrawOverlay(loop: Loop, tr: LoopTransition, rerender: () => void): void {
+    document.querySelector(".draw-overlay")?.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "draw-overlay";
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    const card = document.createElement("div");
+    card.className = "draw-card";
+    card.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+
+    const head = document.createElement("div");
+    head.className = "draw-head";
+    const title = document.createElement("h3");
+    title.className = "tr-title";
+    title.textContent = "Draw the function";
+    const close = document.createElement("button");
+    close.className = "seg-btn";
+    close.textContent = "✕";
+    close.onclick = () => overlay.remove();
+    head.append(title, close);
+    card.append(head);
+
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = "Sketch how far the sound transforms across the window — bottom = the sound as it is, top = the Effects values. The line is cleaned up as you lift your finger, and matched to a formula.";
+    card.append(hint);
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "draw-canvas";
+    card.append(canvas);
+
+    // The verdict line + the two ways out: keep the exact drawing, or take the formula.
+    const verdict = document.createElement("p");
+    verdict.className = "sing-hint draw-verdict";
+    const actions = document.createElement("div");
+    actions.className = "placement-seg draw-actions";
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "seg-btn";
+    clearBtn.textContent = "Clear";
+    const useDraw = document.createElement("button");
+    useDraw.className = "seg-btn";
+    useDraw.textContent = "Use drawing";
+    useDraw.title = "Keep the cleaned-up curve exactly as drawn";
+    const useFit = document.createElement("button");
+    useFit.className = "seg-btn";
+    useFit.textContent = "Use formula";
+    useFit.title = "Replace the drawing with the matched formula";
+    actions.append(clearBtn, useDraw, useFit);
+    card.append(verdict, actions);
+    overlay.append(card);
+    document.body.append(overlay);
+
+    // --- state: the raw stroke while dragging, the cleaned curve, and its fit ---
+    let raw: { x: number; y: number }[] = [];
+    let drawing = false;
+    let points: number[] | null = tr.shape === "drawn" && tr.points ? tr.points.slice() : null;
+    let fit = points ? fitBlendShape(points) : null;
+    // A good fit IS the formula (≲4 y-units off); highlight the button to take.
+    const fitGood = () => !!fit && fit.rmse <= 0.04;
+
+    const refreshFooter = () => {
+      if (!points || !fit) {
+        verdict.textContent = "Draw left to right — redrawing replaces the line.";
+        useDraw.disabled = useFit.disabled = true;
+        useFit.classList.remove("on");
+        useDraw.classList.remove("on");
+      } else {
+        const match = Math.max(0, Math.min(100, Math.round(100 * (1 - fit.rmse * 2.5))));
+        verdict.textContent = `Matched: ${fit.label} (${match}%) — ${this.fitFormulaText(fit)}`;
+        useDraw.disabled = useFit.disabled = false;
+        useFit.classList.toggle("on", fitGood());
+        useDraw.classList.toggle("on", !fitGood());
+      }
+    };
+
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const redraw = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      if (canvas.width !== Math.round(rect.width * dpr)) {
+        canvas.width = Math.round(rect.width * dpr);
+        canvas.height = Math.round(rect.height * dpr);
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = "#0d1019";
+      ctx.fillRect(0, 0, W, H);
+      // Quarter grid, edges brighter (mirroring the Graph tab's viz).
+      for (let q = 0; q <= 4; q++) {
+        ctx.strokeStyle = q === 0 || q === 4 ? "rgba(154,168,204,0.28)" : "rgba(154,168,204,0.12)";
+        ctx.lineWidth = 1 * dpr;
+        ctx.beginPath();
+        ctx.moveTo((q / 4) * W, 0); ctx.lineTo((q / 4) * W, H);
+        ctx.moveTo(0, (q / 4) * H); ctx.lineTo(W, (q / 4) * H);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#97a0b6";
+      ctx.font = `600 ${11 * dpr}px system-ui, sans-serif`;
+      ctx.fillText("transformed", 6 * dpr, 14 * dpr);
+      ctx.fillText("sound", 6 * dpr, H - 6 * dpr);
+      const strokePath = (fn: (x01: number) => number) => {
+        ctx.beginPath();
+        const N = 128;
+        for (let i = 0; i <= N; i++) {
+          const x = i / N;
+          const y = Math.max(0, Math.min(1, fn(x)));
+          const px = x * W, py = (1 - y) * H;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      };
+      // The matched formula, dashed behind the drawing.
+      if (fit && points) {
+        const f = fit;
+        ctx.strokeStyle = "rgba(154,168,204,0.5)";
+        ctx.lineWidth = 1.5 * dpr;
+        ctx.setLineDash([5 * dpr, 4 * dpr]);
+        strokePath((x) => f.yGain * blendShape(f, x) + f.yBias);
+        ctx.setLineDash([]);
+      }
+      // The cleaned curve (or the raw stroke while the finger is still down).
+      if (drawing && raw.length > 1) {
+        ctx.strokeStyle = "rgba(255,214,10,0.55)";
+        ctx.lineWidth = 2 * dpr;
+        ctx.beginPath();
+        raw.forEach((p, i) => {
+          const px = p.x * W, py = (1 - p.y) * H;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+      } else if (points) {
+        const pts = points;
+        ctx.strokeStyle = "#ffd60a";
+        ctx.lineWidth = 2.5 * dpr;
+        strokePath((x) => {
+          const xi = x * (pts.length - 1);
+          const i0 = Math.min(pts.length - 2, Math.floor(xi));
+          return pts[i0] + (pts[i0 + 1] - pts[i0]) * (xi - i0);
+        });
+      }
+    };
+
+    const norm = (e: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+        y: Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height)),
+      };
+    };
+    canvas.onpointerdown = (e) => {
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      drawing = true;
+      raw = [norm(e)];
+      redraw();
+    };
+    canvas.onpointermove = (e) => {
+      if (!drawing) return;
+      raw.push(norm(e));
+      redraw();
+    };
+    const finish = () => {
+      if (!drawing) return;
+      drawing = false;
+      if (raw.length > 3) {
+        points = smoothStroke(raw);
+        fit = fitBlendShape(points);
+      }
+      raw = [];
+      refreshFooter();
+      redraw();
+    };
+    canvas.onpointerup = finish;
+    canvas.onpointercancel = finish;
+
+    clearBtn.onclick = () => {
+      points = null;
+      fit = null;
+      refreshFooter();
+      redraw();
+    };
+    const done = () => {
+      overlay.remove();
+      this.recompile();
+      this.schedulePreview(loop, tr);
+      rerender();
+    };
+    useDraw.onclick = () => {
+      if (!points) return;
+      tr.shape = "drawn";
+      tr.points = points.slice(0, DRAWN_POINTS);
+      // The drawing carries its own height/offset — the transform resets to identity.
+      tr.curve = undefined; tr.dir = undefined; tr.cycles = undefined;
+      tr.yGain = undefined; tr.yBias = undefined; tr.yMin = undefined; tr.yMax = undefined;
+      this.toast("Drawn function kept" + (fit ? ` — closest formula: ${fit.label}` : ""));
+      done();
+    };
+    useFit.onclick = () => {
+      if (!fit) return;
+      const lean = (v: number, def: number) => (Math.abs(v - def) < 1e-9 ? undefined : v);
+      const spec = blendShapeSpec(fit.shape);
+      tr.shape = fit.shape === "ramp" ? undefined : fit.shape;
+      tr.curve = fit.curve;
+      tr.dir = spec.usesDir ? fit.dir : undefined;
+      tr.cycles = spec.usesCycles ? fit.cycles : undefined;
+      tr.points = undefined;
+      tr.yGain = lean(fit.yGain, 1);
+      tr.yBias = lean(fit.yBias, 0);
+      tr.yMin = undefined; tr.yMax = undefined;
+      this.toast(`Formula applied: ${this.fitFormulaText(fit)}`);
+      done();
+    };
+
+    refreshFooter();
+    requestAnimationFrame(redraw);
   }
 
   /** The Effects tab: the sound's params section replicated — but every value here is
@@ -4269,9 +4533,11 @@ export class App {
 
   /** Render a short loop of the transition offline (so it's exact), then loop the
       buffer — a shortened stand-in for the real thing while shaping it. "transition"
-      mode plays the loop's sound morphing LINEARLY into the transformed sound across
-      the chosen preview length; "result" mode plays just the transformed sound. Stale
-      renders (the user kept editing, or the editor closed) are dropped. */
+      mode plays the loop's sound morphing into the transformed sound across the chosen
+      preview length as a real morph SWEEP window — following the Graph tab's function
+      (drawn functions included) and gliding held notes, exactly like the track.
+      "result" mode plays just the transformed sound. Stale renders (the user kept
+      editing, or the editor closed) are dropped. */
   private async playTransitionPreview(loop: Loop, tr: LoopTransition): Promise<void> {
     if (loop.soundId < 0 || !loop.snapshot.length) return;
     const token = ++this.previewToken;
@@ -4282,8 +4548,7 @@ export class App {
     const node = loopToNode(loop, reps);
     node.soundId = 0;
     node.intro = undefined;
-    // A linear morph across the whole loop — or none at all when only the result plays.
-    node.outro = resultOnly ? undefined : { reps, mode: "morph", toId: 1 };
+    node.outro = undefined;
     const lenSteps = reps * unit;
 
     const withGain = (snap: number[]): number[] => {
@@ -4295,10 +4560,26 @@ export class App {
     // In result-only mode the node's own sound (id 0) IS the transformed sound.
     const sounds: EngineSound[] = [
       { id: 0, snap: withGain(resultOnly ? target : loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(resultOnly ? target : loop.snapshot, this.tempo) },
-      { id: 1, snap: withGain(target), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(target, this.tempo) },
     ];
+    // The morph window spans the whole preview loop, carrying the transition's blend
+    // function verbatim (mirroring loopTransitionWindows — Volume as a ratio of the
+    // loop's own so the gain makeup keeps riding along).
+    let sweeps: SweepWindow[] | undefined;
+    if (!resultOnly) {
+      const morphSnap = target.slice();
+      const ownVol = loop.snapshot[ParamId.Volume] ?? 0.85;
+      morphSnap[ParamId.Volume] = (morphSnap[ParamId.Volume] ?? 0.85) / Math.max(0.05, ownVol);
+      sweeps = [{
+        from: 0, to: lenSteps, mode: "morph",
+        modes: tr.speedOn ? ["morph", "speed"] : undefined,
+        side: "out", morphSnap,
+        shape: tr.shape, curve: tr.curve, dir: tr.dir, cycles: tr.cycles, points: tr.points,
+        yGain: tr.yGain, yBias: tr.yBias, yMin: tr.yMin, yMax: tr.yMax,
+        rate: tr.speedOn ? (tr.rate ?? 2) : undefined,
+      }];
+    }
     const arr = new LineArrangement();
-    arr.setLanes([{ color: 0, nodes: [node] }], Math.ceil(lenSteps / STEPS_PER_BAR));
+    arr.setLanes([{ color: 0, nodes: [node], sweeps }], Math.ceil(lenSteps / STEPS_PER_BAR));
     try {
       const buffer = await this.engine.renderToBuffer({
         lines: arr.linesMessage(),
