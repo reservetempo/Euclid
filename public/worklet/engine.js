@@ -151,7 +151,7 @@ function bendT(t, curve, dir) {
 function shapeT(t, env) {
   t = clamp(t, 0, 1);
   const c = clamp(env.curve || 0, 0, 1);
-  const cyc = (def) => Math.max(0.25, Math.min(16, env.cycles == null ? def : env.cycles));
+  const cyc = (def) => Math.max(0.25, Math.min(999, env.cycles == null ? def : env.cycles));
   switch (env.shape) {
     case "scurve": {
       const k = 4 + c * 12;

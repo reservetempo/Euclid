@@ -218,7 +218,7 @@ function readShape(sv: unknown): BlendShapeId | undefined {
 
 /** Validate a stored wave/stair count for the periodic blend shapes. */
 function readCycles(cv: unknown): number | undefined {
-  return typeof cv === "number" && isFinite(cv) ? Math.max(0.25, Math.min(16, cv)) : undefined;
+  return typeof cv === "number" && isFinite(cv) ? Math.max(0.25, Math.min(999, cv)) : undefined;
 }
 
 function readEnv(ev: unknown, side: "intro"): IntroEnv | undefined;
@@ -235,13 +235,13 @@ function readEnv(ev: unknown, side: "intro" | "outro"): IntroEnv | OutroEnv | un
     ?? (KNOWN_MODES.includes(e.mode as TransitionMode)
       ? (e.mode as TransitionMode)
       : (id < 0 ? "fade" : "morph"));
-  // Speed carries a far-end rate multiple (clamped ~0.25..4) whenever it's in the set
+  // Speed carries a far-end rate multiple (clamped 0.05..32) whenever it's in the set
   // (alone or stacked with tonal styles). The glide curve (0..1) and its direction apply
   // to EVERY mode (speed bends its timing, the rest their snapshot morph); the From→To
   // sweep endpoints are raw param values (native units, undefined = use the sound's own
   // value / the mode's built-in extreme).
   const rate = mode === "speed" || modes.includes("speed")
-    ? (typeof e.rate === "number" && isFinite(e.rate) ? Math.max(0.25, Math.min(4, e.rate)) : 2)
+    ? (typeof e.rate === "number" && isFinite(e.rate) ? Math.max(0.05, Math.min(32, e.rate)) : 2)
     : undefined;
   const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : undefined);
   const curve = typeof e.curve === "number" && isFinite(e.curve) ? Math.max(0, Math.min(1, e.curve)) : undefined;
@@ -342,7 +342,7 @@ function readSweep(sv: unknown): RowSweep | undefined {
     shape: readShape(s.shape),
     cycles: readCycles(s.cycles),
     rate: hasSpeed
-      ? (typeof s.rate === "number" && isFinite(s.rate) ? Math.max(0.25, Math.min(4, s.rate)) : 2)
+      ? (typeof s.rate === "number" && isFinite(s.rate) ? Math.max(0.05, Math.min(32, s.rate)) : 2)
       : undefined,
   };
 }
@@ -378,12 +378,12 @@ function readTransition(tv: unknown): LoopTransition | undefined {
     curve: clampNum(t.curve, 0, 1),
     dir: t.dir === "in" || t.dir === "out" ? t.dir : undefined,
     cycles: readCycles(t.cycles),
-    yGain: clampNum(t.yGain, -4, 4),
-    yBias: clampNum(t.yBias, -1, 1),
+    yGain: clampNum(t.yGain, -100, 100),
+    yBias: clampNum(t.yBias, -10, 10),
     yMin: clampNum(t.yMin, 0, 1),
     yMax: clampNum(t.yMax, 0, 1),
     speedOn,
-    rate: speedOn ? (clampNum(t.rate, 0.25, 4) ?? 2) : undefined,
+    rate: speedOn ? (clampNum(t.rate, 0.05, 32) ?? 2) : undefined,
   };
 }
 

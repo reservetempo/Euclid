@@ -2766,7 +2766,7 @@ export class App {
     if (envHasSpeed(sweep)) {
       // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
       card.append(this.numRow("Rate", () => Math.round((sweep.rate ?? 2) * 100) / 100, (n) => {
-        sweep.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
+        sweep.rate = Math.round(Math.max(0.05, Math.min(32, n)) * 100) / 100;
         this.recompile();
       }, rerender, () => `${(sweep.rate ?? 2).toFixed(2)}×`, 0.05));
     }
@@ -3788,7 +3788,7 @@ export class App {
     );
     controls.append(seg);
     controls.append(this.numRow("Length", () => this.transPreviewBars, (n) => {
-      this.transPreviewBars = Math.max(1, Math.min(16, Math.round(n)));
+      this.transPreviewBars = Math.max(1, Math.min(64, Math.round(n)));
       this.schedulePreview(loop, tr);
     }, rerender, () => `${this.transPreviewBars} bar${this.transPreviewBars === 1 ? "" : "s"}`));
     row.append(lbl, controls);
@@ -3865,10 +3865,10 @@ export class App {
       ({ sym, read, write, step, help, show: show ?? (() => String(r2(read()))) });
 
     // The two transform variables every shape shares (y is drawn 0–100).
-    const A = fv("a", () => r2(tr.yGain ?? 1), (n) => { tr.yGain = lean(clamp(r2(n), -4, 4), 1); touch(); }, 0.05,
-      "Slope / height multiplier. 1 leaves the shape as drawn; 2 makes it climb twice as steeply (clamped at the top); negative flips it upside down — the transition starts transformed and comes back.");
-    const B = fv("b", () => Math.round((tr.yBias ?? 0) * 100), (n) => { tr.yBias = lean(clamp(Math.round(n), -100, 100) / 100, 0); touch(); }, 5,
-      "Vertical shift, in y units (0–100). +25 lifts the whole curve a quarter of the way toward the transformed sound before it even starts.",
+    const A = fv("a", () => r2(tr.yGain ?? 1), (n) => { tr.yGain = lean(clamp(r2(n), -100, 100), 1); touch(); }, 0.05,
+      "Slope / height multiplier. 1 leaves the shape as drawn; 2 makes it climb twice as steeply (clamped at the top — a big a makes the transformation snap early); negative flips it upside down — the transition starts transformed and comes back.");
+    const B = fv("b", () => Math.round((tr.yBias ?? 0) * 100), (n) => { tr.yBias = lean(clamp(Math.round(n), -1000, 1000) / 100, 0); touch(); }, 5,
+      "Vertical shift, in y units (0–100, but it can run far past either end). +25 lifts the whole curve a quarter of the way toward the transformed sound; a large negative b with a steep a holds the sound plain, then transforms late.",
       () => String(Math.round((tr.yBias ?? 0) * 100)));
 
     // The shape's own variables (each maps back onto the stored curve/cycles/dir).
@@ -3888,11 +3888,11 @@ export class App {
       touch();
     }, 0.05, "Where the arch peaks, as a fraction of the window (0.5 = the middle; 0.15 peaks early, 0.85 late). The curve goes out to the transformed sound and back.");
     const N_WAVE = fv("n", () => r2(tr.cycles ?? spec.cyclesDefault), (n) => {
-      tr.cycles = clamp(r2(n), 0.25, 16);
+      tr.cycles = clamp(r2(n), 0.25, 999);
       touch();
-    }, 0.25, "How many waves fit in the window. Half-integers land at the transformed end; whole numbers return home.");
+    }, 0.25, "How many waves fit in the window — as many as you like. Half-integers land at the transformed end; whole numbers return home.");
     const N_STEP = fv("n", () => Math.max(2, Math.round(tr.cycles ?? spec.cyclesDefault)), (n) => {
-      tr.cycles = clamp(Math.round(n), 2, 16);
+      tr.cycles = clamp(Math.round(n), 2, 99);
       touch();
     }, 1, "How many flat levels the staircase jumps through on its way to the transformed sound.", () => String(Math.max(2, Math.round(tr.cycles ?? spec.cyclesDefault))));
     const W_WARP = K_POW("Time warp exponent on x: 1 spaces the waves evenly; up to 4 squeezes them toward one end (an accelerating oscillation — the Ease buttons pick which end).");
@@ -4183,7 +4183,7 @@ export class App {
     if (on) {
       // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
       controls.append(this.numRow("Rate", () => Math.round((tr.rate ?? 2) * 100) / 100, (n) => {
-        tr.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
+        tr.rate = Math.round(Math.max(0.05, Math.min(32, n)) * 100) / 100;
         this.recompile();
         this.schedulePreview(loop, tr);
       }, rerender, () => `${(tr.rate ?? 2).toFixed(2)}×`, 0.05));
@@ -4239,7 +4239,7 @@ export class App {
     if (loop.soundId < 0 || !loop.snapshot.length) return;
     const token = ++this.previewToken;
     const resultOnly = this.transPreviewMode === "result";
-    const bars = Math.max(1, Math.min(16, Math.round(this.transPreviewBars)));
+    const bars = Math.max(1, Math.min(64, Math.round(this.transPreviewBars)));
     const unit = loop.steps >= 1 ? loop.steps : STEPS_PER_BAR;
     const reps = Math.max(1, Math.floor((bars * STEPS_PER_BAR) / unit));
     const node = loopToNode(loop, reps);
@@ -4607,7 +4607,7 @@ export class App {
       if (active.includes("speed")) {
         // In × units (type 1.5 for 1.5×; the numpad's dot key); scrubbing steps by 0.05×.
         controls.append(this.numRow("Rate", () => Math.round((env.rate ?? 2) * 100) / 100, (n) => {
-          env.rate = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100;
+          env.rate = Math.round(Math.max(0.05, Math.min(32, n)) * 100) / 100;
           this.recompile();
         }, rerender, () => `${(env.rate ?? 2).toFixed(2)}×`, 0.05));
       }
@@ -4699,7 +4699,7 @@ export class App {
     if (spec.usesCycles) {
       if (spec.id === "steps") {
         out.push(this.numRow("Stairs", () => Math.round(env.cycles ?? spec.cyclesDefault), (n) => {
-          env.cycles = Math.max(2, Math.min(16, Math.round(n)));
+          env.cycles = Math.max(2, Math.min(99, Math.round(n)));
           this.recompile();
         }, rerender, () => `${Math.round(env.cycles ?? spec.cyclesDefault)} levels`));
       } else {
@@ -4707,7 +4707,7 @@ export class App {
         // scrubbing steps by quarter waves (half-integers land at the far end,
         // integers return home).
         out.push(this.numRow("Waves", () => Math.round((env.cycles ?? spec.cyclesDefault) * 100) / 100, (n) => {
-          env.cycles = Math.round(Math.max(0.25, Math.min(16, n)) * 100) / 100;
+          env.cycles = Math.round(Math.max(0.25, Math.min(999, n)) * 100) / 100;
           this.recompile();
         }, rerender, () => {
           const w = Math.round((env.cycles ?? spec.cyclesDefault) * 100) / 100;
