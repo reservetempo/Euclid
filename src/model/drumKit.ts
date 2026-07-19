@@ -191,9 +191,15 @@ export function effectiveEchoTime(snap: number[], bpm: number): number {
     channel-stealing "tail" (so long-ringing sounds keep their channel). `bpm` sizes
     a tempo-synced echo's tail (harmless default for free echoes). */
 export function estimateLength(snap: number[], bpm = 120): number {
+  // A sustained sound holds for its Gate before releasing: count the hold beyond the
+  // legacy 0.4s step gate when Sustain keeps it audible (drone-length gates ring long).
+  const gateSec = snap[ParamId.Gate] || 0;
+  const sustain = snap[ParamId.AmpSustain] || 0;
+  const hold = sustain > 0.02 ? Math.max(0, gateSec - 0.4) : 0;
   const body =
     snap[ParamId.AmpAttack] +
     snap[ParamId.AmpDecay] +
+    hold +
     snap[ParamId.AmpSustain] * snap[ParamId.AmpRelease];
   const echoTail =
     snap[ParamId.EchoMix] > ECHO_EPS
@@ -318,6 +324,12 @@ export class DrumParameters {
       // LFO destinations are always fully shufflable; widen any range saved before
       // the "None" option existed so it can be reached again.
       if (id === ParamId.LfoTarget || id === ParamId.Lfo2Target || id === ParamId.Lfo3Target) {
+        this.lo[id] = r.min;
+        this.hi[id] = r.max;
+      }
+      // Gate is never shuffled, so its "range" only spans the slider — always the full
+      // base range, so saves from before the 30s drone gate can reach it too.
+      if (id === ParamId.Gate) {
         this.lo[id] = r.min;
         this.hi[id] = r.max;
       }

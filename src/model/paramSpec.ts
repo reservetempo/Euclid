@@ -144,8 +144,10 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.Lfo2Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     case ParamId.Lfo3Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     // Note-hold in seconds; default 0.4 matches the legacy fixed gate (STEP_GATE_SEC).
+    // Max 30s for drone-length holds (pair with Sustain > 0 so the note actually rings);
+    // the low skew keeps most of the slider's travel on the ordinary short gates.
     // Not randomizable — it's a length choice, not part of the sound's character.
-    case ParamId.Gate:           return make("Gate", 0.02, 2, 0.4, 0.35, 0.005, "s", false);
+    case ParamId.Gate:           return make("Gate", 0.02, 30, 0.4, 0.2, 0.005, "s", false);
     default:                     return make("?", 0, 1, 0, 1, 0.01, "");
   }
 }

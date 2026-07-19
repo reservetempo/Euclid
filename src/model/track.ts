@@ -138,6 +138,7 @@ export interface LoopTransition extends GraphTransform {
   curve?: number;
   dir?: "in" | "out";
   cycles?: number;
+  points?: number[]; // "drawn" shape: the freehand blend function, uniformly sampled y∈[0,1]
   speedOn?: boolean;
   rate?: number; // far-end hit-rate multiple of the tempo (speed only)
 }
@@ -186,7 +187,7 @@ export function loopTransitionWindows(loop: Loop, barLimit: number): SweepWindow
         modes: tr.speedOn ? ["morph", "speed"] : undefined,
         side: "out",
         morphSnap,
-        shape: tr.shape, curve: tr.curve, dir: tr.dir, cycles: tr.cycles,
+        shape: tr.shape, curve: tr.curve, dir: tr.dir, cycles: tr.cycles, points: tr.points,
         yGain: tr.yGain, yBias: tr.yBias, yMin: tr.yMin, yMax: tr.yMax,
         rate: tr.speedOn ? (tr.rate ?? 2) : undefined,
       });
