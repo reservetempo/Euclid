@@ -152,11 +152,12 @@ export class App {
   // rebuild (a value scrub, a toggle), whose scroll position is preserved.
   private popupViewKey = "";
   // Transition editor state: the open transition, its tab, its Effects sub-tab, and one
-  // param-editor kit per transition (the target snapshot's editing surface).
+  // param editor (kit + shuffle settings) per transition — the target snapshot's
+  // editing surface, shuffle included.
   private editTransition: LoopTransition | null = null;
   private transTab: "bars" | "graph" | "effects" | "speed" = "bars";
   private transFxTab: SoundTab | undefined;
-  private transitionKits = new Map<LoopTransition, DrumKit>();
+  private transitionKits = new Map<LoopTransition, VoiceEditor>();
   // Debounced looping preview of the transition being edited (offline render): hear the
   // whole TRANSITION over a loop of a chosen length, or just the transformed RESULT.
   private previewTimer = 0;
@@ -3099,6 +3100,14 @@ export class App {
       sheet.append(sub);
     }
 
+    // While a transition's editor is open it takes the whole page — the popup's own
+    // Sound / Loop / Transitions nav hides (its ‹ Back returns to the list, which
+    // brings the nav back).
+    const trs = loop.transitions ?? (loop.transitions = []);
+    const openTr = this.placementTab === "transition" && this.editTransition && trs.includes(this.editTransition)
+      ? this.editTransition
+      : null;
+
     // Tab nav across the three sub-pages.
     const nav = document.createElement("div");
     nav.className = "placement-seg placement-nav";
@@ -3120,14 +3129,12 @@ export class App {
       return b;
     };
     nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transitions"));
-    sheet.append(nav);
+    if (!openTr) sheet.append(nav);
 
     if (this.placementTab === "sound") {
       this.appendSoundTab(loop, sheet);
     } else if (this.placementTab === "transition") {
-      const trs = loop.transitions ?? (loop.transitions = []);
-      const cur = this.editTransition && trs.includes(this.editTransition) ? this.editTransition : null;
-      if (cur) sheet.append(this.transitionEditor(loop, cur, rerender));
+      if (openTr) sheet.append(this.transitionEditor(loop, openTr, rerender));
       else { this.editTransition = null; sheet.append(this.transitionList(loop, rerender)); }
     } else if (this.loopSub === "options") {
       // Procedural placement options (behind the ⚙ button): the Repeat-every rule.
@@ -4100,27 +4107,29 @@ export class App {
 
   /** The Effects tab: the sound's params section replicated — but every value here is
       the transition's END. Lower the filter and the transition sweeps the filter down
-      to it; each section's Reset clears its changes (back to the loop's own values). */
+      to it; each section's Reset clears its changes (back to the loop's own values).
+      The Shuffle panel is here too, rolling a whole new destination sound at once. */
   private transEffectsSection(loop: Loop, tr: LoopTransition): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "trans-effects";
     const hint = document.createElement("p");
     hint.className = "sing-hint";
-    hint.textContent = "These are the transition's END values — the transition morphs the sound from its own settings into these, along the Graph. Reset on a section reverts it to no change.";
+    hint.textContent = "These are the transition's END values — the transition morphs the sound from its own settings into these, along the Graph. Shuffle rolls a whole new destination; Reset on a section reverts it to no change.";
     wrap.append(hint);
 
-    const kit = this.transitionKitFor(loop, tr);
-    const view = new SoundView(kit, REF_DRUM, {
+    const ed = this.transitionKitFor(loop, tr);
+    const view = new SoundView(ed.kit, REF_DRUM, {
       onChange: () => {
-        tr.snapshot = kit.get(REF_DRUM).capture();
+        tr.snapshot = ed.kit.get(REF_DRUM).capture();
         this.recompile();
         this.schedulePreview(loop, tr);
       },
       onRangeChange: () => { /* ranges don't apply to a fixed target snapshot */ },
-      // On release, (re)start the 4-bar looping preview with the latest changes.
+      // On release / after a shuffle, (re)start the looping preview with the changes.
       onAudition: () => this.schedulePreview(loop, tr, true),
+      context: () => this.shuffleContext(),
     }, {
-      shuffle: false,                    // the target is shaped by hand, not shuffled
+      settings: ed,                      // shuffle settings persist across rebuilds
       baseline: loop.snapshot,           // section Reset = "no transformation here"
       initialTab: this.transFxTab,
       onTabChange: (t) => { this.transFxTab = t; },
@@ -4230,19 +4239,21 @@ export class App {
     return wrap;
   }
 
-  /** The per-transition param-editor kit: the surface the Effects tab edits, seeded from
-      the transition's target snapshot (falling back to the loop's own sound). */
-  private transitionKitFor(loop: Loop, tr: LoopTransition): DrumKit {
-    let kit = this.transitionKits.get(tr);
-    if (kit) return kit;
-    kit = new DrumKit([REF_DRUM]);
+  /** The per-transition param editor (kit + shuffle settings): the surface the Effects
+      tab edits, seeded from the transition's target snapshot (falling back to the
+      loop's own sound). */
+  private transitionKitFor(loop: Loop, tr: LoopTransition): VoiceEditor {
+    let ed = this.transitionKits.get(tr);
+    if (ed) return ed;
+    const kit = new DrumKit([REF_DRUM]);
     const p = kit.get(REF_DRUM);
     p.applyPreset(FULL_RANGE_PRESET);
     if (loop.preset) kit.adoptPresetByName(REF_DRUM, loop.preset);
     if (loop.ranges) p.restoreRanges(loop.ranges.lo, loop.ranges.hi);
     p.restore(tr.snapshot.length ? tr.snapshot : loop.snapshot);
-    this.transitionKits.set(tr, kit);
-    return kit;
+    ed = { kit, ...defaultShuffleSettings() };
+    this.transitionKits.set(tr, ed);
+    return ed;
   }
 
   // --- transition preview (the shortened 4-bar loop) ---------------------
