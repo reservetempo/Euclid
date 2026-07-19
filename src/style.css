@@ -1777,3 +1777,25 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .trans-graph { display: flex; flex-direction: column; }
 .trans-effects { display: flex; flex-direction: column; gap: 10px; }
 .trans-speed { display: flex; flex-direction: column; }
+
+/* Transition Graph tab: the function written out with inline variable inputs. */
+.formula-block { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+.formula-head { display: flex; align-items: center; gap: 8px; position: relative; }
+.formula-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  padding: 10px 12px; background: var(--field);
+  border: 1px solid var(--line-soft); border-radius: var(--r-md);
+  font-size: 15px; font-variant-numeric: tabular-nums;
+}
+.formula-text { color: var(--text); white-space: pre; }
+.formula-var {
+  width: auto; min-width: 34px; max-width: 72px; padding: 3px 6px; text-align: center;
+  font: inherit; font-weight: 700; color: var(--vc);
+  background: color-mix(in srgb, var(--vc) 10%, var(--panel2));
+  border: 1.5px solid color-mix(in srgb, var(--vc) 55%, transparent);
+  border-radius: var(--r-sm);
+  cursor: ns-resize; touch-action: none;
+}
+.formula-bounds { font-size: 13.5px; color: var(--muted); background: transparent; border: none; padding: 2px 12px; }
+/* The play-range popup card hosts the shared bar grid. */
+.playrange-card .place-grid-wrap { --vc: var(--accent); }

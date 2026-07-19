@@ -369,9 +369,10 @@ function emitPhrase(phrase: EmittedNote[], inst: Loop, budget: number, out: Voic
   return used;
 }
 
-/** A fresh placement rule: every 4th bar, 1 bar long, solo. */
+/** A fresh placement rule: EVERY bar, the length of the track — a new loop covers the
+    whole timeline until it's placed otherwise. Solo, so siblings still resolve. */
 export function defaultRule(): PlacementRule {
-  return { every: { kind: "nth", n: 4 }, forBars: 1, mode: "solo", seed: randomSeed(), seedHistory: [] };
+  return { every: { kind: "nth", n: 1 }, forBars: 1, mode: "solo", seed: randomSeed(), seedHistory: [] };
 }
 
 // A compiled lane: a node chain (as the old voice lines) plus the colour it belongs to,
