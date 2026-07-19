@@ -1799,3 +1799,15 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .formula-bounds { font-size: 13.5px; color: var(--muted); background: transparent; border: none; padding: 2px 12px; }
 /* The play-range popup card hosts the shared bar grid. */
 .playrange-card .place-grid-wrap { --vc: var(--accent); }
+
+/* The voice popup fills the page below the top bar (set as --popup-top when opened):
+   the nav stays visible, the sheet takes everything else. */
+.placement-overlay.voice-sheet-overlay {
+  top: var(--popup-top, 0px);
+  padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+  align-items: stretch;
+}
+.placement-overlay .voice-sheet.placement-sheet {
+  max-width: none; width: 100%;
+  height: 100%; max-height: none; margin: 0;
+}

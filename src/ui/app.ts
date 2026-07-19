@@ -103,8 +103,7 @@ export class App {
   private view: View = "track";
   private lastViewKey = "";             // view identity at the previous render (scroll-preserve guard)
   private openColor = 0;               // which colour panel is open
-  // Colour-panel sub-tab (Loops / Transition / Mixer) and its melody-list twin.
-  private colorTab: "loops" | "transition" | "mixer" = "loops";
+  // Melody-list sub-tab (the voice colour panel lost its tabs — it's just the loop list).
   private melodyListTab: "melodies" | "transition" | "mixer" = "melodies";
   private melodyPath: MelodyNote[] = []; // notes descended into (branch drill-down); [] = root
   private melodyItemIndex = -1;          // which melody in the list is open (-1 = the list/menu)
@@ -155,9 +154,12 @@ export class App {
   private transTab: "bars" | "graph" | "effects" | "speed" = "bars";
   private transFxTab: SoundTab | undefined;
   private transitionKits = new Map<LoopTransition, DrumKit>();
-  // Debounced looping 4-bar preview of the transition being edited (offline render).
+  // Debounced looping preview of the transition being edited (offline render): hear the
+  // whole TRANSITION over a loop of a chosen length, or just the transformed RESULT.
   private previewTimer = 0;
   private previewToken = 0;
+  private transPreviewMode: "transition" | "result" = "transition";
+  private transPreviewBars = 4;
   private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
   private soundName = "";
@@ -534,8 +536,7 @@ export class App {
     let viewKey = this.view;
     // Each melody sub-tab is its own scroll context (distinct from the notes page).
     if (this.view === "melody" && this.currentMelodyItem()) viewKey += ":" + this.melodyTab;
-    // Likewise the colour panel's and melody list's sub-tabs.
-    if (this.view === "color") viewKey += ":" + this.colorTab;
+    // Likewise the melody list's sub-tabs.
     if (this.view === "melody" && !this.currentMelodyItem()) viewKey += ":list:" + this.melodyListTab;
     const sameView = this.lastViewKey === viewKey;
     this.lastViewKey = viewKey;
@@ -1045,7 +1046,7 @@ export class App {
       row.append(strip);
       for (const l of ct.loops) if (l.soundId >= 0) this.voiceBtns.set(l.soundId, row);
 
-      row.onclick = () => { this.openColor = c; this.colorTab = "loops"; this.view = "color"; this.editLoop = null; this.render(); };
+      row.onclick = () => { this.openColor = c; this.view = "color"; this.editLoop = null; this.render(); };
       overview.append(row);
     }
     v.append(overview);
@@ -2616,29 +2617,13 @@ export class App {
     head.append(back, title);
     v.append(head);
 
-    // Sub-tabs: the loop list, the row's transitions, and the mixer.
-    v.append(this.tabNav<"loops" | "transition" | "mixer">(
-      [["loops", "Loops"], ["transition", "Transition"], ["mixer", "Mixer"]],
-      this.colorTab,
-      (t) => { this.colorTab = t; this.render(); },
-      VOICE_COLORS[c],
-    ));
-
-    if (this.colorTab === "mixer") {
-      v.append(this.mixerStripList());
-      return;
-    }
-
+    // Just the loop list — mixing lives in the main-menu mixer, transitions in each
+    // voice's own settings, so the old Transition / Mixer sub-tabs are gone.
     const loops = this.track.colors[c].loops;
 
     // Read-only timeline: the colour's compiled lanes across the whole track, so the
     // procedural placement is visible (one row per lane; a bar is lit where it sounds).
     if (loops.some((l) => l.soundId >= 0)) v.append(this.colorPreview(c));
-
-    if (this.colorTab === "transition") {
-      v.append(this.rowTransitionEditor(c));
-      return;
-    }
 
     const list = document.createElement("div");
     list.className = "loop-list";
@@ -3050,6 +3035,7 @@ export class App {
       this.gridPick = null;
       this.editTransition = null;
       this.transTab = "bars";
+      this.transPreviewMode = "transition";
       this.popupSoundTab = undefined;
       this.transFxTab = undefined;
       this.soundBaseline = loop.snapshot.slice(); // each section's Reset reverts to this
@@ -3060,6 +3046,10 @@ export class App {
     const overlay = document.createElement("div");
     // .sheet-enter animates the card in — only on a fresh open, not in-place rebuilds.
     overlay.className = "placement-overlay voice-sheet-overlay" + (fresh ? " sheet-enter" : "");
+    // The sheet fills the page BELOW the top bar (the nav stays visible/usable), so the
+    // editor gets the whole rest of the screen.
+    const topbar = this.root.querySelector(".topbar");
+    overlay.style.setProperty("--popup-top", `${Math.max(0, Math.round(topbar?.getBoundingClientRect().bottom ?? 0))}px`);
     overlay.onclick = (e) => { if (e.target === overlay) this.closePlacement(); };
 
     const sheet = document.createElement("div");
@@ -3748,6 +3738,8 @@ export class App {
     nav.append(mkTab("bars", "Bars"), mkTab("graph", "Graph"), mkTab("effects", "Effects"), mkTab("speed", "Speed"));
     wrap.append(nav);
 
+    wrap.append(this.transPreviewRow(loop, tr, rerender));
+
     if (this.transTab === "bars") {
       const hint = document.createElement("p");
       hint.className = "sing-hint";
@@ -3762,6 +3754,45 @@ export class App {
       wrap.append(this.transSpeedSection(loop, tr, rerender));
     }
     return wrap;
+  }
+
+  /** The preview picker shown on every transition tab: hear the whole TRANSITION over a
+      loop of a chosen length (sound → transformed, linearly), or just the transformed
+      RESULT looping — for shaping the destination on its own. */
+  private transPreviewRow(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row trans-preview-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Preview";
+    const controls = document.createElement("div");
+    controls.className = "fade-controls trans-preview-ctl";
+    const seg = document.createElement("div");
+    seg.className = "placement-seg fade-modes";
+    const mkMode = (m: "transition" | "result", text: string, title: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn" + (this.transPreviewMode === m ? " on" : "");
+      b.textContent = text;
+      b.title = title;
+      b.onclick = () => {
+        if (this.transPreviewMode === m) return;
+        this.transPreviewMode = m;
+        this.schedulePreview(loop, tr, true);
+        rerender();
+      };
+      return b;
+    };
+    seg.append(
+      mkMode("transition", "Transition", "Loop the sound morphing into the transformed sound"),
+      mkMode("result", "Result only", "Loop just the transformed sound, no morph"),
+    );
+    controls.append(seg);
+    controls.append(this.numRow("Length", () => this.transPreviewBars, (n) => {
+      this.transPreviewBars = Math.max(1, Math.min(16, Math.round(n)));
+      this.schedulePreview(loop, tr);
+    }, rerender, () => `${this.transPreviewBars} bar${this.transPreviewBars === 1 ? "" : "s"}`));
+    row.append(lbl, controls);
+    return row;
   }
 
   /** The Graph tab: the blend curve (x = the transition's length, y = 0 the starting
@@ -4199,19 +4230,23 @@ export class App {
     }, now ? 0 : 350);
   }
 
-  /** Render 4 bars of this loop morphing LINEARLY into the transition's transformed
-      sound (offline, so it's exact), then loop the buffer — a shortened stand-in for
-      the real transition while shaping it. Stale renders (the user kept editing, or the
-      editor closed) are dropped. */
+  /** Render a short loop of the transition offline (so it's exact), then loop the
+      buffer — a shortened stand-in for the real thing while shaping it. "transition"
+      mode plays the loop's sound morphing LINEARLY into the transformed sound across
+      the chosen preview length; "result" mode plays just the transformed sound. Stale
+      renders (the user kept editing, or the editor closed) are dropped. */
   private async playTransitionPreview(loop: Loop, tr: LoopTransition): Promise<void> {
     if (loop.soundId < 0 || !loop.snapshot.length) return;
     const token = ++this.previewToken;
+    const resultOnly = this.transPreviewMode === "result";
+    const bars = Math.max(1, Math.min(16, Math.round(this.transPreviewBars)));
     const unit = loop.steps >= 1 ? loop.steps : STEPS_PER_BAR;
-    const reps = Math.max(1, Math.floor((4 * STEPS_PER_BAR) / unit));
+    const reps = Math.max(1, Math.floor((bars * STEPS_PER_BAR) / unit));
     const node = loopToNode(loop, reps);
     node.soundId = 0;
     node.intro = undefined;
-    node.outro = { reps, mode: "morph", toId: 1 }; // linear morph across the whole 4 bars
+    // A linear morph across the whole loop — or none at all when only the result plays.
+    node.outro = resultOnly ? undefined : { reps, mode: "morph", toId: 1 };
     const lenSteps = reps * unit;
 
     const withGain = (snap: number[]): number[] => {
@@ -4220,8 +4255,9 @@ export class App {
       return s;
     };
     const target = tr.snapshot.length ? tr.snapshot : loop.snapshot;
+    // In result-only mode the node's own sound (id 0) IS the transformed sound.
     const sounds: EngineSound[] = [
-      { id: 0, snap: withGain(loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(loop.snapshot, this.tempo) },
+      { id: 0, snap: withGain(resultOnly ? target : loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(resultOnly ? target : loop.snapshot, this.tempo) },
       { id: 1, snap: withGain(target), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(target, this.tempo) },
     ];
     const arr = new LineArrangement();
