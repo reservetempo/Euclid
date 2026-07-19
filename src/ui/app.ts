@@ -3847,6 +3847,8 @@ export class App {
       b.className = "seg-btn" + (spec.id === s.id ? " on" : "");
       b.textContent = s.label;
       b.onclick = () => {
+        // Tapping the already-active category is a no-op (it must never wipe settings).
+        if ((tr.shape ?? "ramp") === s.id) return;
         // A fresh function starts from ITS OWN defaults — nothing carries over from
         // editing another one: the whole formula (knob, ease, waves, slope, shift,
         // min/max) resets to the identity.
@@ -3987,8 +3989,8 @@ export class App {
       case "drawn": {
         parts = ["y = ", A, " · draw(x) + ", B];
         const fit = tr.points && tr.points.length ? fitBlendShape(tr.points) : null;
-        fnHelp = "Your hand-drawn function, cleaned up and played back exactly as drawn."
-          + (fit ? ` Closest named formula: ${fit.label} (off by ~${Math.round(fit.rmse * 100)} y-units on average) — pick that shape above to switch to the pure formula.` : "");
+        fnHelp = "Your drawn function, played back exactly as it looks — whether sketched by hand or snapped to a matched formula (Use formula bakes it in right here, staying in this category)."
+          + (fit ? ` Closest named formula: ${fit.label} (off by ~${Math.round(fit.rmse * 100)} y-units on average).` : "");
         break;
       }
       default: {
@@ -4351,17 +4353,19 @@ export class App {
     };
     useFit.onclick = () => {
       if (!fit) return;
-      const lean = (v: number, def: number) => (Math.abs(v - def) < 1e-9 ? undefined : v);
-      const spec = blendShapeSpec(fit.shape);
-      tr.shape = fit.shape === "ramp" ? undefined : fit.shape;
-      tr.curve = fit.curve;
-      tr.dir = spec.usesDir ? fit.dir : undefined;
-      tr.cycles = spec.usesCycles ? fit.cycles : undefined;
-      tr.points = undefined;
-      tr.yGain = lean(fit.yGain, 1);
-      tr.yBias = lean(fit.yBias, 0);
-      tr.yMin = undefined; tr.yMax = undefined;
-      this.toast(`Formula applied: ${this.fitFormulaText(fit)}`);
+      // Taking the formula STAYS in the ✏ Draw category: the matched formula is baked
+      // into the drawn curve (sampled like a drawing), so the Graph tab doesn't hop to
+      // Sine/Steps/… where a stray tap on the shape row would reset it — the drawn
+      // function remains its own open category either way.
+      const f = fit;
+      tr.shape = "drawn";
+      tr.points = Array.from({ length: DRAWN_POINTS }, (_, i) => {
+        const y = f.yGain * blendShape(f, i / (DRAWN_POINTS - 1)) + f.yBias;
+        return Math.round(Math.max(0, Math.min(1, y)) * 1000) / 1000;
+      });
+      tr.curve = undefined; tr.dir = undefined; tr.cycles = undefined;
+      tr.yGain = undefined; tr.yBias = undefined; tr.yMin = undefined; tr.yMax = undefined;
+      this.toast(`Formula applied: ${this.fitFormulaText(f)}`);
       done();
     };
 
@@ -4998,6 +5002,8 @@ export class App {
       b.className = "seg-btn" + (spec.id === s.id ? " on" : "");
       b.textContent = s.label;
       b.onclick = () => {
+        // Tapping the already-active shape is a no-op (it must never wipe settings).
+        if ((env.shape ?? "ramp") === s.id) return;
         // Switching functions starts from the new shape's defaults — the previous
         // shape's knob/ease/waves don't carry over.
         env.shape = s.id === "ramp" ? undefined : s.id; // ramp = the default, stored lean
