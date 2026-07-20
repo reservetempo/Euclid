@@ -52,7 +52,7 @@ import {
 import { detectPitchHz, SingTracker, SungNote, sungToMelodyNotes, midiName } from "../model/sing";
 import { EuclidView, RingState } from "./euclidView";
 import { helpButton, HelpItem } from "./soundHelp";
-import { SoundView, SoundTab } from "./soundView";
+import { SoundView } from "./soundView";
 import {
   defaultShuffleSettings, shuffleOptions, randomSeed, MAXLEN_OPTIONS, CURVE_OPTIONS,
 } from "./controls";
@@ -93,6 +93,20 @@ interface SingSession {
 
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
 type RhythmField = "hits" | "steps" | "rotation" | "split";
+
+/** What a sound-graph panel edits: the kit + shuffle settings, and where edits land.
+    Two hosts exist — a loop's OWN sound, and a transition's TRANSFORMED sound. */
+interface SoundGraphHost {
+  ed: VoiceEditor;
+  color: string;
+  title: string;
+  write: () => void;                   // push the kit into the model, live (per scrub tick)
+  commitAudition: () => void;          // hear it, on scrub release / numpad commit
+  replace: () => void | Promise<void>; // after 🎲 / ↩ / ↺ — may re-level; must rerender
+  resetTitle: string;
+  reset: () => void;                   // what ↺ restores (preset vs "no change")
+  extraCorner?: HTMLElement[];         // host-specific corner buttons (the ⧉ copy)
+}
 
 // The curve visualization evaluates the transition's blend FUNCTION via blendShape in
 // lines.ts (shape/curve/dir/cycles) — the same evaluator the speed warp uses, mirroring
@@ -162,8 +176,7 @@ export class App {
   // param editor (kit + shuffle settings) per transition — the target snapshot's
   // editing surface, shuffle included.
   private editTransition: LoopTransition | null = null;
-  private transTab: "bars" | "graph" | "effects" | "speed" = "bars";
-  private transFxTab: SoundTab | undefined;
+  private transTab: "bars" | "graph" | "effects" | "speed" = "graph";
   private transitionKits = new Map<LoopTransition, VoiceEditor>();
   // Debounced looping preview of the transition being edited (offline render): hear the
   // whole TRANSITION over a loop of a chosen length, or just the transformed RESULT.
@@ -3050,9 +3063,8 @@ export class App {
       this.patternOpen = false;
       this.gridPick = null;
       this.editTransition = null;
-      this.transTab = "bars";
+      this.transTab = "graph";
       this.transPreviewMode = "transition";
-      this.transFxTab = undefined;
       this.graphTrace = null;
       this.graphPage = 0;
     }
@@ -3142,7 +3154,7 @@ export class App {
 
     if (this.placementTab === "sound") {
       // The sound graph IS the sound panel.
-      sheet.append(this.soundGraphPanel(loop, rerender));
+      sheet.append(this.soundGraphPanel(this.graphHostForLoop(loop, rerender), rerender));
     } else if (this.placementTab === "transition") {
       if (openTr) sheet.append(this.transitionEditor(loop, openTr, rerender));
       else { this.editTransition = null; sheet.append(this.transitionList(loop, rerender)); }
@@ -3634,44 +3646,89 @@ export class App {
     },
   ];
 
-  /** The sound panel: a big graph (every ACTIVE setting drawn as its own coloured time
-      function; the x axis stretches to the longest one, or the pinned limit), the
-      Shuffle / Back / Reset column with the Gate and time-limit numbers under it in the
-      top-right corner, and — below — either the coloured trace buttons (paged: active
-      first, ‹ › through the inactive ones) or, when a trace is tapped, its EQUATION
-      with the values inline, editable like the transition graph. */
-  private soundGraphPanel(loop: Loop, rerender: () => void): HTMLElement {
+  /** A sound-graph panel host: the two graphs (a loop's own sound, and a transition's
+      TRANSFORMED sound) share the whole surface — only where edits land differs. */
+  private graphHostForLoop(loop: Loop, rerender: () => void): SoundGraphHost {
     const ed = this.voiceEditorFor(loop);
+    return {
+      ed,
+      color: loop.soundId >= 0 ? loop.color : "#4a5064",
+      title: "Every setting as a function of time",
+      write: () => this.writeLoopFromEditor(loop),
+      commitAudition: () => this.auditionLoop(loop),
+      // Whole-sound replacements re-level offline before the audition.
+      replace: async () => {
+        await this.writeAndNormalizeLoop(loop);
+        this.auditionLoop(loop);
+        rerender();
+      },
+      resetTitle: "Reset to the preset",
+      reset: () => ed.kit.resetAll(REF_DRUM),
+    };
+  }
+
+  private graphHostForTransition(loop: Loop, tr: LoopTransition, rerender: () => void): SoundGraphHost {
+    const ed = this.transitionKitFor(loop, tr);
+    const write = () => {
+      tr.snapshot = ed.kit.get(REF_DRUM).capture();
+      this.recompile();
+      this.schedulePreview(loop, tr);
+    };
+    // Small ⧉ at the panel's top right: land the transformed sound as a new loop.
+    const copy = document.createElement("button");
+    copy.className = "graph-corner-btn";
+    copy.textContent = "⧉";
+    copy.title = "New loop from this transformed sound, placed after the transition";
+    copy.onclick = () => this.copyTransformedSound(loop, tr);
+    return {
+      ed,
+      color: loop.soundId >= 0 ? loop.color : "#4a5064",
+      title: "The transformed sound — the transition's end values",
+      write,
+      commitAudition: () => this.schedulePreview(loop, tr, true),
+      replace: () => {
+        write();
+        rerender();
+      },
+      resetTitle: "Reset to the untransformed sound (no change)",
+      reset: () => ed.kit.get(REF_DRUM).restore(loop.snapshot),
+      extraCorner: [copy],
+    };
+  }
+
+  /** The sound-graph panel: a big graph (every ACTIVE setting drawn as its own coloured
+      time function; the x axis stretches to the longest one), the Shuffle / Back /
+      Reset column with the Gate / Max-len / Spread controls under it in the top-right
+      corner, and — below — either the coloured trace buttons (paged: active first, ‹ ›
+      through the inactive ones) or, when a trace is tapped, its EQUATION with the
+      values inline. Hosted by a loop's own sound OR a transition's transformed sound. */
+  private soundGraphPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
+    const ed = host.ed;
     const p = ed.kit.get(REF_DRUM);
     const get: ParamGet = (id) => p.get(id);
 
     const wrap = document.createElement("div");
     wrap.className = "sound-graph";
-    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    wrap.style.setProperty("--vc", host.color);
 
     // Slim header: what this is + the panel's own ? glossary.
     const head = document.createElement("div");
     head.className = "loop-sub-head sound-graph-head";
     const title = document.createElement("span");
     title.className = "placement-lbl transition-head";
-    title.textContent = "Every setting as a function of time";
+    title.textContent = host.title;
     head.append(title, helpButton("The sound graph", App.SOUND_GRAPH_HELP));
     wrap.append(head);
 
     const sel = this.graphTrace ? SOUND_TRACES.find((t) => t.id === this.graphTrace) ?? null : null;
 
-    // The graph, with the Shuffle / Back / Reset column + the Gate and time-limit
-    // numbers floating in its top-right corner.
+    // The graph, with the corner column: (host extras, e.g. ⧉ copy) + Shuffle / Back /
+    // Reset + the Gate number + the Max-len and Spread pickers.
     const box = document.createElement("div");
     box.className = "sound-graph-box";
     box.append(this.soundGraphSvg(get, sel));
     const corner = document.createElement("div");
     corner.className = "sound-graph-corner";
-    const apply = async () => {
-      await this.writeAndNormalizeLoop(loop);
-      this.auditionLoop(loop);
-      rerender();
-    };
     const mkCorner = (glyph: string, title2: string, fn: () => void, disabled = false) => {
       const b = document.createElement("button");
       b.className = "graph-corner-btn";
@@ -3681,19 +3738,20 @@ export class App {
       b.onclick = fn;
       return b;
     };
+    for (const el of host.extraCorner ?? []) corner.append(el);
     corner.append(
       mkCorner("🎲", "Shuffle a new sound", () => {
         const seed = ed.seedText.trim() || randomSeed();
         ed.lastSeed = seed;
         ed.kit.shuffleAll(REF_DRUM, shuffleOptions(ed, this.shuffleContext(), seed));
-        void apply();
+        void host.replace();
       }),
       mkCorner("↩", "Back to the previous sound", () => {
-        if (ed.kit.backAll(REF_DRUM)) void apply();
+        if (ed.kit.backAll(REF_DRUM)) void host.replace();
       }, !ed.kit.canBack(REF_DRUM)),
-      mkCorner("↺", "Reset to the preset", () => {
-        ed.kit.resetAll(REF_DRUM);
-        void apply();
+      mkCorner("↺", host.resetTitle, () => {
+        host.reset();
+        void host.replace();
       }),
     );
     // GATE: the note-hold in seconds (0 = the sequencer default 0.4s) — the drone knob.
@@ -3701,13 +3759,13 @@ export class App {
       () => Math.round(get(ParamId.Gate) * 100) / 100,
       (n) => {
         p.set(ParamId.Gate, Math.max(0, n));
-        this.writeLoopFromEditor(loop);
+        host.write();
       },
       () => {
         const g = get(ParamId.Gate);
         return g > 0 ? `${Math.round(g * 100) / 100}s` : "auto";
       },
-      () => { this.auditionLoop(loop); rerender(); },
+      () => { host.commitAudition(); rerender(); },
       0.05,
     ));
     // MAX LEN: the shuffle's audible-length cap — the next 🎲 trims tails to fit.
@@ -3727,7 +3785,7 @@ export class App {
     box.append(corner);
     wrap.append(box);
 
-    if (sel) wrap.append(this.traceEditor(loop, sel, get, rerender));
+    if (sel) wrap.append(this.traceEditor(host, sel, rerender));
     else wrap.append(this.traceButtons(get, rerender));
     return wrap;
   }
@@ -3913,9 +3971,9 @@ export class App {
       the transition-formula treatment applied to the sound itself. Editing writes the
       bound params live (an inactive setting comes to life the moment its level does);
       the type row switches the function's discrete flavour (LFO wave, noise colour…). */
-  private traceEditor(loop: Loop, spec: TraceSpec, get: ParamGet, rerender: () => void): HTMLElement {
-    const ed = this.voiceEditorFor(loop);
-    const p = ed.kit.get(REF_DRUM);
+  private traceEditor(host: SoundGraphHost, spec: TraceSpec, rerender: () => void): HTMLElement {
+    const p = host.ed.kit.get(REF_DRUM);
+    const get: ParamGet = (id) => p.get(id);
     const ctx: TraceCtx = { bpm: this.tempo };
     const card = document.createElement("div");
     card.className = "trace-editor";
@@ -3968,11 +4026,11 @@ export class App {
           read: () => get(v.param) * scale,
           write: (n) => {
             p.set(v.param, n / scale); // clamps to the base range
-            this.writeLoopFromEditor(loop);
+            host.write();
           },
           show: () => v.fmt(get(v.param)),
           step: v.step,
-          commit: () => { this.auditionLoop(loop); rerender(); },
+          commit: () => { host.commitAudition(); rerender(); },
         });
         row.append(inp);
       }
@@ -4010,8 +4068,8 @@ export class App {
         b.textContent = c;
         b.onclick = () => {
           p.set(ty.param, i);
-          this.writeLoopFromEditor(loop);
-          this.auditionLoop(loop);
+          host.write();
+          host.commitAudition();
           rerender();
         };
         seg.append(b);
@@ -4053,8 +4111,9 @@ export class App {
       body.append(nm, sum);
       body.onclick = () => {
         this.editTransition = tr;
-        this.transTab = "bars";
-        this.transFxTab = undefined;
+        this.transTab = "graph"; // land on the transition's own curve
+        this.graphTrace = null;
+        this.graphPage = 0;
         this.schedulePreview(loop, tr);
         rerender();
       };
@@ -4085,8 +4144,9 @@ export class App {
       const tr = defaultLoopTransition(loop, this.track.barLimit);
       trs.push(tr);
       this.editTransition = tr;
-      this.transTab = "bars";
-      this.transFxTab = undefined;
+      this.transTab = "graph"; // land on the transition's own curve
+      this.graphTrace = null;
+      this.graphPage = 0;
       this.recompile();
       this.schedulePreview(loop, tr);
       rerender();
@@ -4152,11 +4212,18 @@ export class App {
       b.className = "seg-btn" + (this.transTab === tab ? " on" : "");
       b.textContent = text;
       b.onclick = () => {
-        if (this.transTab !== tab) { this.transTab = tab; this.gridPick = null; rerender(); }
+        if (this.transTab === tab) return;
+        this.transTab = tab;
+        this.gridPick = null;
+        this.graphTrace = null; // the Sound tab's graph starts on its buttons
+        this.graphPage = 0;
+        rerender();
       };
       return b;
     };
-    nav.append(mkTab("bars", "Bars"), mkTab("graph", "Graph"), mkTab("effects", "Effects"), mkTab("speed", "Speed"));
+    // Two graphs live here now: "Curve" is the transition's own blend function,
+    // "Sound" is the transformed sound's graph (the end values).
+    nav.append(mkTab("bars", "Bars"), mkTab("graph", "Curve"), mkTab("effects", "Sound"), mkTab("speed", "Speed"));
     wrap.append(nav);
 
     wrap.append(this.transPreviewRow(loop, tr, rerender));
@@ -4170,7 +4237,7 @@ export class App {
     } else if (this.transTab === "graph") {
       wrap.append(this.transGraphSection(loop, tr, rerender));
     } else if (this.transTab === "effects") {
-      wrap.append(this.transEffectsSection(loop, tr));
+      wrap.append(this.transEffectsSection(loop, tr, rerender));
     } else {
       wrap.append(this.transSpeedSection(loop, tr, rerender));
     }
@@ -4768,45 +4835,18 @@ export class App {
     requestAnimationFrame(redraw);
   }
 
-  /** The Effects tab: the sound's params section replicated — but every value here is
-      the transition's END. Lower the filter and the transition sweeps the filter down
-      to it; each section's Reset clears its changes (back to the loop's own values).
-      The Shuffle panel is here too, rolling a whole new destination sound at once. */
-  private transEffectsSection(loop: Loop, tr: LoopTransition): HTMLElement {
+  /** The Sound tab of a transition: the SAME sound graph the voice's Sound panel uses,
+      hosted by the transition's TRANSFORMED sound — every value edited here is the
+      transition's END. The corner gains a small ⧉ that lands the transformed sound as
+      a new loop after the transition; ↺ resets to "no change" (the loop's own sound). */
+  private transEffectsSection(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "trans-effects";
     const hint = document.createElement("p");
     hint.className = "sing-hint";
-    hint.textContent = "These are the transition's END values — the transition morphs the sound from its own settings into these, along the Graph. Shuffle rolls a whole new destination; Reset on a section reverts it to no change.";
+    hint.textContent = "The transformed sound's graph — everything here is where the transition ENDS (it morphs from the loop's own sound into this, along the Curve). ⧉ lands it as a new loop after the transition.";
     wrap.append(hint);
-
-    const ed = this.transitionKitFor(loop, tr);
-    const view = new SoundView(ed.kit, REF_DRUM, {
-      onChange: () => {
-        tr.snapshot = ed.kit.get(REF_DRUM).capture();
-        this.recompile();
-        this.schedulePreview(loop, tr);
-      },
-      onRangeChange: () => { /* ranges don't apply to a fixed target snapshot */ },
-      // On release / after a shuffle, (re)start the looping preview with the changes.
-      onAudition: () => this.schedulePreview(loop, tr, true),
-      context: () => this.shuffleContext(),
-    }, {
-      settings: ed,                      // shuffle settings persist across rebuilds
-      baseline: loop.snapshot,           // section Reset = "no transformation here"
-      initialTab: this.transFxTab,
-      onTabChange: (t) => { this.transFxTab = t; },
-    });
-    wrap.append(view.el);
-
-    // Land the destination: a NEW loop carrying the transformed sound, placed right
-    // after the transition — initial sound, the transition, then the new sound looping.
-    const copy = document.createElement("button");
-    copy.className = "loop-add copy-loop-btn";
-    copy.textContent = "⧉ New loop from the transformed sound";
-    copy.title = "Copy the transformed sound into a new loop on this row, placed from the bar after the transition to the end of the track";
-    copy.onclick = () => this.copyTransformedSound(loop, tr);
-    wrap.append(copy);
+    wrap.append(this.soundGraphPanel(this.graphHostForTransition(loop, tr, rerender), rerender));
     return wrap;
   }
 
