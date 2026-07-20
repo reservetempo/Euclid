@@ -148,19 +148,16 @@ export class App {
   // the start square).
   private gridSpan: Record<"place" | "trans" | "range", number> = { place: 2, trans: 2, range: 2 };
   private gridPick: { key: "place" | "trans" | "range"; start: number } | null = null;
-  // Voice popup Sound tab: the active editor sub-tab + the Reset baseline (both captured
-  // on a fresh open, surviving in-place popup rebuilds).
-  private popupSoundTab: SoundTab | undefined;
-  private soundBaseline: number[] = [];
   // The popup's view identity at the last rebuild — an unchanged key means an in-place
   // rebuild (a value scrub, a toggle), whose scroll position is preserved.
   private popupViewKey = "";
-  // GRAPH MODE (the Sound tab's function view): open flag, the trace whose equation is
-  // open (null = the coloured trace buttons), and which button page shows (0 = active
-  // settings; later pages = the inactive ones).
-  private soundGraphOpen = false;
+  // The SOUND GRAPH (the popup's Sound tab): the trace whose equation is open (null =
+  // the coloured trace buttons), which button page shows (0 = active settings; later
+  // pages = the inactive ones), and the x-axis time-limit override (0 = automatic —
+  // the longest active setting).
   private graphTrace: string | null = null;
   private graphPage = 0;
+  private graphAxisLimit = 0;
   // Transition editor state: the open transition, its tab, its Effects sub-tab, and one
   // param editor (kit + shuffle settings) per transition — the target snapshot's
   // editing surface, shuffle included.
@@ -3055,12 +3052,10 @@ export class App {
       this.editTransition = null;
       this.transTab = "bars";
       this.transPreviewMode = "transition";
-      this.popupSoundTab = undefined;
       this.transFxTab = undefined;
-      this.soundGraphOpen = false;
       this.graphTrace = null;
       this.graphPage = 0;
-      this.soundBaseline = loop.snapshot.slice(); // each section's Reset reverts to this
+      this.graphAxisLimit = 0;
     }
     this.editLoop = loop;
     // The popup's view identity: scroll only survives while it's unchanged.
@@ -3068,7 +3063,7 @@ export class App {
       this.placementTab, this.loopSub,
       this.editTransition ? (loop.transitions ?? []).indexOf(this.editTransition) : -1,
       this.transTab,
-      this.soundGraphOpen ? `g:${this.graphTrace ?? ""}:${this.graphPage}` : "",
+      `g:${this.graphTrace ?? ""}:${this.graphPage}`,
     ].join(":");
     const sameView = !fresh && this.popupViewKey === viewKey;
     this.popupViewKey = viewKey;
@@ -3147,8 +3142,8 @@ export class App {
     if (!openTr) sheet.append(nav);
 
     if (this.placementTab === "sound") {
-      if (this.soundGraphOpen) sheet.append(this.soundGraphPanel(loop, rerender));
-      else this.appendSoundTab(loop, sheet);
+      // The sound graph IS the sound panel.
+      sheet.append(this.soundGraphPanel(loop, rerender));
     } else if (this.placementTab === "transition") {
       if (openTr) sheet.append(this.transitionEditor(loop, openTr, rerender));
       else { this.editTransition = null; sheet.append(this.transitionList(loop, rerender)); }
@@ -3618,41 +3613,34 @@ export class App {
     this.toast(`Copied to Voice ${target + 1}`);
   }
 
-  /** The Sound tab: the FULL parameter editor, embedded (Shuffle + every category, each
-      section with its own Reset). This replaced the old shuffle-menu-plus-"Full
-      Parameters" pair — the deep editor IS the default sound surface now. */
-  private appendSoundTab(loop: Loop, sheet: HTMLElement): void {
-    const ed = this.voiceEditorFor(loop);
-    const view = new SoundView(ed.kit, REF_DRUM, {
-      onChange: () => this.writeLoopFromEditor(loop),
-      onRangeChange: () => this.writeLoopFromEditor(loop),
-      // Whole-sound replacements (shuffle / preset / reset / back) re-level offline
-      // before the audition, like the old shuffle menu did.
-      onReplace: () => this.writeAndNormalizeLoop(loop),
-      onAudition: () => this.auditionLoop(loop),
-      context: () => this.shuffleContext(),
-    }, {
-      settings: ed,                       // keep Randomness/Spread/… across rebuilds
-      baseline: this.soundBaseline,       // section Reset target (captured on open)
-      initialTab: this.popupSoundTab,
-      onTabChange: (t) => { this.popupSoundTab = t; },
-      onGraphMode: () => {
-        this.soundGraphOpen = true;
-        this.graphTrace = null;
-        this.graphPage = 0;
-        this.openPlacement(loop);
-      },
-    });
-    sheet.append(view.el);
-  }
+  // --- THE SOUND GRAPH: the sound's settings as coloured time functions --
 
-  // --- GRAPH MODE: the sound's settings as coloured time functions ------
+  /** The ? glossary for the sound graph itself. */
+  private static readonly SOUND_GRAPH_HELP: HelpItem[] = [
+    {
+      name: "The graph",
+      desc: "Every ACTIVE setting of this sound drawn as its own coloured function of time — the pitch sweep settling onto its base pitch, the amp envelope, each layer's decay, the LFO wobbles, the echo's dying repeats, steady settings as level lines. Settings that persist run the whole axis; ones that genuinely end stop where they end (their formula states the domain, t < …). A setting at zero level is inactive and isn't drawn.",
+    },
+    {
+      name: "The time axis",
+      desc: "Seconds across the bottom. It sizes itself to the longest active setting (a 1s echo stretches it to show the tail) — or set the limit number in the corner to pin it (0 = automatic).",
+    },
+    {
+      name: "The setting buttons",
+      desc: "One coloured button per setting, matching its line. The first page is the active settings; ‹ › pages through the inactive ones (dashed). Tap one to open its formula — every value editable inline (tap = keypad, drag = scrub), with its own ? explaining the function and the engine code behind it. Give an inactive setting's level a value and its line appears.",
+    },
+    {
+      name: "The corner controls",
+      desc: "🎲 shuffles a whole new sound (watch the graph redraw), ↩ steps back through shuffles, ↺ resets to the preset. Under them: the GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it) — and the axis time limit.",
+    },
+  ];
 
-  /** The Graph mode panel: a big graph (every ACTIVE setting drawn as its own coloured
-      time function; the x axis stretches to the longest one), a Shuffle / Back / Reset
-      column floating in its top-right corner, and — below — either the coloured trace
-      buttons (paged: active first, ‹ › through the inactive ones) or, when a trace is
-      tapped, its EQUATION with the values inline, editable like the transition graph. */
+  /** The sound panel: a big graph (every ACTIVE setting drawn as its own coloured time
+      function; the x axis stretches to the longest one, or the pinned limit), the
+      Shuffle / Back / Reset column with the Gate and time-limit numbers under it in the
+      top-right corner, and — below — either the coloured trace buttons (paged: active
+      first, ‹ › through the inactive ones) or, when a trace is tapped, its EQUATION
+      with the values inline, editable like the transition graph. */
   private soundGraphPanel(loop: Loop, rerender: () => void): HTMLElement {
     const ed = this.voiceEditorFor(loop);
     const p = ed.kit.get(REF_DRUM);
@@ -3661,15 +3649,20 @@ export class App {
     const wrap = document.createElement("div");
     wrap.className = "sound-graph";
     wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
-    wrap.append(this.subPanelHead("Graph mode", () => {
-      this.soundGraphOpen = false;
-      this.graphTrace = null;
-      rerender();
-    }));
+
+    // Slim header: what this is + the panel's own ? glossary.
+    const head = document.createElement("div");
+    head.className = "loop-sub-head sound-graph-head";
+    const title = document.createElement("span");
+    title.className = "placement-lbl transition-head";
+    title.textContent = "Every setting as a function of time";
+    head.append(title, helpButton("The sound graph", App.SOUND_GRAPH_HELP));
+    wrap.append(head);
 
     const sel = this.graphTrace ? SOUND_TRACES.find((t) => t.id === this.graphTrace) ?? null : null;
 
-    // The graph, with the small Shuffle / Back / Reset column in its top-right corner.
+    // The graph, with the Shuffle / Back / Reset column + the Gate and time-limit
+    // numbers floating in its top-right corner.
     const box = document.createElement("div");
     box.className = "sound-graph-box";
     box.append(this.soundGraphSvg(get, sel));
@@ -3680,11 +3673,11 @@ export class App {
       this.auditionLoop(loop);
       rerender();
     };
-    const mkCorner = (glyph: string, title: string, fn: () => void, disabled = false) => {
+    const mkCorner = (glyph: string, title2: string, fn: () => void, disabled = false) => {
       const b = document.createElement("button");
       b.className = "graph-corner-btn";
       b.textContent = glyph;
-      b.title = title;
+      b.title = title2;
       b.disabled = disabled;
       b.onclick = fn;
       return b;
@@ -3704,12 +3697,57 @@ export class App {
         void apply();
       }),
     );
+    // GATE: the note-hold in seconds (0 = the sequencer default 0.4s) — the drone knob.
+    corner.append(this.graphCornerNum("gate", "Gate — seconds each hit is held before release",
+      () => Math.round(get(ParamId.Gate) * 100) / 100,
+      (n) => {
+        p.set(ParamId.Gate, Math.max(0, n));
+        this.writeLoopFromEditor(loop);
+      },
+      () => {
+        const g = get(ParamId.Gate);
+        return g > 0 ? `${Math.round(g * 100) / 100}s` : "auto";
+      },
+      () => { this.auditionLoop(loop); rerender(); },
+      0.05,
+    ));
+    // TIME LIMIT: pin the x axis to n seconds (0 = automatic, the longest setting).
+    corner.append(this.graphCornerNum("limit", "Time limit — pin the axis to n seconds (0 = automatic)",
+      () => Math.round(this.graphAxisLimit * 100) / 100,
+      (n) => { this.graphAxisLimit = Math.max(0, Math.min(60, Math.round(n * 100) / 100)); },
+      () => (this.graphAxisLimit > 0 ? `${this.graphAxisLimit}s` : "auto"),
+      rerender,
+      0.25,
+    ));
     box.append(corner);
     wrap.append(box);
 
     if (sel) wrap.append(this.traceEditor(loop, sel, get, rerender));
     else wrap.append(this.traceButtons(get, rerender));
     return wrap;
+  }
+
+  /** One labelled corner number (gate / time limit): a tiny label over a scrub/numpad
+      input, matching the corner buttons' footprint. */
+  private graphCornerNum(
+    label: string, title: string,
+    read: () => number, write: (n: number) => void, show: () => string,
+    commit: () => void, step: number,
+  ): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "graph-corner-num";
+    box.title = title;
+    const lbl = document.createElement("span");
+    lbl.className = "graph-corner-lbl";
+    lbl.textContent = label;
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.readOnly = true;
+    inp.inputMode = "none";
+    inp.value = show();
+    this.attachScrub(inp, { label: title, read, write, show, commit, step });
+    box.append(lbl, inp);
+    return box;
   }
 
   /** Draw every active setting as its own coloured line over an adaptive time axis (the
@@ -3720,7 +3758,8 @@ export class App {
     const W = 360, H = 290, L = 8, R = 8, T = 10, B = 22;
     const plotW = W - L - R, plotH = H - T - B;
     const ctx: TraceCtx = { bpm: this.tempo };
-    const axisT = traceAxisSeconds(get, ctx);
+    // The pinned time limit wins over the automatic (longest-active-setting) axis.
+    const axisT = this.graphAxisLimit > 0 ? this.graphAxisLimit : traceAxisSeconds(get, ctx);
     const NS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(NS, "svg");
     svg.setAttribute("class", "sound-graph-svg");

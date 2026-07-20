@@ -1625,7 +1625,7 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 
 .help-panel {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
-  width: min(380px, 84vw); max-height: 55vh; overflow-y: auto;
+  width: min(560px, 94vw); max-height: 78vh; overflow-y: auto;
   background: var(--panel2-glass);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
   backdrop-filter: blur(20px) saturate(1.4);
@@ -1898,3 +1898,17 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .formula-domain { color: var(--muted); font-size: 13px; }
 .trace-ed-head { position: relative; }
 .trace-ed-head .help-btn { margin-left: 0; }
+
+/* Corner numbers on the sound graph (gate + time limit): tiny label over a scrub input. */
+.graph-corner-num { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.graph-corner-lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.graph-corner-num input {
+  width: 46px; padding: 5px 2px; text-align: center;
+  font: inherit; font-size: 12px; font-weight: 700; color: var(--text);
+  background: var(--panel2-glass, var(--panel2));
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border: 1px solid var(--line); border-radius: 8px;
+  cursor: ns-resize; touch-action: none;
+}
+.sound-graph-head { margin-bottom: 0; position: relative; }
+.sound-graph-head .transition-head { flex: 1; }
