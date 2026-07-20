@@ -3773,6 +3773,18 @@ export class App {
         void host.replace();
       }),
     );
+    // VOL: the sound's overall level (0–100%). On a transition it's the morph target, so
+    // dropping it fades the sound out (or up) across the transition.
+    bar.append(this.graphCornerNum("vol", "Volume — the sound's overall level (drop it on a transition to fade)",
+      () => Math.round(get(ParamId.Volume) * 100),
+      (n) => {
+        p.set(ParamId.Volume, Math.max(0, Math.min(1, n / 100)));
+        host.write();
+      },
+      () => `${Math.round(get(ParamId.Volume) * 100)}%`,
+      () => { host.commitAudition(); rerender(); },
+      5,
+    ));
     // GATE: the note-hold in seconds (0 = the sequencer default 0.4s) — the drone knob.
     bar.append(this.graphCornerNum("gate", "Gate — seconds each hit is held before release",
       () => Math.round(get(ParamId.Gate) * 100) / 100,
