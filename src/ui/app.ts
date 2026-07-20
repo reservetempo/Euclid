@@ -3130,12 +3130,14 @@ export class App {
         cur,
       );
       head.append(crumb);
-      // The transition's On/Off toggle rides the header's right edge.
-      const onBtn = document.createElement("button");
-      onBtn.className = "seg-btn fade-toggle trans-onoff" + (openTr.on ? " on" : "");
-      onBtn.textContent = openTr.on ? "On" : "Off";
-      onBtn.onclick = () => { openTr.on = !openTr.on; this.recompile(); rerender(); };
-      head.append(onBtn);
+      // A ⧉ on the header's right edge lands the transformed sound as a new loop after
+      // the transition. (On/Off lives in the transition list, so it's not repeated here.)
+      const copy = document.createElement("button");
+      copy.className = "voice-name-dice crumb-copy";
+      copy.textContent = "⧉";
+      copy.title = "New loop from this transformed sound, placed after the transition";
+      copy.onclick = () => this.copyTransformedSound(loop, openTr);
+      head.append(copy);
       sheet.append(head);
     } else {
       const back = document.createElement("button");
@@ -3714,12 +3716,7 @@ export class App {
       this.recompile();
       this.schedulePreview(loop, tr);
     };
-    // Small ⧉ at the panel's top right: land the transformed sound as a new loop.
-    const copy = document.createElement("button");
-    copy.className = "graph-corner-btn";
-    copy.textContent = "⧉";
-    copy.title = "New loop from this transformed sound, placed after the transition";
-    copy.onclick = () => this.copyTransformedSound(loop, tr);
+    // The ⧉ "copy transformed sound as a new loop" action lives in the popup header.
     return {
       ed,
       color: loop.soundId >= 0 ? loop.color : "#4a5064",
@@ -3732,7 +3729,6 @@ export class App {
       },
       resetTitle: "Reset to the untransformed sound (no change)",
       reset: () => ed.kit.get(REF_DRUM).restore(loop.snapshot),
-      extraCorner: [copy],
     };
   }
 
@@ -4259,9 +4255,8 @@ export class App {
     nav.append(mkTab("bars", "Bars"), mkTab("graph", "Curve"), mkTab("effects", "Sound"), mkTab("speed", "Speed"));
     wrap.append(nav);
 
-    wrap.append(this.transPreviewRow(loop, tr, rerender));
-
     if (this.transTab === "bars") {
+      wrap.append(this.transPreviewRow(loop, tr, rerender));
       const hint = document.createElement("p");
       hint.className = "sing-hint";
       hint.textContent = "Where the transition runs. It starts on the loop's full placement (the striped squares are where this loop sounds); each contiguous run sweeps sound → transformed across itself.";

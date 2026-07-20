@@ -792,6 +792,7 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   color: var(--vc, var(--text)); font-size: 14px; font-weight: 700; flex: none;
   overflow: hidden; text-overflow: ellipsis;
 }
+.crumb-copy { opacity: 0.75; font-size: 18px; }
 .voice-sheet-title {
   margin: 0; font-size: 16px; font-weight: 700; color: var(--vc, var(--text));
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
