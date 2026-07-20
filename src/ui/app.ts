@@ -3763,7 +3763,12 @@ export class App {
     // row UNDER the graph — they'd overflow the box on a phone.
     const box = document.createElement("div");
     box.className = "sound-graph-box";
-    box.append(this.soundGraphSvg(get, sel));
+    // Tapping the graph itself (anywhere but the corner buttons, which sit on top and
+    // catch their own clicks) auditions the current sound — hear it without the loop.
+    const svg = this.soundGraphSvg(get, sel);
+    svg.classList.add("graph-tappable");
+    svg.addEventListener("click", () => this.auditionEditor(ed));
+    box.append(svg);
     const corner = document.createElement("div");
     corner.className = "sound-graph-corner";
     const mkCorner = (glyph: string, title2: string, fn: () => void, disabled = false) => {
@@ -5898,6 +5903,13 @@ export class App {
     const p = this.voiceEditorFor(loop).kit.get(REF_DRUM);
     const snap = p.capture();
     if (loop.gain && loop.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * loop.gain;
+    this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+  }
+
+  /** One-shot audition of whatever sound an editor kit currently holds (a loop's own
+      sound, or a transition's transformed sound) — used by the graph tap-to-play. */
+  private auditionEditor(ed: VoiceEditor): void {
+    const snap = ed.kit.get(REF_DRUM).capture();
     this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
   }
 
