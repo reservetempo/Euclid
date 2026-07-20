@@ -57,7 +57,6 @@ import {
   defaultShuffleSettings, shuffleOptions, randomSeed, MAXLEN_OPTIONS, CURVE_OPTIONS,
 } from "./controls";
 import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
-import { logoLetters } from "./logo";
 
 // Storage key kept from the app's working title so existing saves keep loading.
 const PROJECT_KEY = "msq010.project";
@@ -225,7 +224,38 @@ export class App {
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") this.engine.resume();
     });
-    this.renderStart();
+    // No start gate: boot straight into the app. The browser won't let audio run
+    // until a user gesture, so the engine starts lazily on the FIRST interaction
+    // anywhere (and the shuffle / graph-tap audition paths await it — see withAudio).
+    if (!this.loadFromStorage()) this.applyRandomDefault();
+    this.render();
+    const unlock = () => { void this.ensureAudioStarted(); };
+    document.addEventListener("pointerdown", unlock, { once: true, capture: true });
+  }
+
+  // --- lazy audio unlock ------------------------------------------------
+  // The AudioContext can only be created from a user gesture. We boot without one, so
+  // the engine starts on the first tap; every call after the first shares one promise.
+  private audioStarted = false;
+  private audioStarting: Promise<void> | null = null;
+
+  private ensureAudioStarted(): Promise<void> {
+    if (this.audioStarted) return Promise.resolve();
+    if (!this.audioStarting) {
+      this.audioStarting = (async () => {
+        await this.engine.start();
+        this.pushAll(); // the worklet was empty until now — send it the whole project
+        this.audioStarted = true;
+      })();
+    }
+    return this.audioStarting;
+  }
+
+  /** Run `fn` once audio is live — immediately if it already is, else start it on this
+      gesture first (so the very first shuffle / graph tap actually makes sound). */
+  private withAudio(fn: () => void): void {
+    if (this.audioStarted) { fn(); return; }
+    void this.ensureAudioStarted().then(fn);
   }
 
   // --- audibility (per colour) ------------------------------------------
@@ -515,27 +545,6 @@ export class App {
     this.kit.applyPreset(this.selectedDrum, FULL_RANGE_PRESET);
     this.kit.shuffleAll(this.selectedDrum, { randomness: 1.0 });
     this.soundName = "";
-  }
-
-  // --- start gate -------------------------------------------------------
-  private renderStart(): void {
-    this.root.innerHTML = "";
-    const wrap = document.createElement("div");
-    wrap.className = "start-screen";
-    const h = document.createElement("h1");
-    h.className = "logo";
-    h.append(...logoLetters(46, true));
-    const btn = document.createElement("button");
-    btn.id = "start";
-    btn.textContent = "▶ Start";
-    btn.onclick = async () => {
-      await this.engine.start();
-      if (!this.loadFromStorage()) this.applyRandomDefault();
-      this.pushAll();
-      this.render();
-    };
-    wrap.append(h, btn);
-    this.root.append(wrap);
   }
 
   // --- main render ------------------------------------------------------
@@ -5903,17 +5912,21 @@ export class App {
   }
 
   private auditionLoop(loop: Loop): void {
-    const p = this.voiceEditorFor(loop).kit.get(REF_DRUM);
-    const snap = p.capture();
-    if (loop.gain && loop.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * loop.gain;
-    this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+    this.withAudio(() => {
+      const p = this.voiceEditorFor(loop).kit.get(REF_DRUM);
+      const snap = p.capture();
+      if (loop.gain && loop.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * loop.gain;
+      this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+    });
   }
 
   /** One-shot audition of whatever sound an editor kit currently holds (a loop's own
       sound, or a transition's transformed sound) — used by the graph tap-to-play. */
   private auditionEditor(ed: VoiceEditor): void {
-    const snap = ed.kit.get(REF_DRUM).capture();
-    this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+    this.withAudio(() => {
+      const snap = ed.kit.get(REF_DRUM).capture();
+      this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+    });
   }
 
   /** Closed-loop loudness pass for a loop: render one hit offline, measure it, and store
