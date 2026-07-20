@@ -19,7 +19,7 @@ import { encodeWavFromBuffer } from "../audio/wav";
 import { DRUMS, DrumType } from "../model/drums";
 import { ParamId, NUM_PARAMS } from "../model/params";
 import { baseSpec, getParamSpec } from "../model/paramSpec";
-import { SOUND_TRACES, TraceSpec, ParamGet, traceAxisSeconds } from "../model/soundTraces";
+import { SOUND_TRACES, TraceSpec, ParamGet, traceAxisSeconds, traceDomain } from "../model/soundTraces";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
@@ -3902,6 +3902,16 @@ export class App {
         row.append(inp);
       }
     }
+    // A finite setting states its DOMAIN next to the formula, calculator style —
+    // persistent settings (pitch, filter, LFOs, steady FX) have none and run the
+    // whole axis.
+    const dom = traceDomain(spec, get);
+    if (dom) {
+      const d = document.createElement("span");
+      d.className = "formula-text formula-domain";
+      d.textContent = `,  ${dom}`;
+      row.append(d);
+    }
     card.append(row);
 
     // "from → to" recap of the values as they'll play.
@@ -3912,27 +3922,26 @@ export class App {
       card.append(ft);
     }
 
-    // The function's discrete type, where one exists (LFO wave, noise colour…).
-    if (spec.typeParam !== undefined) {
-      const tp = spec.typeParam;
-      const ps = getParamSpec(REF_DRUM, tp);
-      if (ps.choices && ps.choices.length) {
-        const seg = document.createElement("div");
-        seg.className = "placement-seg fade-modes";
-        ps.choices.forEach((c, i) => {
-          const b = document.createElement("button");
-          b.className = "seg-btn" + (Math.round(get(tp)) === i ? " on" : "");
-          b.textContent = c;
-          b.onclick = () => {
-            p.set(tp, i);
-            this.writeLoopFromEditor(loop);
-            this.auditionLoop(loop);
-            rerender();
-          };
-          seg.append(b);
-        });
-        card.append(this.labeledRow("Type", seg));
-      }
+    // The function's discrete types (an LFO gets Wave + Dest + Sync; noise its colour,
+    // the echo its beat-sync and ping-pong, …) — each a segmented row of real choices.
+    for (const ty of spec.types ?? []) {
+      const ps = getParamSpec(REF_DRUM, ty.param);
+      if (!ps.choices || !ps.choices.length) continue;
+      const seg = document.createElement("div");
+      seg.className = "placement-seg fade-modes";
+      ps.choices.forEach((c, i) => {
+        const b = document.createElement("button");
+        b.className = "seg-btn" + (Math.round(get(ty.param)) === i ? " on" : "");
+        b.textContent = c;
+        b.onclick = () => {
+          p.set(ty.param, i);
+          this.writeLoopFromEditor(loop);
+          this.auditionLoop(loop);
+          rerender();
+        };
+        seg.append(b);
+      });
+      card.append(this.labeledRow(ty.label, seg));
     }
     return card;
   }
