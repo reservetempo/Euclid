@@ -1872,6 +1872,8 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   overflow: hidden;
 }
 .sound-graph-svg { display: block; width: 100%; height: auto; max-height: 48vh; }
+.sound-graph-svg.graph-tappable { cursor: pointer; }
+.sound-graph-svg.graph-tappable:active { opacity: 0.9; }
 .sound-trace-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .sound-trace-line.bold { stroke-width: 3.5; filter: drop-shadow(0 0 6px currentColor); }
 .sound-trace-line.dim { opacity: 0.3; }
