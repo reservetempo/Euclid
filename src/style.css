@@ -811,12 +811,12 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 
 /* Loop popup tab nav (Sound / Loop / Transition): a segmented glass control. */
 .placement-nav {
-  justify-content: stretch; gap: 4px; margin: 2px 0 10px;
+  justify-content: stretch; gap: 4px; margin: -4px 0 -2px;
   background: var(--field); border: 1px solid var(--line-soft);
-  border-radius: 12px; padding: 4px;
+  border-radius: 10px; padding: 3px;
 }
 .placement-nav .seg-btn {
-  flex: 1 1 0; text-align: center; padding: 9px 8px; font-size: 13px;
+  flex: 1 1 0; text-align: center; padding: 5px 8px; font-size: 12.5px;
   background: transparent; border-color: transparent; box-shadow: none;
 }
 .placement-nav .seg-btn.on {
@@ -1641,21 +1641,45 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* In the Back/Reset/Preset row (the Shuffle section's anchor) it sits at the far right. */
 .sound-lib .help-btn { margin-left: auto; }
 
+/* The glossary is a full-screen modal: a dimmed backdrop centring a scrollable card. */
+.help-overlay {
+  position: fixed; inset: 0; z-index: 250;
+  display: flex; align-items: center; justify-content: center;
+  padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
+  background: rgba(4, 6, 10, 0.62);
+  -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px);
+  animation: fade-in 0.15s ease-out;
+}
 .help-panel {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
-  width: min(560px, 94vw); max-height: 78vh; overflow-y: auto;
+  width: min(640px, 100%); max-height: 100%; overflow-y: auto;
   background: var(--panel2-glass);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
   backdrop-filter: blur(20px) saturate(1.4);
-  border: 1px solid var(--line); border-radius: var(--r-md);
-  padding: 10px 12px; box-shadow: var(--pop-shadow);
+  border: 1px solid var(--line); border-radius: var(--r-lg, 18px);
+  padding: 4px 14px 14px; box-shadow: var(--pop-shadow);
   animation: pop-in 0.18s ease-out;
 }
+/* Sticky header so the title + ✕ stay reachable while the glossary scrolls. */
+.help-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 -14px 2px; padding: 12px 14px 8px;
+  background: color-mix(in srgb, var(--panel2) 82%, transparent);
+  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--line-soft);
+}
 .help-title {
-  font-size: 11px; font-weight: 700; color: var(--vc);
+  flex: 1; font-size: 12px; font-weight: 700; color: var(--vc);
   text-transform: uppercase; letter-spacing: 0.07em;
 }
-.help-hint { font-size: 11px; color: var(--muted); margin: 2px 0 4px; }
+.help-close {
+  flex: none; width: 34px; height: 34px; padding: 0;
+  font-size: 24px; line-height: 1; color: var(--muted);
+  background: transparent; border: none; box-shadow: none;
+}
+.help-close:active { color: var(--text); }
+@media (hover: hover) { .help-close:hover { color: var(--text); border-color: transparent; } }
+.help-hint { font-size: 11px; color: var(--muted); margin: 6px 2px 4px; }
 .help-item { border-top: 1px solid var(--line-soft); }
 .help-item summary {
   display: flex; align-items: center; gap: 8px;

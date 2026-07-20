@@ -580,58 +580,63 @@ navigator.clipboard?.writeText(this.soundJson());`,
   },
 ];
 
-/** The little round "?" for a section head. Tapping it opens the glossary panel
-    (anchored to the button's row, which must be position:relative); tapping again,
-    or anywhere outside, closes it. */
+/** The little round "?" for a section head. Tapping it opens the glossary as a
+    full-screen modal (a dimmed backdrop with a centred, scrollable card and an ✕);
+    tapping the backdrop, the ✕, Escape, or the button again closes it. */
 export function helpButton(section: string, items: HelpItem[]): HTMLButtonElement {
   const btn = mkBtn("?", "help-btn");
   btn.setAttribute("aria-label", `Explain the ${section} controls`);
   btn.setAttribute("aria-expanded", "false");
 
-  let panel: HTMLElement | null = null;
-  let onOutside: ((ev: PointerEvent) => void) | null = null;
+  let overlay: HTMLElement | null = null;
+  let onKey: ((ev: KeyboardEvent) => void) | null = null;
 
   const close = () => {
-    panel?.remove();
-    panel = null;
-    if (onOutside) {
-      document.removeEventListener("pointerdown", onOutside, true);
-      onOutside = null;
-    }
+    overlay?.remove();
+    overlay = null;
+    if (onKey) { document.removeEventListener("keydown", onKey, true); onKey = null; }
     btn.classList.remove("on");
     btn.setAttribute("aria-expanded", "false");
   };
 
   btn.onclick = () => {
-    if (panel) { close(); return; }
-    panel = buildHelpPanel(section, items);
-    btn.parentElement?.append(panel);
+    if (overlay) { close(); return; }
+    overlay = document.createElement("div");
+    overlay.className = "help-overlay";
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+    overlay.append(buildHelpPanel(section, items, close));
+    document.body.append(overlay);
     btn.classList.add("on");
     btn.setAttribute("aria-expanded", "true");
-    onOutside = (ev: PointerEvent) => {
-      if (panel && !panel.contains(ev.target as Node) && ev.target !== btn) close();
-    };
-    // Next tick, so the opening tap itself doesn't instantly close it.
-    setTimeout(() => { if (onOutside) document.addEventListener("pointerdown", onOutside, true); }, 0);
+    onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey, true);
   };
 
   return btn;
 }
 
-// The glossary panel: a title, a hint, then one expandable row per control
-// (<details> gives the accordion for free, keyboard included). Each open row shows
-// the plain-words description, then the real engine lines behind it.
-function buildHelpPanel(section: string, items: HelpItem[]): HTMLElement {
+// The glossary panel: a sticky header (title + ✕), a hint, then one expandable row
+// per control (<details> gives the accordion for free, keyboard included). Each open
+// row shows the plain-words description, then the real engine lines behind it.
+function buildHelpPanel(section: string, items: HelpItem[], onClose: () => void): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "help-panel";
 
+  const head = document.createElement("div");
+  head.className = "help-head";
   const title = document.createElement("div");
   title.className = "help-title";
   title.textContent = section;
+  const x = document.createElement("button");
+  x.className = "help-close";
+  x.textContent = "×";
+  x.setAttribute("aria-label", "Close help");
+  x.onclick = onClose;
+  head.append(title, x);
   const hint = document.createElement("div");
   hint.className = "help-hint";
   hint.textContent = "Tap a heading to fold it away.";
-  panel.append(title, hint);
+  panel.append(head, hint);
 
   for (const it of items) {
     // Everything OPEN by default — the panel reads as one page, nothing minimised
