@@ -48,8 +48,10 @@ const P = {
 const rd = (s, idx, def) => (s[idx] === undefined || s[idx] === null ? def : s[idx]);
 
 // LFO destination indices, in sync with LFO_TARGETS in src/model/paramSpec.ts.
-// LFO_NONE disables the LFO (handled by falling through the routing switch).
+// LFO_NONE disables the LFO (handled by falling through the routing switch); the
+// newer destinations sit AFTER it so old saves keep meaning what they meant.
 const LFO_PITCH = 0, LFO_FILTER = 1, LFO_AMP = 2, LFO_DRIVE = 3, LFO_RESO = 4, LFO_WAVE = 5, LFO_NONE = 6;
+const LFO_NOISE = 7, LFO_CRUSH = 8, LFO_RING = 9;
 
 // Sound-verse expansion lookup tables — keep in sync with the choice lists in
 // src/model/paramSpec.ts (the stored param is the index into these).
@@ -687,6 +689,7 @@ class Voice {
       }
       // Evaluate the three LFOs and fold each into its destination's modulator.
       let pitchMul = 1, cutoffMul = 1, ampMul = 1, resoMul = 1, driveAdd = 0, pwOff = 0;
+      let noiseMul = 1, ringMul = 1, crushShift = 0;
       for (let L = 0; L < 3; L++) {
         const depth = this.lfoDepths[L];
         const shape = this.lfoShapes[L];
@@ -702,6 +705,9 @@ class Voice {
           case LFO_DRIVE:  driveAdd  += v * depth;                     break;
           case LFO_RESO:   resoMul   *= Math.pow(2, v * depth);        break;
           case LFO_WAVE:   pwOff     += v * depth * 0.45;              break;
+          case LFO_NOISE:  noiseMul  *= 1 - depth * (0.5 * (1 - v));   break; // noise-layer tremolo
+          case LFO_CRUSH:  crushShift += v * depth * 4;                break; // ± bit-depth swing
+          case LFO_RING:   ringMul   *= 1 + v * depth;                 break; // bipolar AM (ring)
           case LFO_NONE:   default:                                   break; // disabled
         }
       }
@@ -761,15 +767,24 @@ class Voice {
       let toneAmp = this.toneLevel, noiseAmp = this.noiseLevel;
       if (this.toneEnvCoef > 0) { toneAmp *= this.toneEnv; this.toneEnv *= this.toneEnvCoef; }
       if (this.noiseEnvCoef > 0) { noiseAmp *= this.noiseEnv; this.noiseEnv *= this.noiseEnvCoef; }
+      if (noiseMul !== 1) noiseAmp *= noiseMul; // a NOISE-destination LFO breathes the layer
       let mixed = toneAmp * osc + noiseAmp * noise;
 
+      // A RING-destination LFO amplitude-modulates the whole mix (bipolar — full depth
+      // swings through zero, the classic ring-mod tremble).
+      if (ringMul !== 1) mixed *= ringMul;
+
       // Bit/sample-rate crush: decimate (sample-and-hold), then quantise to N bits.
+      // A CRUSH-destination LFO swings the bit depth around the knob (or around 10
+      // bits when the crusher is off), so the grit itself wobbles.
       if (this.dsFactor > 1) {
         if (--this.dsCtr <= 0) { this.dsHold = mixed; this.dsCtr = this.dsFactor; }
         mixed = this.dsHold;
       }
-      if (this.crushBits > 0) {
-        const step = 2 / (1 << this.crushBits);
+      let bits = this.crushBits;
+      if (crushShift !== 0) bits = clamp((bits || 10) - crushShift, 2, 16);
+      if (bits > 0) {
+        const step = 2 / Math.pow(2, bits);
         mixed = Math.round(mixed / step) * step;
       }
 

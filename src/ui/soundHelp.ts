@@ -327,7 +327,10 @@ case LFO_PITCH:  pitchMul  *= Math.pow(2, v * depth * 0.5); break;
 case LFO_FILTER: cutoffMul *= Math.pow(2, v * depth * 2);   break;
 case LFO_AMP:    ampMul    *= 1 - depth * (0.5 * (1 - v));  break;
 case LFO_RESO:   resoMul   *= Math.pow(2, v * depth);       break;
-case LFO_WAVE:   pwOff     += v * depth * 0.45;             break;`;
+case LFO_WAVE:   pwOff     += v * depth * 0.45;             break;
+case LFO_NOISE:  noiseMul  *= 1 - depth * (0.5 * (1 - v));  break; // noise tremolo
+case LFO_CRUSH:  crushShift += v * depth * 4;               break; // ± bit depth
+case LFO_RING:   ringMul   *= 1 + v * depth;                break; // bipolar AM`;
     case ParamId.Lfo1Shape:
     case ParamId.Lfo2Shape:
     case ParamId.Lfo3Shape:
