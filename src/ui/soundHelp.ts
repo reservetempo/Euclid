@@ -630,12 +630,15 @@ function buildHelpPanel(section: string, items: HelpItem[]): HTMLElement {
   title.textContent = section;
   const hint = document.createElement("div");
   hint.className = "help-hint";
-  hint.textContent = "Tap a control to see what it does.";
+  hint.textContent = "Tap a heading to fold it away.";
   panel.append(title, hint);
 
   for (const it of items) {
+    // Everything OPEN by default — the panel reads as one page, nothing minimised
+    // (a heading still folds its block away if wanted).
     const row = document.createElement("details");
     row.className = "help-item";
+    row.open = true;
     const sum = document.createElement("summary");
     sum.textContent = it.name;
     const desc = document.createElement("div");
