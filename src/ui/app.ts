@@ -3679,12 +3679,12 @@ export class App {
       desc: "One coloured button per setting, matching its line. The first page is the active settings; ‹ › pages through the inactive ones (dashed). Tap one to open its formula — every value editable inline (tap = keypad, drag = scrub), with its own ? explaining the function and the engine code behind it. Give an inactive setting's level a value and its line appears.",
     },
     {
-      name: "The corner buttons",
-      desc: "In the graph's top-right: 🎲 shuffles a whole new sound (watch the graph redraw), ↩ steps back through shuffles, ↺ resets to the preset. On a transition's Sound graph a ⧉ sits above them — it lands the transformed sound as a new loop after the transition.",
+      name: "The toolbar",
+      desc: "The line above the graph. 🎲 (highlighted) shuffles a whole new sound — watch the graph redraw; ↩ steps back through shuffles; ↺ resets to the preset. Tapping the graph itself plays the current sound (no loop needed). The ? on the far right opens this glossary.",
     },
     {
       name: "Gate / Max len / Spread",
-      desc: "The row under the graph. GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it). MAX LEN — a shuffled sound is trimmed to at most this long, keeping hits punchy (Off = untrimmed). SPREAD — how the shuffle spreads its pitch & filter draws: linear, log, or weighted toward bass / mid / high. Max len and Spread shape the NEXT 🎲, not the current sound.",
+      desc: "Beside the buttons on the toolbar. GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it). MAX LEN — a shuffled sound is trimmed to at most this long, keeping hits punchy (Off = untrimmed). SPREAD — how the shuffle spreads its pitch & filter draws: linear, log, or weighted toward bass / mid / high. Max len and Spread shape the NEXT 🎲, not the current sound.",
     },
   ];
 
@@ -3747,63 +3747,40 @@ export class App {
     wrap.className = "sound-graph";
     wrap.style.setProperty("--vc", host.color);
 
-    // Slim header: what this is + the panel's own ? glossary.
-    const head = document.createElement("div");
-    head.className = "loop-sub-head sound-graph-head";
-    const title = document.createElement("span");
-    title.className = "placement-lbl transition-head";
-    title.textContent = host.title;
-    head.append(title, helpButton("The sound graph", App.SOUND_GRAPH_HELP));
-    wrap.append(head);
-
     const sel = this.graphTrace ? SOUND_TRACES.find((t) => t.id === this.graphTrace) ?? null : null;
 
-    // The graph, with the corner column of buttons: (host extras, e.g. ⧉ copy) +
-    // Shuffle / Back / Reset. The Gate / Max-len / Spread stacks live in their own
-    // row UNDER the graph — they'd overflow the box on a phone.
-    const box = document.createElement("div");
-    box.className = "sound-graph-box";
-    // Tapping the graph itself (anywhere but the corner buttons, which sit on top and
-    // catch their own clicks) auditions the current sound — hear it without the loop.
-    const svg = this.soundGraphSvg(get, sel);
-    svg.classList.add("graph-tappable");
-    svg.addEventListener("click", () => this.auditionEditor(ed));
-    box.append(svg);
-    const corner = document.createElement("div");
-    corner.className = "sound-graph-corner";
-    const mkCorner = (glyph: string, title2: string, fn: () => void, disabled = false) => {
+    // One toolbar line above the graph (no title blurb, no corner overlay): the
+    // Shuffle / Back / Reset buttons, then Gate / Max len / Spread, then the ? — the
+    // shuffle stands out. Any host extras (e.g. ⧉) lead.
+    const bar = document.createElement("div");
+    bar.className = "graph-toolbar";
+    const mkTool = (glyph: string, title2: string, fn: () => void, extra = "", disabled = false) => {
       const b = document.createElement("button");
-      b.className = "graph-corner-btn";
+      b.className = "graph-corner-btn" + (extra ? " " + extra : "");
       b.textContent = glyph;
       b.title = title2;
       b.disabled = disabled;
       b.onclick = fn;
       return b;
     };
-    for (const el of host.extraCorner ?? []) corner.append(el);
-    corner.append(
-      mkCorner("🎲", "Shuffle a new sound", () => {
+    for (const el of host.extraCorner ?? []) bar.append(el);
+    bar.append(
+      mkTool("🎲", "Shuffle a new sound", () => {
         const seed = ed.seedText.trim() || randomSeed();
         ed.lastSeed = seed;
         ed.kit.shuffleAll(REF_DRUM, shuffleOptions(ed, this.shuffleContext(), seed));
         void host.replace();
-      }),
-      mkCorner("↩", "Back to the previous sound", () => {
+      }, "graph-tool-dice"),
+      mkTool("↩", "Back to the previous sound", () => {
         if (ed.kit.backAll(REF_DRUM)) void host.replace();
-      }, !ed.kit.canBack(REF_DRUM)),
-      mkCorner("↺", host.resetTitle, () => {
+      }, "", !ed.kit.canBack(REF_DRUM)),
+      mkTool("↺", host.resetTitle, () => {
         host.reset();
         void host.replace();
       }),
     );
-    box.append(corner);
-    wrap.append(box);
-
-    // The settings row under the graph: Gate + Max len + Spread, side by side.
-    const settings = document.createElement("div");
-    settings.className = "graph-settings-row";
     // GATE: the note-hold in seconds (0 = the sequencer default 0.4s) — the drone knob.
-    settings.append(this.graphCornerNum("gate", "Gate — seconds each hit is held before release",
+    bar.append(this.graphCornerNum("gate", "Gate — seconds each hit is held before release",
       () => Math.round(get(ParamId.Gate) * 100) / 100,
       (n) => {
         p.set(ParamId.Gate, Math.max(0, n));
@@ -3817,20 +3794,32 @@ export class App {
       0.05,
     ));
     // MAX LEN: the shuffle's audible-length cap — the next 🎲 trims tails to fit.
-    settings.append(this.graphCornerSelect("max len",
+    bar.append(this.graphCornerSelect("max len",
       "Max length — a shuffled sound is trimmed to at most this long (applies to the next 🎲)",
       MAXLEN_OPTIONS.map((o) => o.label),
       () => ed.maxLenIdx,
       (i) => { ed.maxLenIdx = i; },
     ));
     // SPREAD: how the shuffle distributes pitch/cutoff draws across the range.
-    settings.append(this.graphCornerSelect("spread",
+    bar.append(this.graphCornerSelect("spread",
       "Spread — how the shuffle spreads pitch & filter draws (applies to the next 🎲)",
       CURVE_OPTIONS.map((o) => o.label),
       () => ed.curveIdx,
       (i) => { ed.curveIdx = i; },
     ));
-    wrap.append(settings);
+    const help = helpButton("The sound graph", App.SOUND_GRAPH_HELP);
+    help.classList.add("graph-tool-help");
+    bar.append(help);
+    wrap.append(bar);
+
+    // The graph. Tapping it (anywhere) auditions the current sound — no loop needed.
+    const box = document.createElement("div");
+    box.className = "sound-graph-box";
+    const svg = this.soundGraphSvg(get, sel);
+    svg.classList.add("graph-tappable");
+    svg.addEventListener("click", () => this.auditionEditor(ed));
+    box.append(svg);
+    wrap.append(box);
 
     if (sel) wrap.append(this.traceEditor(host, sel, rerender));
     else wrap.append(this.traceButtons(get, rerender));
