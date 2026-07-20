@@ -775,6 +775,24 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   to { opacity: 1; transform: none; }
 }
 .voice-sheet-head { display: flex; align-items: center; gap: 10px; }
+/* Nested-folder breadcrumb shown while a transition editor is open: Loops › name › Transition N. */
+.sheet-crumb {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px;
+  overflow: hidden; white-space: nowrap;
+}
+.crumb-seg {
+  background: transparent; border: none; box-shadow: none; padding: 4px 2px;
+  color: var(--muted); font-size: 14px; font-weight: 600; flex: none;
+  overflow: hidden; text-overflow: ellipsis; max-width: 42vw;
+}
+.crumb-seg:active { color: var(--text); }
+@media (hover: hover) { .crumb-seg:hover { color: var(--text); border-color: transparent; } }
+.crumb-sep { color: var(--line); font-size: 14px; flex: none; }
+.crumb-current {
+  color: var(--vc, var(--text)); font-size: 14px; font-weight: 700; flex: none;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.crumb-copy { opacity: 0.75; font-size: 18px; }
 .voice-sheet-title {
   margin: 0; font-size: 16px; font-weight: 700; color: var(--vc, var(--text));
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
@@ -1857,10 +1875,11 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .sound-trace-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .sound-trace-line.bold { stroke-width: 3.5; filter: drop-shadow(0 0 6px currentColor); }
 .sound-trace-line.dim { opacity: 0.3; }
-/* The small Shuffle / Back / Reset column in the graph's top-right corner. */
+/* The small Shuffle / Back / Reset column in the graph's top-right corner (buttons
+   only — the Gate / Max len / Spread stacks moved to their own row under the graph). */
 .sound-graph-corner { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 6px; }
 .graph-corner-btn {
-  width: 42px; height: 42px; padding: 0; font-size: 18px; line-height: 1;
+  width: 40px; height: 40px; padding: 0; font-size: 18px; line-height: 1;
   background: var(--panel2-glass, var(--panel2));
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
   border: 1px solid var(--line); border-radius: 10px; color: var(--text);
@@ -1899,6 +1918,11 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .trace-ed-head { position: relative; }
 .trace-ed-head .help-btn { margin-left: 0; }
 
+/* The Gate / Max len / Spread row under the graph — stacks sitting side by side. */
+.graph-settings-row {
+  display: flex; justify-content: center; align-items: flex-start; gap: 14px;
+  flex-wrap: wrap; padding: 2px 0;
+}
 /* Corner numbers on the sound graph (gate + time limit): tiny label over a scrub input. */
 .graph-corner-num { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .graph-corner-lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
