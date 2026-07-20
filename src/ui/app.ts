@@ -53,7 +53,9 @@ import { detectPitchHz, SingTracker, SungNote, sungToMelodyNotes, midiName } fro
 import { EuclidView, RingState } from "./euclidView";
 import { helpButton, HelpItem } from "./soundHelp";
 import { SoundView, SoundTab } from "./soundView";
-import { defaultShuffleSettings, shuffleOptions, randomSeed } from "./controls";
+import {
+  defaultShuffleSettings, shuffleOptions, randomSeed, MAXLEN_OPTIONS, CURVE_OPTIONS,
+} from "./controls";
 import { buildVoiceShuffleMenu, VoiceEditor } from "./voiceShuffleMenu";
 import { logoLetters } from "./logo";
 
@@ -152,12 +154,10 @@ export class App {
   // rebuild (a value scrub, a toggle), whose scroll position is preserved.
   private popupViewKey = "";
   // The SOUND GRAPH (the popup's Sound tab): the trace whose equation is open (null =
-  // the coloured trace buttons), which button page shows (0 = active settings; later
-  // pages = the inactive ones), and the x-axis time-limit override (0 = automatic —
-  // the longest active setting).
+  // the coloured trace buttons) and which button page shows (0 = active settings;
+  // later pages = the inactive ones).
   private graphTrace: string | null = null;
   private graphPage = 0;
-  private graphAxisLimit = 0;
   // Transition editor state: the open transition, its tab, its Effects sub-tab, and one
   // param editor (kit + shuffle settings) per transition — the target snapshot's
   // editing surface, shuffle included.
@@ -3055,7 +3055,6 @@ export class App {
       this.transFxTab = undefined;
       this.graphTrace = null;
       this.graphPage = 0;
-      this.graphAxisLimit = 0;
     }
     this.editLoop = loop;
     // The popup's view identity: scroll only survives while it's unchanged.
@@ -3631,7 +3630,7 @@ export class App {
     },
     {
       name: "The corner controls",
-      desc: "🎲 shuffles a whole new sound (watch the graph redraw), ↩ steps back through shuffles, ↺ resets to the preset. Under them: the GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it) — and the axis time limit.",
+      desc: "🎲 shuffles a whole new sound (watch the graph redraw), ↩ steps back through shuffles, ↺ resets to the preset. Under them: the GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it) — then MAX LEN (a shuffled sound is trimmed to at most this long — keeps hits punchy; Off = untrimmed) and SPREAD (how the shuffle spreads its pitch & filter draws: linear, log, or weighted toward bass / mid / high). Max len and Spread shape the NEXT 🎲, not the current sound.",
     },
   ];
 
@@ -3711,13 +3710,19 @@ export class App {
       () => { this.auditionLoop(loop); rerender(); },
       0.05,
     ));
-    // TIME LIMIT: pin the x axis to n seconds (0 = automatic, the longest setting).
-    corner.append(this.graphCornerNum("limit", "Time limit — pin the axis to n seconds (0 = automatic)",
-      () => Math.round(this.graphAxisLimit * 100) / 100,
-      (n) => { this.graphAxisLimit = Math.max(0, Math.min(60, Math.round(n * 100) / 100)); },
-      () => (this.graphAxisLimit > 0 ? `${this.graphAxisLimit}s` : "auto"),
-      rerender,
-      0.25,
+    // MAX LEN: the shuffle's audible-length cap — the next 🎲 trims tails to fit.
+    corner.append(this.graphCornerSelect("max len",
+      "Max length — a shuffled sound is trimmed to at most this long (applies to the next 🎲)",
+      MAXLEN_OPTIONS.map((o) => o.label),
+      () => ed.maxLenIdx,
+      (i) => { ed.maxLenIdx = i; },
+    ));
+    // SPREAD: how the shuffle distributes pitch/cutoff draws across the range.
+    corner.append(this.graphCornerSelect("spread",
+      "Spread — how the shuffle spreads pitch & filter draws (applies to the next 🎲)",
+      CURVE_OPTIONS.map((o) => o.label),
+      () => ed.curveIdx,
+      (i) => { ed.curveIdx = i; },
     ));
     box.append(corner);
     wrap.append(box);
@@ -3750,6 +3755,32 @@ export class App {
     return box;
   }
 
+  /** One labelled corner CHOICE (max len / spread): a tiny label over a compact native
+      select, matching the corner numbers' footprint. */
+  private graphCornerSelect(
+    label: string, title: string, options: string[],
+    read: () => number, write: (i: number) => void,
+  ): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "graph-corner-num";
+    box.title = title;
+    const lbl = document.createElement("span");
+    lbl.className = "graph-corner-lbl";
+    lbl.textContent = label;
+    const sel = document.createElement("select");
+    sel.className = "graph-corner-select";
+    options.forEach((o, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = o;
+      sel.append(opt);
+    });
+    sel.value = String(Math.max(0, Math.min(options.length - 1, read())));
+    sel.onchange = () => write(Number(sel.value));
+    box.append(lbl, sel);
+    return box;
+  }
+
   /** Draw every active setting as its own coloured line over an adaptive time axis (the
       longest active setting sets the span — a 1s echo stretches it to show its tail).
       With a trace selected, it draws bold and the rest dim; a selected INACTIVE trace
@@ -3758,8 +3789,7 @@ export class App {
     const W = 360, H = 290, L = 8, R = 8, T = 10, B = 22;
     const plotW = W - L - R, plotH = H - T - B;
     const ctx: TraceCtx = { bpm: this.tempo };
-    // The pinned time limit wins over the automatic (longest-active-setting) axis.
-    const axisT = this.graphAxisLimit > 0 ? this.graphAxisLimit : traceAxisSeconds(get, ctx);
+    const axisT = traceAxisSeconds(get, ctx);
     const NS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(NS, "svg");
     svg.setAttribute("class", "sound-graph-svg");
