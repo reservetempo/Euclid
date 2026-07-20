@@ -75,6 +75,10 @@ const hzNorm = (hz: number) => clamp01(Math.log2(Math.max(20, hz) / 20) / Math.l
 
 // Click transient decay seconds per ClickType — mirrors CLICK_DECAY in engine.js.
 const CLICK_DECAY = [0.0015, 0.006, 0.012, 0.004, 0.008];
+// Bit depth per Crush index / sample-rate divisor per Downsample index — mirror
+// CRUSH_BITS / DOWNSAMPLE_FACTOR in engine.js (index 0 = off).
+const CRUSH_BITS = [0, 12, 10, 8, 6, 5, 4, 3];
+const DOWNSAMPLE_FACTOR = [1, 2, 3, 4, 6, 8, 12, 16];
 // Tempo-sync divisions in BEATS — mirror LFO_SYNC_BEATS / ECHO_SYNC_BEATS in engine.js.
 const LFO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2, 4];
 const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
@@ -173,7 +177,7 @@ function lfoTrace(
     duration: () => Infinity, // the wobble runs as long as the note does
     curve: (g, t, ctx) => clamp01(0.5 + 0.5 * g(depth) * lfoWave(g(shape), lfoHz(g, rate, sync, ctx) * t)),
     fromTo: (g, ctx) => `±${Math.round(g(depth) * 100)}% at ${r2(lfoHz(g, rate, sync, ctx))} Hz`,
-    about: "A repeating wobble applied to its destination for the note's whole life — the wave is the function's shape, Dest picks WHAT it bends (pitch vibrato, filter wah, amp tremolo…), Sync beat-locks one cycle to that note length at the live tempo (the Rate knob is ignored then, and the formula shows the synced rate instead).",
+    about: "A repeating wobble applied to its destination for the note's whole life — the wave is the function's shape, Dest picks WHAT it bends (pitch vibrato, filter wah, amp or noise tremolo, drive, reso, pulse width, crush grit, ring AM…), Sync beat-locks one cycle to that note length at the live tempo (the Rate knob is ignored then, and the formula shows the synced rate instead). Depth 0 turns it off.",
     code: `// engine.js — Voice.renderAdding: the per-sample LFO
 const beats = LFO_SYNC_BEATS[sync] || 0;
 lfoInc = (beats > 0 ? tempo / (60 * beats)   // synced: one cycle per division
@@ -184,6 +188,9 @@ switch (target) {
   case PITCH:  pitchMul  *= Math.pow(2, v * depth * 0.5); break;
   case FILTER: cutoffMul *= Math.pow(2, v * depth * 2);   break;
   case AMP:    ampMul    *= 1 - depth * (0.5 * (1 - v));  break;
+  case NOISE:  noiseMul  *= 1 - depth * (0.5 * (1 - v));  break; // noise tremolo
+  case CRUSH:  crushShift += v * depth * 4;               break; // ± bit depth
+  case RING:   ringMul   *= 1 + v * depth;                break; // bipolar AM
   // … DRIVE, RESO, WAVE (pulse width)
 }`,
   };
@@ -259,6 +266,7 @@ if (samplesPlayed >= gateSeconds * sampleRate) adsr.noteOff();`,
       { sym: "L", param: ParamId.ToneLevel, step: 2, scale: 100, fmt: pctFmt },
       { sym: "D", param: ParamId.ToneDecay, step: 0.01, fmt: secFmt },
     ],
+    types: [{ label: "Wave", param: ParamId.Waveform }],
     active: (g) => g(ParamId.ToneLevel) > 0.001,
     // Its OWN decay ends it early; D = 0 follows the amp (persists with the note).
     duration: (g) => (g(ParamId.ToneDecay) > 0.004 ? Math.min(8, g(ParamId.ToneDecay) * 4) : Infinity),
@@ -400,6 +408,46 @@ const drive = clamp(driveKnob + driveLfo, 0, 2);
 if (drive > 0) filtered = Math.tanh(filtered * (1 + drive * 5));`,
   },
   {
+    id: "bitcrush", label: "Bitcrush", color: "#e64980",
+    // No continuous knobs — both halves are discrete choices, so the formula is
+    // computed from them: the quantiser's bit depth and the sample-and-hold divisor.
+    parts: (g) => {
+      const bits = CRUSH_BITS[Math.max(0, Math.min(CRUSH_BITS.length - 1, Math.round(g(ParamId.Crush))))];
+      const ds = DOWNSAMPLE_FACTOR[Math.max(0, Math.min(DOWNSAMPLE_FACTOR.length - 1, Math.round(g(ParamId.Downsample))))];
+      const q = bits > 0 ? `round(x·2^${bits})/2^${bits}` : "x";
+      return [`y(t) = ${q}${ds > 1 ? `, held every ${ds} samples` : ""}  (steady)`];
+    },
+    vars: [],
+    types: [
+      { label: "Bits", param: ParamId.Crush },
+      { label: "Rate ÷", param: ParamId.Downsample },
+    ],
+    active: (g) => Math.round(g(ParamId.Crush)) > 0 || Math.round(g(ParamId.Downsample)) > 0,
+    duration: () => Infinity,
+    curve: (g) => {
+      const c = Math.max(0, Math.min(7, Math.round(g(ParamId.Crush)))) / 7;
+      const d = Math.max(0, Math.min(7, Math.round(g(ParamId.Downsample)))) / 7;
+      return clamp01(Math.max(c, d));
+    },
+    fromTo: (g) => {
+      const bits = CRUSH_BITS[Math.max(0, Math.min(CRUSH_BITS.length - 1, Math.round(g(ParamId.Crush))))];
+      const ds = DOWNSAMPLE_FACTOR[Math.max(0, Math.min(DOWNSAMPLE_FACTOR.length - 1, Math.round(g(ParamId.Downsample))))];
+      return `${bits > 0 ? `${bits}-bit` : "full depth"} · rate ÷${ds}`;
+    },
+    about: "Lo-fi degradation, steady across the note (the line's height is how hard it bites): Bits quantises the wave to fewer levels, Rate ÷ holds each sample for several — telephone grit to broken-console. Both Off = inactive. Point an LFO at Crush to make the grit wobble.",
+    code: `// engine.js — Voice.renderAdding: the bitcrusher
+const CRUSH_BITS = [0, 12, 10, 8, 6, 5, 4, 3];       // per Bits choice
+const DOWNSAMPLE_FACTOR = [1, 2, 3, 4, 6, 8, 12, 16]; // per Rate ÷ choice
+if (dsFactor > 1) {                        // sample-and-hold decimation
+  if (--dsCtr <= 0) { dsHold = mixed; dsCtr = dsFactor; }
+  mixed = dsHold;
+}
+if (bits > 0) {                            // quantise to 2^bits levels
+  const step = 2 / Math.pow(2, bits);
+  mixed = Math.round(mixed / step) * step;
+}`,
+  },
+  {
     id: "fold", label: "Fold", color: "#c0eb75",
     parts: ["y(t) = ", 0, " (steady)"],
     vars: [{ sym: "F", param: ParamId.Fold, step: 2, scale: 100, fmt: pctFmt }],
@@ -502,6 +550,59 @@ for (let k = 0; k < t.r.length; k++) {
   const r = Math.exp(-1 / (decay * sampleRate));
   // each mode: y[n] = 2r·cos(ω)·y[n-1] − r²·y[n-2] + gₖ·x[n]
 }`,
+  },
+  {
+    id: "out", label: "Out", color: "#ced4da",
+    parts: ["y(t) = ", 0, " at pan ", 1, " (steady)"],
+    vars: [
+      { sym: "vol", param: ParamId.Volume, step: 2, scale: 100, fmt: pctFmt },
+      {
+        sym: "pan", param: ParamId.Pan, step: 5, scale: 100,
+        fmt: (v) => (Math.abs(v) < 0.005 ? "C" : `${v < 0 ? "L" : "R"}${Math.round(Math.abs(v) * 100)}`),
+      },
+    ],
+    active: (g) => g(ParamId.Volume) > 0.001,
+    duration: () => Infinity,
+    curve: (g) => clamp01(g(ParamId.Volume)),
+    fromTo: (g) => {
+      const p = g(ParamId.Pan);
+      return `${Math.round(g(ParamId.Volume) * 100)}% ${Math.abs(p) < 0.005 ? "centred" : `panned ${p < 0 ? "left" : "right"} ${Math.round(Math.abs(p) * 100)}%`}`;
+    },
+    about: "The channel's place in the mix: its level (also what the mixer fader moves) and its stereo position, constant across the note. Volume 0 silences the sound entirely.",
+    code: `// engine.js — Channel.renderInto: constant-power pan
+const ang = (pan + 1) * 0.25 * Math.PI;
+const gl = Math.cos(ang) * Math.SQRT2, gr = Math.sin(ang) * Math.SQRT2;
+masterL[i] += sample * volume * gl;
+masterR[i] += sample * volume * gr; // centred sums to the exact mono level`,
+  },
+  {
+    id: "life", label: "Life", color: "#a5adba",
+    // Not a curve over ONE note — dice rolled per HIT. Drawn as a steady line at the
+    // hit probability; the formula reads as the per-hit rules.
+    parts: ["per hit: P(play) = ", 0, ", duck = ", 1, ", jitter = ", 2, ", roll = ", 3],
+    vars: [
+      { sym: "chance", param: ParamId.HitChance, step: 2, scale: 100, fmt: pctFmt },
+      { sym: "accent", param: ParamId.AccentAmount, step: 2, scale: 100, fmt: pctFmt },
+      { sym: "human", param: ParamId.Humanize, step: 2, scale: 100, fmt: pctFmt },
+      { sym: "ratchet", param: ParamId.Ratchet, step: 2, scale: 100, fmt: pctFmt },
+    ],
+    types: [{ label: "Choke", param: ParamId.ChokeGroup }],
+    active: (g) =>
+      g(ParamId.HitChance) < 0.999 || g(ParamId.AccentAmount) > 0.001 ||
+      g(ParamId.Humanize) > 0.001 || g(ParamId.Ratchet) > 0.001 ||
+      Math.round(g(ParamId.ChokeGroup)) > 0,
+    duration: () => Infinity,
+    curve: (g) => clamp01(g(ParamId.HitChance)),
+    fromTo: (g) => `${Math.round(g(ParamId.HitChance) * 100)}% of hits play; ${Math.round(g(ParamId.Ratchet) * 100)}% burst into rolls`,
+    about: "The per-HIT dice, not a curve over one note (drawn as a level line at the hit probability): chance a scheduled hit plays at all, how far non-accents duck, random level/pitch/cutoff jitter, and how often a hit bursts into a 2–4× roll. Choke lets this sound cut same-group sounds (closed hat chokes open hat). All neutral = inactive.",
+    code: `// engine.js — perHit: the dice rolled for every scheduled hit
+if (chance < 1 && Math.random() > chance) {
+  if (Math.random() < GHOST_P) vel *= GHOST_LEVEL; // a quiet ghost…
+  else return null;                                // …or dropped outright
+}
+if (!isAccent) vel *= 1 - ACCENT_DUCK * accent;    // non-accents duck
+vel *= 1 + (Math.random() * 2 - 1) * 0.25 * human; // level jitter
+if (Math.random() < ratchet) count = 2..4;         // a drum-roll burst`,
   },
 ];
 
