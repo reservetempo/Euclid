@@ -3093,41 +3093,77 @@ export class App {
     sheet.className = "voice-sheet placement-sheet";
     sheet.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
 
-    const head = document.createElement("div");
-    head.className = "voice-sheet-head";
-    const back = document.createElement("button");
-    back.className = "mixer-back";
-    back.textContent = "‹ Loops";
-    back.onclick = () => this.closePlacement();
-    const title = document.createElement("h2");
-    title.className = "voice-sheet-title";
-    title.textContent = loop.label || loop.name || "Loop";
-    head.append(back, title);
-    // Re-coin this voice's name (only for named loops).
-    if (loop.label) {
-      const dice = document.createElement("button");
-      dice.className = "voice-name-dice";
-      dice.textContent = "🎲";
-      dice.title = "Coin a new name for this voice";
-      dice.onclick = () => { loop.label = generateName(); this.persist(); rerender(); };
-      head.append(dice);
-    }
-    sheet.append(head);
-    // The sound description under the coined name, for reference.
-    if (loop.label && loop.name) {
-      const sub = document.createElement("p");
-      sub.className = "voice-sheet-sub";
-      sub.textContent = loop.name;
-      sheet.append(sub);
-    }
-
     // While a transition's editor is open it takes the whole page — the popup's own
-    // Sound / Loop / Transitions nav hides (its ‹ Back returns to the list, which
-    // brings the nav back).
+    // Sound / Loop / Transitions nav hides, and its back button folds into the header's
+    // breadcrumb (Loops › name › Transition N) instead of a second row.
     const trs = loop.transitions ?? (loop.transitions = []);
     const openTr = this.placementTab === "transition" && this.editTransition && trs.includes(this.editTransition)
       ? this.editTransition
       : null;
+
+    const head = document.createElement("div");
+    head.className = "voice-sheet-head";
+    const loopName = loop.label || loop.name || "Loop";
+    if (openTr) {
+      // Breadcrumb: Loops (close) › name (back to the transition list) › Transition N.
+      const crumb = document.createElement("nav");
+      crumb.className = "sheet-crumb";
+      const seg = (text: string, onclick: () => void) => {
+        const b = document.createElement("button");
+        b.className = "crumb-seg";
+        b.textContent = text;
+        b.onclick = onclick;
+        return b;
+      };
+      const sep = () => {
+        const s = document.createElement("span");
+        s.className = "crumb-sep";
+        s.textContent = "›";
+        return s;
+      };
+      const cur = document.createElement("span");
+      cur.className = "crumb-current";
+      cur.textContent = `Transition ${trs.indexOf(openTr) + 1}`;
+      crumb.append(
+        seg("‹ Loops", () => this.closePlacement()), sep(),
+        seg(loopName, () => { this.stopPreview(); this.editTransition = null; this.gridPick = null; rerender(); }), sep(),
+        cur,
+      );
+      head.append(crumb);
+      // The transition's On/Off toggle rides the header's right edge.
+      const onBtn = document.createElement("button");
+      onBtn.className = "seg-btn fade-toggle trans-onoff" + (openTr.on ? " on" : "");
+      onBtn.textContent = openTr.on ? "On" : "Off";
+      onBtn.onclick = () => { openTr.on = !openTr.on; this.recompile(); rerender(); };
+      head.append(onBtn);
+      sheet.append(head);
+    } else {
+      const back = document.createElement("button");
+      back.className = "mixer-back";
+      back.textContent = "‹ Loops";
+      back.onclick = () => this.closePlacement();
+      const title = document.createElement("h2");
+      title.className = "voice-sheet-title";
+      title.textContent = loopName;
+      head.append(back, title);
+      // Re-coin this voice's name (only for named loops).
+      if (loop.label) {
+        const dice = document.createElement("button");
+        dice.className = "voice-name-dice";
+        dice.textContent = "🎲";
+        dice.title = "Coin a new name for this voice";
+        dice.onclick = () => { loop.label = generateName(); this.persist(); rerender(); };
+        head.append(dice);
+      }
+      sheet.append(head);
+      // The sound description under the coined name, for reference.
+      if (loop.label && loop.name) {
+        const sub = document.createElement("p");
+        sub.className = "voice-sheet-sub";
+        sub.textContent = loop.name;
+        sheet.append(sub);
+      }
+    }
 
     // Tab nav across the three sub-pages.
     const nav = document.createElement("div");
@@ -3641,8 +3677,12 @@ export class App {
       desc: "One coloured button per setting, matching its line. The first page is the active settings; ‹ › pages through the inactive ones (dashed). Tap one to open its formula — every value editable inline (tap = keypad, drag = scrub), with its own ? explaining the function and the engine code behind it. Give an inactive setting's level a value and its line appears.",
     },
     {
-      name: "The corner controls",
-      desc: "🎲 shuffles a whole new sound (watch the graph redraw), ↩ steps back through shuffles, ↺ resets to the preset. Under them: the GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it) — then MAX LEN (a shuffled sound is trimmed to at most this long — keeps hits punchy; Off = untrimmed) and SPREAD (how the shuffle spreads its pitch & filter draws: linear, log, or weighted toward bass / mid / high). Max len and Spread shape the NEXT 🎲, not the current sound.",
+      name: "The corner buttons",
+      desc: "In the graph's top-right: 🎲 shuffles a whole new sound (watch the graph redraw), ↩ steps back through shuffles, ↺ resets to the preset. On a transition's Sound graph a ⧉ sits above them — it lands the transformed sound as a new loop after the transition.",
+    },
+    {
+      name: "Gate / Max len / Spread",
+      desc: "The row under the graph. GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it). MAX LEN — a shuffled sound is trimmed to at most this long, keeping hits punchy (Off = untrimmed). SPREAD — how the shuffle spreads its pitch & filter draws: linear, log, or weighted toward bass / mid / high. Max len and Spread shape the NEXT 🎲, not the current sound.",
     },
   ];
 
@@ -3722,8 +3762,9 @@ export class App {
 
     const sel = this.graphTrace ? SOUND_TRACES.find((t) => t.id === this.graphTrace) ?? null : null;
 
-    // The graph, with the corner column: (host extras, e.g. ⧉ copy) + Shuffle / Back /
-    // Reset + the Gate number + the Max-len and Spread pickers.
+    // The graph, with the corner column of buttons: (host extras, e.g. ⧉ copy) +
+    // Shuffle / Back / Reset. The Gate / Max-len / Spread stacks live in their own
+    // row UNDER the graph — they'd overflow the box on a phone.
     const box = document.createElement("div");
     box.className = "sound-graph-box";
     box.append(this.soundGraphSvg(get, sel));
@@ -3754,8 +3795,14 @@ export class App {
         void host.replace();
       }),
     );
+    box.append(corner);
+    wrap.append(box);
+
+    // The settings row under the graph: Gate + Max len + Spread, side by side.
+    const settings = document.createElement("div");
+    settings.className = "graph-settings-row";
     // GATE: the note-hold in seconds (0 = the sequencer default 0.4s) — the drone knob.
-    corner.append(this.graphCornerNum("gate", "Gate — seconds each hit is held before release",
+    settings.append(this.graphCornerNum("gate", "Gate — seconds each hit is held before release",
       () => Math.round(get(ParamId.Gate) * 100) / 100,
       (n) => {
         p.set(ParamId.Gate, Math.max(0, n));
@@ -3769,21 +3816,20 @@ export class App {
       0.05,
     ));
     // MAX LEN: the shuffle's audible-length cap — the next 🎲 trims tails to fit.
-    corner.append(this.graphCornerSelect("max len",
+    settings.append(this.graphCornerSelect("max len",
       "Max length — a shuffled sound is trimmed to at most this long (applies to the next 🎲)",
       MAXLEN_OPTIONS.map((o) => o.label),
       () => ed.maxLenIdx,
       (i) => { ed.maxLenIdx = i; },
     ));
     // SPREAD: how the shuffle distributes pitch/cutoff draws across the range.
-    corner.append(this.graphCornerSelect("spread",
+    settings.append(this.graphCornerSelect("spread",
       "Spread — how the shuffle spreads pitch & filter draws (applies to the next 🎲)",
       CURVE_OPTIONS.map((o) => o.label),
       () => ed.curveIdx,
       (i) => { ed.curveIdx = i; },
     ));
-    box.append(corner);
-    wrap.append(box);
+    wrap.append(settings);
 
     if (sel) wrap.append(this.traceEditor(host, sel, rerender));
     else wrap.append(this.traceButtons(get, rerender));
@@ -4190,20 +4236,7 @@ export class App {
     const wrap = document.createElement("div");
     wrap.className = "trans-editor";
     wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
-    const i = (loop.transitions ?? []).indexOf(tr);
-
-    const head = this.subPanelHead(`Transition ${i + 1}`, () => {
-      this.stopPreview();
-      this.editTransition = null;
-      this.gridPick = null;
-      rerender();
-    });
-    const onBtn = document.createElement("button");
-    onBtn.className = "seg-btn fade-toggle trans-onoff" + (tr.on ? " on" : "");
-    onBtn.textContent = tr.on ? "On" : "Off";
-    onBtn.onclick = () => { tr.on = !tr.on; this.recompile(); rerender(); };
-    head.append(onBtn);
-    wrap.append(head);
+    // The back navigation + On/Off live in the popup header's breadcrumb now.
 
     const nav = document.createElement("div");
     nav.className = "placement-seg placement-nav trans-nav";
@@ -4842,10 +4875,6 @@ export class App {
   private transEffectsSection(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "trans-effects";
-    const hint = document.createElement("p");
-    hint.className = "sing-hint";
-    hint.textContent = "The transformed sound's graph — everything here is where the transition ENDS (it morphs from the loop's own sound into this, along the Curve). ⧉ lands it as a new loop after the transition.";
-    wrap.append(hint);
     wrap.append(this.soundGraphPanel(this.graphHostForTransition(loop, tr, rerender), rerender));
     return wrap;
   }
