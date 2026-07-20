@@ -19,7 +19,9 @@ import { encodeWavFromBuffer } from "../audio/wav";
 import { DRUMS, DrumType } from "../model/drums";
 import { ParamId, NUM_PARAMS } from "../model/params";
 import { baseSpec, getParamSpec } from "../model/paramSpec";
-import { SOUND_TRACES, TraceSpec, ParamGet, traceAxisSeconds, traceDomain } from "../model/soundTraces";
+import {
+  SOUND_TRACES, TraceSpec, TraceCtx, ParamGet, traceAxisSeconds, traceDomain, traceParts,
+} from "../model/soundTraces";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
@@ -3717,7 +3719,8 @@ export class App {
   private soundGraphSvg(get: ParamGet, sel: TraceSpec | null): SVGSVGElement {
     const W = 360, H = 290, L = 8, R = 8, T = 10, B = 22;
     const plotW = W - L - R, plotH = H - T - B;
-    const axisT = traceAxisSeconds(get);
+    const ctx: TraceCtx = { bpm: this.tempo };
+    const axisT = traceAxisSeconds(get, ctx);
     const NS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(NS, "svg");
     svg.setAttribute("class", "sound-graph-svg");
@@ -3752,7 +3755,7 @@ export class App {
     // One polyline per active trace, in its own colour; a trace only spans ITS duration
     // (width = time active), steady settings span the whole axis.
     const drawTrace = (tr: TraceSpec, bold: boolean, dim: boolean) => {
-      const d0 = tr.duration(get);
+      const d0 = tr.duration(get, ctx);
       const span = isFinite(d0) ? Math.min(d0, axisT) : axisT;
       if (span <= 0) return;
       const N = 160;
@@ -3760,7 +3763,7 @@ export class App {
       for (let i = 0; i <= N; i++) {
         const t = (i / N) * span;
         const x = L + (t / axisT) * plotW;
-        const y = T + (1 - Math.max(0, Math.min(1, tr.curve(get, t)))) * plotH;
+        const y = T + (1 - Math.max(0, Math.min(1, tr.curve(get, t, ctx)))) * plotH;
         dPath += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1) + " ";
       }
       const path = document.createElementNS(NS, "path");
@@ -3844,6 +3847,7 @@ export class App {
   private traceEditor(loop: Loop, spec: TraceSpec, get: ParamGet, rerender: () => void): HTMLElement {
     const ed = this.voiceEditorFor(loop);
     const p = ed.kit.get(REF_DRUM);
+    const ctx: TraceCtx = { bpm: this.tempo };
     const card = document.createElement("div");
     card.className = "trace-editor";
     card.style.setProperty("--vc", spec.color);
@@ -3855,23 +3859,25 @@ export class App {
     const name = document.createElement("span");
     name.className = "placement-lbl transition-head";
     name.textContent = spec.label + (spec.active(get) ? "" : " — inactive");
+    // The ? glossary: what the function is, plus the ENGINE CODE that implements it —
+    // the lines that are the formula's equivalent in the DSP.
+    const help = helpButton(spec.label, [
+      { name: `${spec.label} — the function`, desc: spec.about, code: spec.code },
+    ]);
     const close = document.createElement("button");
     close.className = "loop-remove trace-ed-close";
     close.textContent = "×";
     close.title = "Back to the settings buttons";
     close.onclick = () => { this.graphTrace = null; rerender(); };
-    head.append(dot, name, close);
+    head.append(dot, name, help, close);
     card.append(head);
 
-    const about = document.createElement("p");
-    about.className = "sing-hint";
-    about.textContent = spec.about;
-    card.append(about);
-
-    // The equation with its values inline.
+    // The equation with its values inline. The pieces may be computed from the live
+    // values — a beat-synced LFO/echo shows its synced rate at the current tempo, the
+    // modal formula names its material's mode set.
     const row = document.createElement("div");
     row.className = "formula-row";
-    for (const part of spec.parts) {
+    for (const part of traceParts(spec, get, ctx)) {
       if (typeof part === "string") {
         const t = document.createElement("span");
         t.className = "formula-text";
@@ -3905,7 +3911,7 @@ export class App {
     // A finite setting states its DOMAIN next to the formula, calculator style —
     // persistent settings (pitch, filter, LFOs, steady FX) have none and run the
     // whole axis.
-    const dom = traceDomain(spec, get);
+    const dom = traceDomain(spec, get, ctx);
     if (dom) {
       const d = document.createElement("span");
       d.className = "formula-text formula-domain";
@@ -3918,7 +3924,7 @@ export class App {
     if (spec.fromTo) {
       const ft = document.createElement("p");
       ft.className = "trace-fromto";
-      ft.textContent = "now: " + spec.fromTo(get);
+      ft.textContent = "now: " + spec.fromTo(get, ctx);
       card.append(ft);
     }
 
