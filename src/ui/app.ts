@@ -3749,9 +3749,9 @@ export class App {
 
     const sel = this.graphTrace ? SOUND_TRACES.find((t) => t.id === this.graphTrace) ?? null : null;
 
-    // One toolbar line above the graph (no title blurb, no corner overlay): the
-    // Shuffle / Back / Reset buttons, then Gate / Max len / Spread, then the ? — the
-    // shuffle stands out. Any host extras (e.g. ⧉) lead.
+    // One toolbar line above the graph (no title blurb): the Back / Reset buttons,
+    // then Gate / Max len / Spread, then the ?. The Shuffle lives on the graph's own
+    // top-right corner (built below). Any host extras (e.g. ⧉) lead.
     const bar = document.createElement("div");
     bar.className = "graph-toolbar";
     const mkTool = (glyph: string, title2: string, fn: () => void, extra = "", disabled = false) => {
@@ -3765,12 +3765,6 @@ export class App {
     };
     for (const el of host.extraCorner ?? []) bar.append(el);
     bar.append(
-      mkTool("🎲", "Shuffle a new sound", () => {
-        const seed = ed.seedText.trim() || randomSeed();
-        ed.lastSeed = seed;
-        ed.kit.shuffleAll(REF_DRUM, shuffleOptions(ed, this.shuffleContext(), seed));
-        void host.replace();
-      }, "graph-tool-dice"),
       mkTool("↩", "Back to the previous sound", () => {
         if (ed.kit.backAll(REF_DRUM)) void host.replace();
       }, "", !ed.kit.canBack(REF_DRUM)),
@@ -3812,13 +3806,21 @@ export class App {
     bar.append(help);
     wrap.append(bar);
 
-    // The graph. Tapping it (anywhere) auditions the current sound — no loop needed.
+    // The graph. Tapping it (anywhere but the shuffle) auditions the current sound.
     const box = document.createElement("div");
     box.className = "sound-graph-box";
     const svg = this.soundGraphSvg(get, sel);
     svg.classList.add("graph-tappable");
     svg.addEventListener("click", () => this.auditionEditor(ed));
     box.append(svg);
+    // The Shuffle sits on the graph's top-right corner and stands out (voice colour).
+    const dice = mkTool("🎲", "Shuffle a new sound", () => {
+      const seed = ed.seedText.trim() || randomSeed();
+      ed.lastSeed = seed;
+      ed.kit.shuffleAll(REF_DRUM, shuffleOptions(ed, this.shuffleContext(), seed));
+      void host.replace();
+    }, "graph-tool-dice graph-dice-corner");
+    box.append(dice);
     wrap.append(box);
 
     if (sel) wrap.append(this.traceEditor(host, sel, rerender));

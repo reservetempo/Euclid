@@ -1906,6 +1906,8 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 }
 .graph-tool-dice:active:not(:disabled) { color: #0b0e17; filter: brightness(1.1); }
 .graph-tool-help { flex: none; margin-left: auto; align-self: center; }
+/* Shuffle overlaid on the graph's own top-right corner. */
+.graph-dice-corner { position: absolute; top: 8px; right: 8px; z-index: 2; }
 
 /* The coloured setting buttons under the graph (page 0 active, ‹ › the inactive). */
 .trace-panel { display: flex; flex-direction: column; gap: 10px; }

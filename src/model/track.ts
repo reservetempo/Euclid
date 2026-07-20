@@ -505,10 +505,23 @@ function buildLane(intervals: Interval[], barLimit: number): VoiceNode[] {
     for (const cb of chunks) {
       const chunkStart = cursor;
       const lenSteps = cb * STEPS_PER_BAR;
-      const reps = Math.max(1, Math.floor(lenSteps / unit));
-      nodes.push(loopToNode(iv.loop, reps));
-      const consumed = reps * unit;
-      cursor += consumed;
+      const totalReps = Math.max(1, Math.floor(lenSteps / unit));
+      // A single node holds at most MAX_REPS pattern-repeats. A short pattern (few steps)
+      // spread over many bars needs SEVERAL nodes back-to-back to cover the whole run —
+      // otherwise everything past MAX_REPS×steps falls silent (e.g. a 7-step fill loop over
+      // 32 bars stops sounding at bar 28: 64×7 = 448 steps). Split into MAX_REPS-sized
+      // nodes, keeping the intro on the first and the outro on the last so the fades don't
+      // repeat at the seams.
+      const repChunks: number[] = [];
+      for (let left = totalReps; left > 0; left -= MAX_REPS) repChunks.push(Math.min(MAX_REPS, left));
+      repChunks.forEach((reps, k) => {
+        const node = loopToNode(iv.loop, reps);
+        if (k > 0) node.intro = undefined;
+        if (k < repChunks.length - 1) node.outro = undefined;
+        nodes.push(node);
+        cursor += reps * unit;
+      });
+      const consumed = totalReps * unit;
       const intendedEnd = chunkStart + Math.max(lenSteps, consumed); // extend if a cycle overran
       if (cursor < intendedEnd) { nodes.push(restOf(intendedEnd - cursor)); cursor = intendedEnd; }
     }
