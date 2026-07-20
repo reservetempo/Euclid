@@ -18,7 +18,8 @@ import { measureLoudness, makeupGain } from "../audio/loudness";
 import { encodeWavFromBuffer } from "../audio/wav";
 import { DRUMS, DrumType } from "../model/drums";
 import { ParamId, NUM_PARAMS } from "../model/params";
-import { baseSpec } from "../model/paramSpec";
+import { baseSpec, getParamSpec } from "../model/paramSpec";
+import { SOUND_TRACES, TraceSpec, ParamGet, traceAxisSeconds } from "../model/soundTraces";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
@@ -152,6 +153,12 @@ export class App {
   // The popup's view identity at the last rebuild — an unchanged key means an in-place
   // rebuild (a value scrub, a toggle), whose scroll position is preserved.
   private popupViewKey = "";
+  // GRAPH MODE (the Sound tab's function view): open flag, the trace whose equation is
+  // open (null = the coloured trace buttons), and which button page shows (0 = active
+  // settings; later pages = the inactive ones).
+  private soundGraphOpen = false;
+  private graphTrace: string | null = null;
+  private graphPage = 0;
   // Transition editor state: the open transition, its tab, its Effects sub-tab, and one
   // param editor (kit + shuffle settings) per transition — the target snapshot's
   // editing surface, shuffle included.
@@ -3048,6 +3055,9 @@ export class App {
       this.transPreviewMode = "transition";
       this.popupSoundTab = undefined;
       this.transFxTab = undefined;
+      this.soundGraphOpen = false;
+      this.graphTrace = null;
+      this.graphPage = 0;
       this.soundBaseline = loop.snapshot.slice(); // each section's Reset reverts to this
     }
     this.editLoop = loop;
@@ -3056,6 +3066,7 @@ export class App {
       this.placementTab, this.loopSub,
       this.editTransition ? (loop.transitions ?? []).indexOf(this.editTransition) : -1,
       this.transTab,
+      this.soundGraphOpen ? `g:${this.graphTrace ?? ""}:${this.graphPage}` : "",
     ].join(":");
     const sameView = !fresh && this.popupViewKey === viewKey;
     this.popupViewKey = viewKey;
@@ -3134,7 +3145,8 @@ export class App {
     if (!openTr) sheet.append(nav);
 
     if (this.placementTab === "sound") {
-      this.appendSoundTab(loop, sheet);
+      if (this.soundGraphOpen) sheet.append(this.soundGraphPanel(loop, rerender));
+      else this.appendSoundTab(loop, sheet);
     } else if (this.placementTab === "transition") {
       if (openTr) sheet.append(this.transitionEditor(loop, openTr, rerender));
       else { this.editTransition = null; sheet.append(this.transitionList(loop, rerender)); }
@@ -3622,8 +3634,307 @@ export class App {
       baseline: this.soundBaseline,       // section Reset target (captured on open)
       initialTab: this.popupSoundTab,
       onTabChange: (t) => { this.popupSoundTab = t; },
+      onGraphMode: () => {
+        this.soundGraphOpen = true;
+        this.graphTrace = null;
+        this.graphPage = 0;
+        this.openPlacement(loop);
+      },
     });
     sheet.append(view.el);
+  }
+
+  // --- GRAPH MODE: the sound's settings as coloured time functions ------
+
+  /** The Graph mode panel: a big graph (every ACTIVE setting drawn as its own coloured
+      time function; the x axis stretches to the longest one), a Shuffle / Back / Reset
+      column floating in its top-right corner, and — below — either the coloured trace
+      buttons (paged: active first, ‹ › through the inactive ones) or, when a trace is
+      tapped, its EQUATION with the values inline, editable like the transition graph. */
+  private soundGraphPanel(loop: Loop, rerender: () => void): HTMLElement {
+    const ed = this.voiceEditorFor(loop);
+    const p = ed.kit.get(REF_DRUM);
+    const get: ParamGet = (id) => p.get(id);
+
+    const wrap = document.createElement("div");
+    wrap.className = "sound-graph";
+    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    wrap.append(this.subPanelHead("Graph mode", () => {
+      this.soundGraphOpen = false;
+      this.graphTrace = null;
+      rerender();
+    }));
+
+    const sel = this.graphTrace ? SOUND_TRACES.find((t) => t.id === this.graphTrace) ?? null : null;
+
+    // The graph, with the small Shuffle / Back / Reset column in its top-right corner.
+    const box = document.createElement("div");
+    box.className = "sound-graph-box";
+    box.append(this.soundGraphSvg(get, sel));
+    const corner = document.createElement("div");
+    corner.className = "sound-graph-corner";
+    const apply = async () => {
+      await this.writeAndNormalizeLoop(loop);
+      this.auditionLoop(loop);
+      rerender();
+    };
+    const mkCorner = (glyph: string, title: string, fn: () => void, disabled = false) => {
+      const b = document.createElement("button");
+      b.className = "graph-corner-btn";
+      b.textContent = glyph;
+      b.title = title;
+      b.disabled = disabled;
+      b.onclick = fn;
+      return b;
+    };
+    corner.append(
+      mkCorner("🎲", "Shuffle a new sound", () => {
+        const seed = ed.seedText.trim() || randomSeed();
+        ed.lastSeed = seed;
+        ed.kit.shuffleAll(REF_DRUM, shuffleOptions(ed, this.shuffleContext(), seed));
+        void apply();
+      }),
+      mkCorner("↩", "Back to the previous sound", () => {
+        if (ed.kit.backAll(REF_DRUM)) void apply();
+      }, !ed.kit.canBack(REF_DRUM)),
+      mkCorner("↺", "Reset to the preset", () => {
+        ed.kit.resetAll(REF_DRUM);
+        void apply();
+      }),
+    );
+    box.append(corner);
+    wrap.append(box);
+
+    if (sel) wrap.append(this.traceEditor(loop, sel, get, rerender));
+    else wrap.append(this.traceButtons(get, rerender));
+    return wrap;
+  }
+
+  /** Draw every active setting as its own coloured line over an adaptive time axis (the
+      longest active setting sets the span — a 1s echo stretches it to show its tail).
+      With a trace selected, it draws bold and the rest dim; a selected INACTIVE trace
+      draws nothing extra (its function doesn't exist yet — the empty graph). */
+  private soundGraphSvg(get: ParamGet, sel: TraceSpec | null): SVGSVGElement {
+    const W = 360, H = 290, L = 8, R = 8, T = 10, B = 22;
+    const plotW = W - L - R, plotH = H - T - B;
+    const axisT = traceAxisSeconds(get);
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "sound-graph-svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+    // Quarter grid + time tick labels along the bottom.
+    const fmtT = (t: number) => (t >= 1 ? `${Math.round(t * 100) / 100}s` : `${Math.round(t * 1000)}ms`);
+    for (let q = 0; q <= 4; q++) {
+      const x = L + (q / 4) * plotW;
+      const l = document.createElementNS(NS, "line");
+      l.setAttribute("x1", String(x)); l.setAttribute("y1", String(T));
+      l.setAttribute("x2", String(x)); l.setAttribute("y2", String(T + plotH));
+      l.setAttribute("class", "curve-viz-grid" + (q === 0 || q === 4 ? " edge" : ""));
+      svg.append(l);
+      const y = T + (q / 4) * plotH;
+      const h = document.createElementNS(NS, "line");
+      h.setAttribute("x1", String(L)); h.setAttribute("y1", String(y));
+      h.setAttribute("x2", String(L + plotW)); h.setAttribute("y2", String(y));
+      h.setAttribute("class", "curve-viz-grid" + (q === 0 || q === 4 ? " edge" : ""));
+      svg.append(h);
+      if (q > 0) {
+        const tx = document.createElementNS(NS, "text");
+        tx.setAttribute("x", String(x - 2));
+        tx.setAttribute("y", String(H - 7));
+        tx.setAttribute("text-anchor", "end");
+        tx.setAttribute("class", "curve-viz-lbl");
+        tx.textContent = fmtT((q / 4) * axisT);
+        svg.append(tx);
+      }
+    }
+
+    // One polyline per active trace, in its own colour; a trace only spans ITS duration
+    // (width = time active), steady settings span the whole axis.
+    const drawTrace = (tr: TraceSpec, bold: boolean, dim: boolean) => {
+      const d0 = tr.duration(get);
+      const span = isFinite(d0) ? Math.min(d0, axisT) : axisT;
+      if (span <= 0) return;
+      const N = 160;
+      let dPath = "";
+      for (let i = 0; i <= N; i++) {
+        const t = (i / N) * span;
+        const x = L + (t / axisT) * plotW;
+        const y = T + (1 - Math.max(0, Math.min(1, tr.curve(get, t)))) * plotH;
+        dPath += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1) + " ";
+      }
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("d", dPath.trim());
+      path.setAttribute("class", "sound-trace-line" + (bold ? " bold" : "") + (dim ? " dim" : ""));
+      path.setAttribute("stroke", tr.color);
+      svg.append(path);
+    };
+    for (const tr of SOUND_TRACES) {
+      if (!tr.active(get)) continue;
+      if (sel && tr.id === sel.id) continue; // drawn last, on top
+      drawTrace(tr, false, !!sel);
+    }
+    if (sel && sel.active(get)) drawTrace(sel, true, false);
+    return svg;
+  }
+
+  /** The coloured trace buttons under the graph: page 0 = every ACTIVE setting, the ‹ ›
+      pager walks the INACTIVE ones (dashed buttons — tapping one opens its equation with
+      the zeroed values that make the function not exist, ready to be given life). */
+  private traceButtons(get: ParamGet, rerender: () => void): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "trace-panel";
+    const active = SOUND_TRACES.filter((t) => t.active(get));
+    const inactive = SOUND_TRACES.filter((t) => !t.active(get));
+    const PER = 8;
+    const pages: { label: string; traces: TraceSpec[]; on: boolean }[] = [
+      { label: `active (${active.length})`, traces: active, on: true },
+    ];
+    for (let i = 0; i < inactive.length; i += PER) {
+      pages.push({
+        label: `inactive ${Math.floor(i / PER) + 1}/${Math.ceil(inactive.length / PER)}`,
+        traces: inactive.slice(i, i + PER),
+        on: false,
+      });
+    }
+    const page = Math.max(0, Math.min(pages.length - 1, this.graphPage));
+    this.graphPage = page;
+
+    const row = document.createElement("div");
+    row.className = "trace-btns";
+    for (const tr of pages[page].traces) {
+      const b = document.createElement("button");
+      b.className = "trace-btn" + (pages[page].on ? "" : " off");
+      b.style.setProperty("--tc", tr.color);
+      b.textContent = tr.label;
+      b.title = tr.about;
+      b.onclick = () => { this.graphTrace = tr.id; rerender(); };
+      row.append(b);
+    }
+    if (!pages[page].traces.length) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "Nothing here.";
+      row.append(hint);
+    }
+    wrap.append(row);
+
+    const pager = document.createElement("div");
+    pager.className = "trace-pager";
+    const mkPg = (txt: string, delta: number, disabled: boolean) => {
+      const b = document.createElement("button");
+      b.className = "place-grid-rowbtn";
+      b.textContent = txt;
+      b.disabled = disabled;
+      b.onclick = () => { this.graphPage = page + delta; rerender(); };
+      return b;
+    };
+    const lbl = document.createElement("span");
+    lbl.className = "place-grid-rowsn";
+    lbl.textContent = pages[page].label;
+    pager.append(mkPg("‹", -1, page === 0), lbl, mkPg("›", 1, page >= pages.length - 1));
+    wrap.append(pager);
+    return wrap;
+  }
+
+  /** One trace's EQUATION, values inline and editable (tap = numpad, drag = scrub) —
+      the transition-formula treatment applied to the sound itself. Editing writes the
+      bound params live (an inactive setting comes to life the moment its level does);
+      the type row switches the function's discrete flavour (LFO wave, noise colour…). */
+  private traceEditor(loop: Loop, spec: TraceSpec, get: ParamGet, rerender: () => void): HTMLElement {
+    const ed = this.voiceEditorFor(loop);
+    const p = ed.kit.get(REF_DRUM);
+    const card = document.createElement("div");
+    card.className = "trace-editor";
+    card.style.setProperty("--vc", spec.color);
+
+    const head = document.createElement("div");
+    head.className = "trace-ed-head";
+    const dot = document.createElement("span");
+    dot.className = "trace-dot";
+    const name = document.createElement("span");
+    name.className = "placement-lbl transition-head";
+    name.textContent = spec.label + (spec.active(get) ? "" : " — inactive");
+    const close = document.createElement("button");
+    close.className = "loop-remove trace-ed-close";
+    close.textContent = "×";
+    close.title = "Back to the settings buttons";
+    close.onclick = () => { this.graphTrace = null; rerender(); };
+    head.append(dot, name, close);
+    card.append(head);
+
+    const about = document.createElement("p");
+    about.className = "sing-hint";
+    about.textContent = spec.about;
+    card.append(about);
+
+    // The equation with its values inline.
+    const row = document.createElement("div");
+    row.className = "formula-row";
+    for (const part of spec.parts) {
+      if (typeof part === "string") {
+        const t = document.createElement("span");
+        t.className = "formula-text";
+        t.textContent = part;
+        row.append(t);
+      } else {
+        const v = spec.vars[part];
+        const scale = v.scale ?? 1; // scrub/type in DISPLAY units (65, not 0.65)
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.readOnly = true;
+        inp.inputMode = "none";
+        inp.className = "formula-var";
+        inp.value = v.fmt(get(v.param));
+        inp.size = Math.max(1, inp.value.length);
+        this.attachScrub(inp, {
+          label: v.sym,
+          color: spec.color,
+          read: () => get(v.param) * scale,
+          write: (n) => {
+            p.set(v.param, n / scale); // clamps to the base range
+            this.writeLoopFromEditor(loop);
+          },
+          show: () => v.fmt(get(v.param)),
+          step: v.step,
+          commit: () => { this.auditionLoop(loop); rerender(); },
+        });
+        row.append(inp);
+      }
+    }
+    card.append(row);
+
+    // "from → to" recap of the values as they'll play.
+    if (spec.fromTo) {
+      const ft = document.createElement("p");
+      ft.className = "trace-fromto";
+      ft.textContent = "now: " + spec.fromTo(get);
+      card.append(ft);
+    }
+
+    // The function's discrete type, where one exists (LFO wave, noise colour…).
+    if (spec.typeParam !== undefined) {
+      const tp = spec.typeParam;
+      const ps = getParamSpec(REF_DRUM, tp);
+      if (ps.choices && ps.choices.length) {
+        const seg = document.createElement("div");
+        seg.className = "placement-seg fade-modes";
+        ps.choices.forEach((c, i) => {
+          const b = document.createElement("button");
+          b.className = "seg-btn" + (Math.round(get(tp)) === i ? " on" : "");
+          b.textContent = c;
+          b.onclick = () => {
+            p.set(tp, i);
+            this.writeLoopFromEditor(loop);
+            this.auditionLoop(loop);
+            rerender();
+          };
+          seg.append(b);
+        });
+        card.append(this.labeledRow("Type", seg));
+      }
+    }
+    return card;
   }
 
   // --- per-loop transitions (the Transitions tab) ------------------------

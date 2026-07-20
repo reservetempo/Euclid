@@ -62,6 +62,9 @@ export interface SoundViewOptions {
   initialTab?: SoundTab;
   /** Reports tab picks so a host that rebuilds the view can restore the tab. */
   onTabChange?: (tab: SoundTab) => void;
+  /** When set, a 📈 Graph pill joins the tab bar — the host opens Graph mode (the
+      sound's settings drawn as time functions). */
+  onGraphMode?: () => void;
 }
 
 export class SoundView {
@@ -72,6 +75,7 @@ export class SoundView {
   private showShuffle: boolean;
   private baseline: number[];
   private onTabChange?: (tab: SoundTab) => void;
+  private onGraphMode?: () => void;
 
   constructor(
     private kit: DrumKit,
@@ -84,6 +88,7 @@ export class SoundView {
     this.st = opts?.settings ?? defaultShuffleSettings();
     this.baseline = opts?.baseline ? opts.baseline.slice() : this.kit.get(this.drum).capture();
     this.onTabChange = opts?.onTabChange;
+    this.onGraphMode = opts?.onGraphMode;
     const fallback: SoundTab = this.showShuffle ? "shuffle" : ParamGroup.Tone;
     const wanted = opts?.initialTab;
     this.tab = wanted !== undefined && (wanted !== "shuffle" || this.showShuffle) ? wanted : fallback;
@@ -127,6 +132,12 @@ export class SoundView {
         }
       };
       nav.append(b);
+    }
+    if (this.onGraphMode) {
+      const g = mkBtn("📈 Graph", "seg-btn graph-mode-btn");
+      g.title = "Graph mode — the sound's settings drawn as time functions";
+      g.onclick = () => this.onGraphMode!();
+      nav.append(g);
     }
     return nav;
   }
