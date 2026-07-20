@@ -1825,7 +1825,16 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .trans-editor .loop-sub-head { margin-bottom: 0; }
 .trans-editor .loop-sub-head .transition-head { flex: 1 1 auto; }
 .trans-graph { display: flex; flex-direction: column; }
-.trans-effects { display: flex; flex-direction: column; gap: 10px; }
+/* The transition's transformed-sound panel wears a tasteful red→black wash so it
+   never reads as the loop's own Sound panel. */
+.trans-effects {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px; border-radius: var(--r-md);
+  border: 1px solid rgba(220, 60, 70, 0.28);
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(200, 40, 55, 0.24), transparent 60%),
+    linear-gradient(180deg, rgba(120, 20, 30, 0.22), rgba(8, 8, 12, 0.35) 70%);
+}
 .trans-speed { display: flex; flex-direction: column; }
 
 /* Transition Graph tab: the function written out with inline variable inputs. */
