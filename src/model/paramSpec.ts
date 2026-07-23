@@ -7,11 +7,14 @@ import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
 
 // LFO destinations, shared by all three LFO sections. Index = the stored value;
-// keep in sync with the LFO routing in public/worklet/engine.js. "None" (last)
+// keep in sync with the LFO routing in public/worklet/engine.js. The "None" entry
 // disables the LFO, so shuffling its destination can leave 0-2 LFOs active.
-// LFO destinations. "None" must STAY at index 6 (old saves store it there); the newer
-// destinations are appended after it. Keep in sync with the LFO_* indices in engine.js.
+// "None" must STAY at index 6 (old saves store it there, and engine.js hard-codes
+// LFO_NONE = 6); the newer destinations are appended after it, so "None" is NOT the
+// last entry — always reference it via LFO_NONE below, never LFO_TARGETS.length - 1.
 export const LFO_TARGETS = ["Pitch", "Filter", "Amp", "Drive", "Reso", "Wave", "None", "Noise", "Crush", "Ring"];
+// Index of the "disable this LFO" destination (mirrors engine.js LFO_NONE = 6).
+export const LFO_NONE = LFO_TARGETS.indexOf("None");
 
 // Sound-verse expansion choice lists. The stored value is the index; the engine
 // maps each index to its DSP meaning, so these MUST stay in sync with the matching

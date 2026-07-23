@@ -7,7 +7,7 @@
 import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
 import {
-  getParamSpec, baseRange, isDiscrete, LFO_TARGETS, OSC_MOD_TYPES, NOISE_TYPES, CLICK_TYPES,
+  getParamSpec, baseRange, isDiscrete, LFO_TARGETS, LFO_NONE, OSC_MOD_TYPES, NOISE_TYPES, CLICK_TYPES,
   MODAL_MATERIALS, ECHO_SYNC_BEATS,
 } from "./paramSpec";
 import { intervals } from "./melodyScale";
@@ -565,7 +565,7 @@ export class DrumParameters {
       it off. The core tone (osc/pitch/wave/noise level) and the amp envelope are NOT
       modules — they always define the sound. Listed in routing order. */
   private soundModules(): { name: string; on: boolean; off: () => void }[] {
-    const NONE = LFO_TARGETS.length - 1;
+    const NONE = LFO_NONE;
     const g = (id: ParamId) => this.get(id);
     const round = (id: ParamId) => Math.round(g(id));
     const lfo = (t: ParamId, d: ParamId) => ({
@@ -727,7 +727,7 @@ export class DrumParameters {
   /** Two LFOs aimed at the same destination just double up — silence the later
       duplicate(s) by switching them to "None". Duplicate "None"s are fine. */
   private dedupeLfoTargets(): void {
-    const NONE = LFO_TARGETS.length - 1;
+    const NONE = LFO_NONE;
     const slots = [ParamId.LfoTarget, ParamId.Lfo2Target, ParamId.Lfo3Target];
     const seen = new Set<number>();
     for (const id of slots) {
