@@ -395,6 +395,29 @@ for (const a of allpasses) out = a.process(out);
 buf[i] = out * wet + buf[i] * dry;   // M sets wet/dry`,
   },
   {
+    id: "modfx", label: "Mod FX", color: "#ff922b",
+    parts: (g) => {
+      const ty = ["Off", "Chorus", "Flanger", "Phaser"][Math.max(0, Math.min(3, Math.round(g(ParamId.ModFxType))))];
+      return ["y(t) = ", 0, ` wet · ${ty} @ `, 1, "Hz  (steady)"];
+    },
+    vars: [
+      { sym: "M", param: ParamId.ModFxMix, step: 2, scale: 100, fmt: pctFmt },
+      { sym: "rate", param: ParamId.ModFxRate, step: 0.1, fmt: (v) => String(r2(v)) },
+      { sym: "depth", param: ParamId.ModFxDepth, step: 2, scale: 100, fmt: pctFmt },
+      { sym: "fb", param: ParamId.ModFxFeedback, step: 2, scale: 100, fmt: pctFmt },
+    ],
+    types: [{ label: "Type", param: ParamId.ModFxType }],
+    active: (g) => Math.round(g(ParamId.ModFxType)) !== 0 && g(ParamId.ModFxMix) > 0.001,
+    duration: () => Infinity,
+    curve: (g) => clamp01(g(ParamId.ModFxMix)),
+    fromTo: (g) => `${Math.round(g(ParamId.ModFxMix) * 100)}% ${["Off", "Chorus", "Flanger", "Phaser"][Math.max(0, Math.min(3, Math.round(g(ParamId.ModFxType))))]} at ${r2(g(ParamId.ModFxRate))} Hz`,
+    about: "A modulated stereo effect after the echo/reverb — Chorus, Flanger or Phaser — sweeping at Rate with Depth, plus feedback (fb) resonance for flanger/phaser. Steady wet mix, so it draws as a level line. Mix 0 or Type Off = inactive.",
+    code: `// engine.js — Channel.renderInto: the stereo modulation FX (after reverb)
+this.modfx.setup(modType, rate, depth, feedback);
+this.modfx.render(scratch, n, wetL, wetR); // quadrature LFO L/R → real width
+masterL[i] += s * gl * (1 - mix) + wetL[i] * mix; // blended by Mix`,
+  },
+  {
     id: "drive", label: "Drive", color: "#e8590c",
     parts: ["y(t) = ", 0, " (steady)"],
     vars: [{ sym: "D", param: ParamId.Drive, step: 0.05, fmt: (v) => String(r2(v)) }],
@@ -481,22 +504,62 @@ if (hardSync && osc1Wrapped) osc2Phase = 0; // snap to oscillator 1's cycle`,
   },
   {
     id: "fm", label: "FM / Ring", color: "#faa2c1",
-    parts: ["y(t) = ", 0, " at ×", 1],
+    parts: ["y(t) = ", 0, " at ×", 1, ", fb ", 2],
     vars: [
       { sym: "A", param: ParamId.OscModAmount, step: 2, scale: 100, fmt: pctFmt },
       { sym: "r", param: ParamId.OscModRatio, step: 0.05, fmt: (v) => String(r2(v)) },
+      { sym: "fb", param: ParamId.FmFeedback, step: 2, scale: 100, fmt: pctFmt },
     ],
     types: [{ label: "Type", param: ParamId.OscModType }],
     active: (g) => g(ParamId.OscModAmount) > 0.001 && Math.round(g(ParamId.OscModType)) !== 0,
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.OscModAmount)),
-    fromTo: (g) => `${Math.round(g(ParamId.OscModAmount) * 100)}% at ratio ${r2(g(ParamId.OscModRatio))}`,
-    about: "A second operator bending the tone — FM growl or ring-mod metal, at a frequency ratio r of the note. Amount 0 (or type Off) disables it.",
-    code: `// engine.js — Voice.renderAdding: the second operator
-modOut = Math.sin(2π * modPhase);           // a sine at freq × r
-modPhase += (freq * ratio) / sampleRate;
+    fromTo: (g) => `${Math.round(g(ParamId.OscModAmount) * 100)}% at ratio ${r2(g(ParamId.OscModRatio))}${g(ParamId.FmFeedback) > 0.001 ? `, fb ${Math.round(g(ParamId.FmFeedback) * 100)}%` : ""}`,
+    about: "A second operator bending the tone — FM growl or ring-mod metal, at a frequency ratio r of the note. Feedback (fb) folds the FM operator back on itself, morphing its sine toward a saw and then noise for grittier FM. Amount 0 (or type Off) disables it.",
+    code: `// engine.js — Voice.renderAdding: the second operator (with self-feedback)
+this.fbMod = Math.sin(2π * modPhase + fmFeedback * this.fbMod); // fb: sine → saw → noise
+modOut = this.fbMod;
+modPhase += (freq * ratio) / sampleRate;    // a sine at freq × r
 // FM:   carrierPhase += modOut * amount * FM_INDEX;
 // Ring: osc *= 1 - amount + amount * modOut;`,
+  },
+  {
+    id: "unison", label: "Unison", color: "#3bc9db",
+    parts: (g) => {
+      const n = ["1", "3", "5", "7"][Math.max(0, Math.min(3, Math.round(g(ParamId.Unison))))];
+      return ["y(t) = ", 0, ` spread · ${n} voices  (steady)`];
+    },
+    vars: [{ sym: "spread", param: ParamId.UnisonDetune, step: 2, scale: 100, fmt: pctFmt }],
+    types: [{ label: "Voices", param: ParamId.Unison }],
+    active: (g) => Math.round(g(ParamId.Unison)) > 0,
+    duration: () => Infinity,
+    curve: (g) => clamp01(g(ParamId.UnisonDetune)),
+    fromTo: (g) => `${["1", "3", "5", "7"][Math.max(0, Math.min(3, Math.round(g(ParamId.Unison))))]} voices, ${Math.round(g(ParamId.UnisonDetune) * 100)}% spread`,
+    about: "Stacks several detuned copies of the main oscillator for a thicker, wider sound (supersaw-style) — steady across the note, so it draws as a level line at the detune spread. Voices Off = the single oscillator.",
+    code: `// engine.js — Voice.renderAdding: the unison stack (primary osc)
+for (let u = 0; u < unisonCount; u++) {
+  let ph = uPhase[u] + fmOff; ph -= Math.floor(ph);
+  sum += this.osc(ph, waveform, pw, dt * uDetune[u]); // detune spread in cents
+}
+osc = sum * unisonNorm; // normalise by 1/√count`,
+  },
+  {
+    id: "wavetable", label: "Wavetable", color: "#da77f2",
+    parts: (g) => {
+      const fam = ["Off", "Formant", "Harmonic", "Vocal", "Digital"][Math.max(0, Math.min(4, Math.round(g(ParamId.WaveTable))))];
+      return ["y(t) = scan ", 0, `  — ${fam} table  (steady)`];
+    },
+    vars: [{ sym: "scan", param: ParamId.WavePosition, step: 2, scale: 100, fmt: pctFmt }],
+    types: [{ label: "Table", param: ParamId.WaveTable }],
+    active: (g) => Math.round(g(ParamId.WaveTable)) > 0,
+    duration: () => Infinity,
+    curve: (g) => clamp01(g(ParamId.WavePosition)),
+    fromTo: (g) => `${["Off", "Formant", "Harmonic", "Vocal", "Digital"][Math.max(0, Math.min(4, Math.round(g(ParamId.WaveTable))))]} table at ${Math.round(g(ParamId.WavePosition) * 100)}% scan`,
+    about: "Replaces the analog oscillator with a scannable digital wavetable — the Table picks the family (Formant / Harmonic / Vocal / Digital) and Scan morphs through its frames (point an LFO at WTPos to sweep it). Table Off = the normal Sine/Tri/Square/Saw oscillator.",
+    code: `// engine.js — Voice.renderAdding: the wavetable oscillator (wtFamily > 0)
+osc = this.wtFamily > 0
+  ? wtSample(this.wtFamily - 1, this.wtPos + wtPosOff, ph, dt) // scan crossfades frames
+  : this.osc(ph, this.waveform, pw, dt);                       // else the analog wave`,
   },
   {
     id: "comb", label: "Comb", color: "#8ce99a",
