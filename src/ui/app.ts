@@ -66,10 +66,9 @@ const PROJECT_KEY = "msq010.project";
 const REF_DRUM = DrumType.Kick;
 
 // Default "Max len" (the shuffle's audible-length cap) per voice row, as an index into
-// MAXLEN_OPTIONS: Voice 1 off, then 0.2s / 0.3s / 0.5s / 0.75s down the rows; the melody
-// row (index 5) is off. A newly generated sound on that row is trimmed to this length
-// unless the user overrides Max len in the shuffle menu.
-const ROW_MAXLEN_IDX = [0, 2, 3, 4, 5, 0];
+// MAXLEN_OPTIONS. Every row defaults to "Off" (no trimming) — a shuffled sound keeps its
+// full length unless the user picks a Max len in the sound-graph toolbar.
+const ROW_MAXLEN_IDX = [0, 0, 0, 0, 0, 0];
 
 // Overview timeline wraps to a new row ("line") every this many bars, so a long track
 // stays legible; the playhead loops back at each wrap and a badge names the active line.
@@ -156,8 +155,10 @@ export class App {
   // Loop-tab drag grid: rows shown. A view preference — the grid auto-grows past it so
   // the whole track always fits.
   private placeGridRows = 8;
-  // Loop tab: whether the sequencer pattern grid is unfolded.
-  private patternOpen = false;
+  // The open Loop-tab pattern grid's step cells + step count, so the transport can light
+  // the currently-sounding step while playing (cleared when the popup closes).
+  private patternPlayCells: HTMLElement[] | null = null;
+  private patternPlaySteps = 0;
   // Bar-square grids (loop placement / transition bars / the play range): how many bars
   // one square is worth (1 / 2 / 4), and the armed Start→End pick (start 0 = awaiting
   // the start square).
@@ -280,6 +281,7 @@ export class App {
       this.trackOverviewEl?.classList.remove("playing");
       for (const row of this.segRows) row.classList.remove("seg-live");
       this.graphPlayheadUpdate?.(null);
+      this.lightPatternStep(-1);
       return;
     }
     // The melody Graph tab's playhead (position within the phrase being drawn).
@@ -312,6 +314,22 @@ export class App {
     });
     this.euclidView.setRings(states);
     this.euclidView.pulse(p.fired);
+    // Light the open Loop-tab pattern grid's currently-sounding step (nothing when the
+    // edited loop isn't sounding this instant).
+    if (this.patternPlayCells && this.editLoop && this.editLoop.soundId >= 0) {
+      const ec = this.colorOf(this.editLoop);
+      let liveStep = -1;
+      for (let li = 0; li < this.arr.lines.length; li++) {
+        const lane = this.arr.lines[li];
+        if ((lane.color ?? -1) !== ec) continue;
+        const st = p.lines[li];
+        if (st && st.node >= 0 && st.step >= 0 && lane.nodes[st.node]?.soundId === this.editLoop.soundId) {
+          liveStep = st.step % this.patternPlaySteps;
+          break;
+        }
+      }
+      this.lightPatternStep(liveStep);
+    }
     if (this.mixerLeds) {
       for (const ch of p.fired) {
         const led = this.mixerLeds.get(ch);
@@ -2918,11 +2936,12 @@ export class App {
     return `#${to2(mix(r))}${to2(mix(g))}${to2(mix(b))}`;
   }
 
-  /** A row of timeline cells for one lane segment. Cell value: -1 = pad (off the track),
-      0 = empty bar, >0 = a loop number — filled with that loop's own shade of the colour
-      (spread across the colour's loops) so same-row loops read apart even when tiny. */
-  private laneCells(cells: number[], c: number): HTMLElement {
-    const total = this.track.colors[c].loops.length;
+  /** A row of timeline cells for one lane segment starting at absolute bar `startBar`.
+      Cell value: -1 = pad (off the track), 0 = empty bar, >0 = a loop number. Each filled
+      cell shows the BAR NUMBER it sits on; its shade encodes WHICH loop of the colour it is
+      (the first is the base colour, each successive loop a shade lighter) so same-row loops
+      still read apart. */
+  private laneCells(cells: number[], c: number, startBar = 0): HTMLElement {
     const row = document.createElement("div");
     row.className = "color-preview-lane";
     for (let b = 0; b < cells.length; b++) {
@@ -2930,13 +2949,14 @@ export class App {
       const num = cells[b];
       cell.className = "color-preview-cell" + (num > 0 ? " on" : num < 0 ? " pad" : "");
       if (num > 0) {
-        const t = total > 1 ? (num - 1) / (total - 1) : 0.5;
+        // Loop 1 = the base colour, each later loop a shade lighter (capped so it stays legible).
+        const t = Math.min(0.9, 0.5 + (num - 1) * 0.16);
         const bg = this.shade(VOICE_COLORS[c], t);
         cell.style.background = bg;
         // Dark text on light shades, light text on dark shades.
         const lum = 0.299 * parseInt(bg.slice(1, 3), 16) + 0.587 * parseInt(bg.slice(3, 5), 16) + 0.114 * parseInt(bg.slice(5, 7), 16);
         cell.style.color = lum > 150 ? "rgba(0,0,0,0.8)" : "#fff";
-        cell.textContent = String(num);
+        cell.textContent = String(startBar + b + 1); // the bar this square sits on
       }
       row.append(cell);
     }
@@ -2958,7 +2978,7 @@ export class App {
           const bar = s * rowBars + i;
           segCells.push(bar < barLimit ? cells[bar] : -1); // -1 pads a short final line
         }
-        const rowEl = this.laneCells(segCells, c);
+        const rowEl = this.laneCells(segCells, c, s * rowBars);
         rowEl.dataset.seg = String(s);
         collect?.push(rowEl);
         parent.append(rowEl);
@@ -3048,6 +3068,7 @@ export class App {
     this.editLoop = null;
     this.editTransition = null;
     this.gridPick = null;
+    this.patternPlayCells = null;
     this.render();
   }
 
@@ -3063,13 +3084,14 @@ export class App {
     // the rebuild is IN-PLACE (same tab/sub-page; a genuine navigation starts at top).
     const prevScroll = document.querySelector<HTMLElement>(".placement-overlay .voice-sheet")?.scrollTop ?? 0;
     document.querySelector(".placement-overlay")?.remove();
+    // Stale cell refs from a previous Loop-tab render; patternGrid re-sets them if shown.
+    this.patternPlayCells = null;
     const fresh = this.editLoop !== loop;
     if (fresh) {
       // Fresh open: land on the Sound page (the full params ARE the default now) and
       // reset every sub-state the popup carries.
       this.placementTab = "sound";
       this.loopSub = "grid";
-      this.patternOpen = false;
       this.gridPick = null;
       this.editTransition = null;
       this.transTab = "graph";
@@ -3213,21 +3235,16 @@ export class App {
       sheet.append(this.subPanelHead("Accents & Ghosts", () => { this.loopSub = "grid"; rerender(); }));
       sheet.append(this.lifeControls(loop, rerender));
     } else {
-      // Default Loop view: the rhythm circles up front, the sequencer pattern grid on
-      // demand, the placement squares, then a row of small actions.
+      // Default Loop view: the rhythm circles up front, the sequencer pattern grid always
+      // shown below them, the placement squares, then a row of small actions.
       const rhythmRow = document.createElement("div");
       rhythmRow.className = "loop-rhythm";
       const detail = document.createElement("div");
       detail.className = "euclid-detail";
       detail.append(this.rhythmCircles(loop, rerender));
-      const patBtn = document.createElement("button");
-      patBtn.className = "loop-action-btn pattern-toggle" + (this.patternOpen ? " on" : "");
-      patBtn.textContent = "▦ Grid";
-      patBtn.title = "View / edit the pattern as a step sequencer grid";
-      patBtn.onclick = () => { this.patternOpen = !this.patternOpen; rerender(); };
-      rhythmRow.append(detail, patBtn);
+      rhythmRow.append(detail);
       sheet.append(rhythmRow);
-      if (this.patternOpen) sheet.append(this.patternGrid(loop, rerender));
+      sheet.append(this.patternGrid(loop, rerender));
 
       sheet.append(this.placementGrid(loop, rerender));
 
@@ -3311,6 +3328,7 @@ export class App {
     const grid = document.createElement("div");
     grid.className = "pattern-grid";
     grid.style.setProperty("--cols", String(Math.min(16, steps)));
+    const cells: HTMLElement[] = [];
     for (let i = 0; i < steps; i++) {
       const cell = document.createElement("button");
       cell.className = "pattern-cell" + (cur[i] ? " on" : "") + (i % 4 === 0 ? " beat" : "");
@@ -3324,9 +3342,22 @@ export class App {
         rerender();
       };
       grid.append(cell);
+      cells.push(cell);
     }
     wrap.append(grid);
+    // Let the transport light the sounding step live (the popup shows only this loop).
+    this.patternPlayCells = cells;
+    this.patternPlaySteps = steps;
+    this.lightPatternStep(-1);
     return wrap;
+  }
+
+  /** Toggle the `.playing` class onto the open pattern grid's step `i` (‑1 = none). */
+  private lightPatternStep(i: number): void {
+    if (!this.patternPlayCells) return;
+    for (let k = 0; k < this.patternPlayCells.length; k++) {
+      this.patternPlayCells[k].classList.toggle("playing", k === i);
+    }
   }
 
   /** The shared bar-SQUARE grid (8 squares per row): the Loop tab's placement editor and

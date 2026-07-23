@@ -1758,11 +1758,9 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 
 /* ================= voice popup redesign: Loop tab + per-loop transitions ========= */
 
-/* Loop tab: the rhythm circles + the ▦ Grid toggle share the top row. */
+/* Loop tab: the rhythm circles sit centred above the always-shown pattern grid. */
 .loop-rhythm { display: flex; align-items: center; justify-content: center; gap: 10px; }
 .loop-rhythm .euclid-detail { flex: 0 1 auto; }
-.loop-rhythm .pattern-toggle { flex: 0 0 auto; align-self: center; padding: 10px 12px; }
-.pattern-toggle.on { border-color: var(--vc); color: var(--vc); background: color-mix(in srgb, var(--vc) 10%, var(--panel2)); }
 
 /* The sequencer pattern grid: one cell per step, hits lit in the voice colour. */
 .pattern-grid-wrap { --vc: var(--accent); display: flex; flex-direction: column; gap: 8px; }
@@ -1780,6 +1778,16 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .pattern-cell.on {
   background: var(--vc);
   box-shadow: 0 0 8px color-mix(in srgb, var(--vc) 45%, transparent);
+}
+/* The transport's current step, lit while playing (a bright ring; brighter still on a hit). */
+.pattern-cell.playing {
+  outline: 2px solid #fff;
+  outline-offset: -2px;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.55);
+}
+.pattern-cell.on.playing {
+  background: color-mix(in srgb, #fff 30%, var(--vc));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--vc) 70%, transparent);
 }
 .pattern-euclid { width: auto; padding: 5px 10px; }
 
