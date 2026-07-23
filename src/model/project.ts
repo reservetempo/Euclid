@@ -2,18 +2,17 @@
 // every drum's sound, and tempo. Plain JSON, used for both localStorage autosave and
 // files.
 //
-// v11 replaced the hand-placed node chains with the procedural placement model
-// (see track.ts): each colour is an ordered list of loops carrying a placement rule.
-// Older saves (v1–v10) used 6 sequential node lines; those are NOT migrated — a v≤10
-// file loads with a BLANK track (its tempo and drum kit are still restored), matching
-// the "start blank" decision when placement went procedural.
+// The project is serialized as version 12: a procedural placement model (see track.ts)
+// where each colour is an ordered list of loops carrying a placement rule. Only version
+// 12 loads; any other version loads with a BLANK track (its tempo and drum kit are still
+// restored). The format is not back-compatible with earlier generations of the app.
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, LoopTransition,
-  DEFAULT_BAR_LIMIT, randomSeed, MelodyItem, newMelodyItem,
+  DEFAULT_BAR_LIMIT, randomSeed, MelodyItem,
 } from "./track";
 import { MelodyNode, MelodyNote, emptyMelody, melodySeed, MELODY_COLOR_INDEX } from "./melody";
 
@@ -89,12 +88,11 @@ export interface ColorJSON {
   loops: LoopJSON[];
   mute?: boolean;
   solo?: boolean;
-  sweep?: RowSweepJSON;    // legacy single sweep (pre-list saves; migrated into sweeps[0])
   sweeps?: RowSweepJSON[]; // the row's transition list
 }
 
 export interface ProjectJSON {
-  version: number; // 11 = procedural track; 1–10 = legacy (load blank)
+  version: number; // 12 = current format; anything else loads blank
   tempo: number;
   barLimit?: number;
   root?: number;
@@ -105,8 +103,6 @@ export interface ProjectJSON {
   presets?: Record<number, string>;
   soundName?: string;
   melodies?: MelodyItemJSON[];  // the melody row: a list of placeable per-instrument melodies
-  melody?: MelodyJSON;          // legacy single melody (migrated into melodies[0] on load)
-  melodyInstrument?: LoopJSON;  // legacy single instrument
 }
 
 /** One melody in the list: its re-pitched instrument (sound + placement rule) and notes. */
@@ -183,7 +179,7 @@ export function serialize(
     drumPresets[d] = kit.get(d).presetName();
   }
   return {
-    version: 11,
+    version: 12,
     tempo,
     barLimit: track.barLimit,
     root: track.root,
@@ -361,10 +357,9 @@ function readSweep(sv: unknown): RowSweep | undefined {
   };
 }
 
-/** A row's transition list: the stored `sweeps` array, or a legacy single `sweep`
-    migrated into a one-entry list. Undefined when the row has none. */
+/** A row's transition list from the stored `sweeps` array. Undefined when the row has none. */
 function readSweeps(cj: ColorJSON): RowSweep[] | undefined {
-  const raw = Array.isArray(cj.sweeps) ? cj.sweeps : (cj.sweep ? [cj.sweep] : []);
+  const raw = Array.isArray(cj.sweeps) ? cj.sweeps : [];
   const out = raw.map(readSweep).filter((s): s is RowSweep => !!s);
   return out.length ? out : undefined;
 }
@@ -464,9 +459,8 @@ function readMelody(mv: unknown): MelodyNode {
   };
 }
 
-/** The melody list: the new `melodies` array, or a legacy single `melody` + `melodyInstrument`
-    migrated into one item (its stored instrument rule was unused, so give it the melody
-    placement default). Always returns at least one item. */
+/** The melody list from the stored `melodies` array. Empty when there's no melody data
+    (the UI then starts on the "add a melody" menu). */
 function readMelodies(json: ProjectJSON): MelodyItem[] {
   if (Array.isArray(json.melodies) && json.melodies.length) {
     return json.melodies.map((mj) => ({
@@ -474,20 +468,10 @@ function readMelodies(json: ProjectJSON): MelodyItem[] {
       node: readMelody(mj?.node),
     }));
   }
-  if (json.melody || json.melodyInstrument) {
-    const item = newMelodyItem(); // carries the melody placement default
-    if (json.melodyInstrument) {
-      const li = readLoop(json.melodyInstrument, MELODY_COLOR_INDEX);
-      li.rule = item.inst.rule;   // ignore the legacy (unused) instrument rule
-      item.inst = li;
-    }
-    item.node = readMelody(json.melody);
-    return [item];
-  }
-  return []; // no melody data — start on the "add a melody" menu
+  return [];
 }
 
-/** Apply a loaded project into the live track + kit. Returns the tempo. A v≤10 file
+/** Apply a loaded project into the live track + kit. Returns the tempo. A non-v12 file
     loads a BLANK track (tempo + kit still restored). */
 export function deserialize(
   json: ProjectJSON, track: Track, kit: DrumKit, drums: DrumType[]
@@ -500,7 +484,7 @@ export function deserialize(
   track.melodies = [];
 
   const v = json && json.version;
-  if (json && typeof v === "number" && v === 11) {
+  if (json && typeof v === "number" && v === 12) {
     track.melodies = readMelodies(json);
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
@@ -516,7 +500,7 @@ export function deserialize(
     track.root = typeof json.root === "number" ? ((json.root % 12) + 12) % 12 : 0;
     track.scale = typeof json.scale === "number" ? json.scale : 0;
   }
-  // (v1–v10: left blank on purpose — only tempo + kit below are restored.)
+  // (Any other version: track left blank on purpose — only tempo + kit below are restored.)
 
   for (const d of drums) {
     // Ranges first so values clamp against the right window (see DrumParameters).

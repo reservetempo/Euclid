@@ -178,7 +178,7 @@ function echoRepeats(fb: number, mix: number): number {
 }
 
 /** The echo's effective per-repeat delay in seconds: EchoTime when free, or the
-    synced division at the given tempo. Tolerates old snapshots (no EchoSync). */
+    synced division at the given tempo. */
 export function effectiveEchoTime(snap: number[], bpm: number): number {
   const sync = Math.round(snap[ParamId.EchoSync] || 0);
   const beats = ECHO_SYNC_BEATS[sync] || 0;
@@ -192,7 +192,7 @@ export function effectiveEchoTime(snap: number[], bpm: number): number {
     a tempo-synced echo's tail (harmless default for free echoes). */
 export function estimateLength(snap: number[], bpm = 120): number {
   // A sustained sound holds for its Gate before releasing: count the hold beyond the
-  // legacy 0.4s step gate when Sustain keeps it audible (drone-length gates ring long).
+  // default 0.4s step gate when Sustain keeps it audible (drone-length gates ring long).
   const gateSec = snap[ParamId.Gate] || 0;
   const sustain = snap[ParamId.AmpSustain] || 0;
   const hold = sustain > 0.02 ? Math.max(0, gateSec - 0.4) : 0;

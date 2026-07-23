@@ -8,12 +8,10 @@ import { ParamId, NUM_PARAMS } from "./params";
 
 // LFO destinations, shared by all three LFO sections. Index = the stored value;
 // keep in sync with the LFO routing in public/worklet/engine.js. The "None" entry
-// disables the LFO, so shuffling its destination can leave 0-2 LFOs active.
-// "None" must STAY at index 6 (old saves store it there, and engine.js hard-codes
-// LFO_NONE = 6); the newer destinations are appended after it, so "None" is NOT the
-// last entry — always reference it via LFO_NONE below, never LFO_TARGETS.length - 1.
-export const LFO_TARGETS = ["Pitch", "Filter", "Amp", "Drive", "Reso", "Wave", "None", "Noise", "Crush", "Ring", "WTPos"];
-// Index of the "disable this LFO" destination (mirrors engine.js LFO_NONE = 6).
+// disables the LFO, so shuffling its destination can leave 0-2 LFOs active. Always
+// reference it via LFO_NONE below rather than a literal index.
+export const LFO_TARGETS = ["Pitch", "Filter", "Amp", "Drive", "Reso", "Wave", "Noise", "Crush", "Ring", "WTPos", "None"];
+// Index of the "disable this LFO" destination (mirrors engine.js LFO_NONE).
 export const LFO_NONE = LFO_TARGETS.indexOf("None");
 
 // Sound-verse expansion choice lists. The stored value is the index; the engine
@@ -153,11 +151,11 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.HitChance:      return make("Hit Chance", 0.25, 1, 1, 1, 0.01, "");
     case ParamId.Ratchet:        return make("Ratchet", 0, 1, 0, 1, 0.02, "");
     case ParamId.ChokeGroup:     return make("Choke", 0, 4, 0, 1, 1, "", false, CHOKE_GROUPS);
-    // LFO tempo-sync, one per LFO. Free (default) keeps the legacy Hz behaviour.
+    // LFO tempo-sync, one per LFO. Free (default) uses the Rate knob in Hz.
     case ParamId.Lfo1Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     case ParamId.Lfo2Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     case ParamId.Lfo3Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
-    // Note-hold in seconds; default 0.4 matches the legacy fixed gate (STEP_GATE_SEC).
+    // Note-hold in seconds; default 0.4 matches the sequencer's default step gate.
     // Max 30s for drone-length holds (pair with Sustain > 0 so the note actually rings);
     // the low skew keeps most of the slider's travel on the ordinary short gates.
     // Not randomizable — it's a length choice, not part of the sound's character.

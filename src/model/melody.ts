@@ -16,7 +16,7 @@ import { voicePattern } from "./euclid";
 import { rng01, randomSeed as melodySeed } from "./rng";
 import type { Loop } from "./track";
 
-export { melodySeed }; // re-export: project.ts mints seeds when reading old saves
+export { melodySeed }; // re-export: project.ts mints seeds for melodies saved without one
 
 /** The last coloured row (voice 6) is the melody lane. */
 export const MELODY_COLOR_INDEX = 5;
