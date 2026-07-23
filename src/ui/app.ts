@@ -23,7 +23,6 @@ import {
   SOUND_TRACES, TraceSpec, TraceCtx, ParamGet, traceAxisSeconds, traceDomain, traceParts,
 } from "../model/soundTraces";
 import { DrumKit, estimateLength } from "../model/drumKit";
-import { FULL_RANGE_PRESET } from "../model/presets";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { addReport, reportCount, exportReports, clearReports, ReportKind } from "../model/soundReports";
 import {
@@ -557,10 +556,9 @@ export class App {
     this.render();
   }
 
-  /** Seed the (background) editor kit with a fresh random Full Range sound, so a
-      new/loaded project still serialises a valid drum kit + preset. */
+  /** Seed the (background) editor kit with a fresh random sound, so a new/loaded
+      project still serialises a valid drum kit. */
   private applyRandomDefault(): void {
-    this.kit.applyPreset(this.selectedDrum, FULL_RANGE_PRESET);
     this.kit.shuffleAll(this.selectedDrum, { randomness: 1.0 });
     this.soundName = "";
   }
@@ -5022,9 +5020,6 @@ export class App {
     if (ed) return ed;
     const kit = new DrumKit([REF_DRUM]);
     const p = kit.get(REF_DRUM);
-    p.applyPreset(FULL_RANGE_PRESET);
-    if (loop.preset) kit.adoptPresetByName(REF_DRUM, loop.preset);
-    if (loop.ranges) p.restoreRanges(loop.ranges.lo, loop.ranges.hi);
     p.restore(tr.snapshot.length ? tr.snapshot : loop.snapshot);
     ed = { kit, ...defaultShuffleSettings() };
     this.transitionKits.set(tr, ed);
@@ -5915,9 +5910,6 @@ export class App {
     if (ed) return ed;
     const kit = new DrumKit([REF_DRUM]);
     const p = kit.get(REF_DRUM);
-    p.applyPreset(FULL_RANGE_PRESET);
-    if (loop.preset) kit.adoptPresetByName(REF_DRUM, loop.preset);
-    if (loop.ranges) p.restoreRanges(loop.ranges.lo, loop.ranges.hi);
     if (loop.snapshot.length) p.restore(loop.snapshot);
     ed = { kit, ...defaultShuffleSettings() };
     ed.maxLenIdx = ROW_MAXLEN_IDX[this.colorOf(loop)] ?? 0; // per-row default sound-length cap
@@ -5938,8 +5930,6 @@ export class App {
     loop.name = p.describe().join(" · ");
     const pr = ed.kit.pitchRange(REF_DRUM);
     loop.pitch = [pr[0], pr[1]];
-    loop.preset = p.presetName();
-    loop.ranges = p.captureRanges();
     this.pushSounds();
     this.recompile();
     if (!this.playing) this.refreshRings();
@@ -6016,7 +6006,6 @@ export class App {
     const n = addReport(kind, {
       at: new Date().toISOString(),
       name: loop.name,
-      preset: loop.preset,
       seed: ed?.lastSeed || undefined,
       tempo: this.tempo,
       gain: loop.gain,

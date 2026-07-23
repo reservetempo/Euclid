@@ -272,7 +272,6 @@ export function melodyNoteNode(inst: Loop, lengthSteps: number, hz: number): Voi
   n.name = inst.name;
   n.pitch = [inst.pitch[0], inst.pitch[1]];
   n.gain = inst.gain;
-  n.preset = inst.preset;
   n.steps = Math.max(1, Math.round(lengthSteps));
   n.hits = 1;      // one hit, at step 0 (the note attack); the sound rings its own tail
   n.rotation = 0;

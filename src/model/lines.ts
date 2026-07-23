@@ -392,9 +392,6 @@ export interface VoiceNode {
   // degree). Set only on generated melody nodes; the engine swaps P.Pitch to it. Unset
   // on ordinary loop nodes, which keep their sound's own pitch.
   pitchHz?: number;
-  // Inline-shuffle editor state, so a reloaded node keeps shuffling where it left:
-  preset?: string;                          // active preset (Reset target + label)
-  ranges?: { lo: number[]; hi: number[] };  // live shuffle window per param
 }
 
 export function emptyNode(): VoiceNode {

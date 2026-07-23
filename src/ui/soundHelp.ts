@@ -552,11 +552,11 @@ for (let L = 0; L < 3; L++) {
 export const SHUFFLE_HELP: HelpItem[] = [
   {
     name: "🎲 Shuffle",
-    desc: "Rolls a new random sound: every randomizable parameter is redrawn inside the active preset's ranges, steered by the settings below. Volume and Choke are never touched.",
-    code: `// drumKit.ts — randomize(): one draw per param, inside its preset window
+    desc: "Rolls a new random sound: every randomizable parameter is redrawn across its full range, steered by the settings below. Volume and Choke are never touched.",
+    code: `// drumKit.ts — randomize(): one draw per param, across its full base range
 for (let i = 0; i < NUM_PARAMS; i++) {
   if (!s.randomizable) continue;
-  ...
+  const r = baseRange(id);
   v = lo + rand() * (hi - lo);
   this.set(id, v);
 }`,
@@ -570,34 +570,24 @@ play.onclick = () => this.cb.onAudition(drum);`,
   },
   {
     name: "Back",
-    desc: "Steps back one change — undoes the last Shuffle, preset pick, or Reset for this sound.",
+    desc: "Steps back one change — undoes the last Shuffle or Reset for this sound.",
     code: `// drumKit.ts — backAll(): pop the undo stack (one snapshot per change)
 const s = stack.pop()!;
-p.restore(s.values);
-p.restoreRanges(s.lo, s.hi);`,
+this.get(drum).restore(s.values);`,
   },
   {
     name: "Reset",
-    desc: "Returns every parameter to the active preset's values.",
-    code: `// drumKit.ts — resetToPreset(): values back to the preset (ranges kept)
-for (let i = 0; i < NUM_PARAMS; i++) {
-  this.set(id, this.preset.values[i] ?? getParamSpec(this.drum, id).def);
-}`,
-  },
-  {
-    name: "Preset button",
-    desc: "The coloured button names the active preset; tap it to pick a factory preset. A preset sets the sound AND the ranges Shuffle draws from, so it steers future rolls too.",
-    code: `// drumKit.ts — applyPreset(): each param gets a value AND a [lo, hi] window
-this.lo[id] = Math.min(r.max, Math.max(r.min, lo));
-this.hi[id] = Math.min(r.max, Math.max(r.min, hi));
-this.set(id, p.values[i] ?? getParamSpec(this.drum, id).def);`,
+    desc: "Returns the sound to the default starting sound (continuous params centred in their range, types/level at their defaults).",
+    code: `// drumKit.ts — resetToDefault(): centre continuous params, keep type/level defaults
+const keepDef = isDiscrete(s) || id === ParamId.Volume || id === ParamId.HitChance || id === ParamId.Gate;
+this.set(id, keepDef ? s.def : (s.min + s.max) / 2);`,
   },
   {
     name: "Randomness %",
-    desc: "How far a roll may wander from the current sound: at 10% values only nudge nearby, at 100% they're drawn from anywhere in the preset's range (and type controls like Wave reroll more often).",
-    code: `// drumKit.ts — the draw window lerps from the current value to the preset edges
-const lo = cur + (this.lo[id] - cur) * randomness;
-const hi = cur + (this.hi[id] - cur) * randomness;
+    desc: "How far a roll may wander from the current sound: at 10% values only nudge nearby, at 100% they're drawn from anywhere in the full range (and type controls like Wave reroll more often).",
+    code: `// drumKit.ts — the draw window lerps from the current value to the full-range edges
+const lo = cur + (r.min - cur) * randomness;
+const hi = cur + (r.max - cur) * randomness;
 // discrete "type" params reroll with probability = randomness
 if (hi > lo && rand() < randomness) this.set(id, lo + Math.floor(rand() * (hi - lo + 1)));`,
   },
@@ -628,7 +618,7 @@ const allowed = new Set(intervals(scale).map((iv) => (root + iv) % 12)); // Key`
   },
   {
     name: "Seed",
-    desc: "Type a seed to repeat a roll exactly — the same seed and preset give the same sound (exact at 100% randomness). Leave it empty for a fresh roll; the seed just used shows greyed so you can keep a good one.",
+    desc: "Type a seed to repeat a roll exactly — the same seed gives the same sound (exact at 100% randomness). Leave it empty for a fresh roll; the seed just used shows greyed so you can keep a good one.",
     code: `// drumKit.ts — seededRng(): hash the seed text, run a deterministic generator
 let h = 1779033703 ^ seed.length;
 h = Math.imul(h ^ seed.charCodeAt(i), 3432918353); // xmur3 → mulberry32

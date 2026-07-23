@@ -1,7 +1,7 @@
-// Per-drum parameter ranges — a faithful port of ParamSpec.cpp. A base spec per
-// parameter is overridden per drum so each voice stays "in character" (a kick
-// can't squeal, a hat lives bright, etc.). These ranges also feed the future
-// melody pitch-mapping (which centres a scale inside each drum's Pitch range).
+// Parameter specs (name / range / default / step / choices) — one base spec per param.
+// Every sound is a generic full-range sound: there is no per-drum "character" and no
+// preset system, so `getParamSpec` just returns the base spec. `baseRange` gives the
+// widest range a value may take (manual entry is clamped to it, and shuffle draws from it).
 
 import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
@@ -45,7 +45,7 @@ export const CHOKE_GROUPS = ["Off", "A", "B", "C", "D"];
 export const CRUSH_CHOICES = ["Off", "12-bit", "10-bit", "8-bit", "6-bit", "5-bit", "4-bit", "3-bit"];
 export const DOWNSAMPLE_CHOICES = ["Off", "2x", "3x", "4x", "6x", "8x", "12x", "16x"];
 // Unison voice count for the primary oscillator (index maps to a count in engine.js
-// UNISON_VOICES). "Off" = the single classic oscillator (today's behaviour).
+// UNISON_VOICES). "Off" = the single classic oscillator.
 export const UNISON_CHOICES = ["Off", "3", "5", "7"];
 // Modulation-FX flavours (a modulated delay / allpass cascade), mirrored in engine.js.
 export const MODFX_TYPES = ["Off", "Chorus", "Flanger", "Phaser"];
@@ -109,8 +109,8 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.Lfo3Target:     return make("Dest", 0, 10, 2, 1, 1, "", true, LFO_TARGETS);
     case ParamId.Lfo3Rate:       return make("Rate", 0.1, 40, 5, 0.4, 0.1, "Hz");
     case ParamId.Lfo3Depth:      return make("Amt", 0, 1, 0, 1, 0.02, "");
-    // --- Sound-verse expansion. Defaults are all "off/neutral" so existing sounds
-    // are unchanged; choice lists must stay in sync with the maps in engine.js. ---
+    // --- Sound-verse expansion. Defaults are all "off/neutral"; choice lists must stay
+    // in sync with the maps in engine.js. ---
     case ParamId.NoiseType:      return make("Noise Col", 0, 6, 0, 1, 1, "", true, NOISE_TYPES);
     case ParamId.OscModType:     return make("Mod", 0, 2, 0, 1, 1, "", true, OSC_MOD_TYPES);
     case ParamId.OscModRatio:    return make("Mod Ratio", 0.5, 12, 1, 0.5, 0.01, "x");
@@ -120,8 +120,7 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.Lfo1Shape:      return make("Shape", 0, 4, 0, 1, 1, "", true, LFO_SHAPES);
     case ParamId.Lfo2Shape:      return make("Shape", 0, 4, 0, 1, 1, "", true, LFO_SHAPES);
     case ParamId.Lfo3Shape:      return make("Shape", 0, 4, 0, 1, 1, "", true, LFO_SHAPES);
-    // 2nd oscillator + sync, wavefolder, and Karplus-Strong/comb resonator. All
-    // default to off/neutral so existing sounds are unchanged.
+    // 2nd oscillator + sync, wavefolder, and Karplus-Strong/comb resonator.
     case ParamId.Osc2Mix:        return make("Osc2", 0, 1, 0, 1, 0.02, "");
     case ParamId.Osc2Detune:     return make("Detune", -12, 12, 0, 1, 0.1, "st");
     case ParamId.Sync:           return make("Sync", 0, 1, 0, 1, 1, "", true, ON_OFF);
@@ -129,9 +128,8 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.CombMix:        return make("Comb", 0, 1, 0, 1, 0.02, "");
     case ParamId.CombTune:       return make("Comb Tune", 0.25, 4, 1, 0.5, 0.01, "x");
     case ParamId.CombDecay:      return make("Comb Decay", 0, 1, 0.5, 1, 0.02, "");
-    // Envelope curvature + layering. Shape 0.5 = linear (the pre-shape behaviour),
-    // so every existing sound is unchanged; the layer decays default to 0 = follow
-    // the amp envelope, and the click layer defaults to off.
+    // Envelope curvature + layering. Shape 0.5 = linear; the layer decays default to
+    // 0 = follow the amp envelope, and the click layer defaults to off.
     case ParamId.AmpAttackShape: return make("Att Shape", 0, 1, 0.5, 1, 0.01, "");
     case ParamId.AmpDecayShape:  return make("Dec Shape", 0, 1, 0.5, 1, 0.01, "");
     case ParamId.ToneDecay:      return make("Tone Dec", 0, 1.2, 0, 0.35, 0.005, "s");
@@ -139,7 +137,6 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.ClickLevel:     return make("Click", 0, 1, 0, 1, 0.02, "");
     case ParamId.ClickType:      return make("Click Type", 0, 4, 0, 1, 1, "", true, CLICK_TYPES);
     // Modal resonator bank, echo sync/ping-pong, pan, and the per-hit Life params.
-    // All defaults are neutral so existing sounds/patterns are unchanged.
     case ParamId.ModalMix:       return make("Modal", 0, 1, 0, 1, 0.02, "");
     case ParamId.ModalMaterial:  return make("Material", 0, 4, 0, 1, 1, "", true, MODAL_MATERIALS);
     case ParamId.ModalDecay:     return make("Modal Dec", 0, 1, 0.5, 1, 0.02, "");
@@ -161,7 +158,6 @@ export function baseSpec(id: ParamId): ParamSpec {
     // Not randomizable — it's a length choice, not part of the sound's character.
     case ParamId.Gate:           return make("Gate", 0.02, 30, 0.4, 0.2, 0.005, "s", false);
     // Sixth wave — fatter oscillators, modulation FX, wavetable morph oscillator.
-    // All default to Off/neutral so existing sounds are unchanged.
     case ParamId.Unison:         return make("Unison", 0, 3, 0, 1, 1, "", true, UNISON_CHOICES);
     case ParamId.UnisonDetune:   return make("Spread", 0, 1, 0.2, 1, 0.02, "");
     case ParamId.FmFeedback:     return make("FB", 0, 1, 0, 1, 0.02, "");
@@ -176,220 +172,14 @@ export function baseSpec(id: ParamId): ParamSpec {
   }
 }
 
-// Narrow a range and clamp the default into it.
-function setRange(s: ParamSpec, lo: number, hi: number, def: number) {
-  s.min = lo;
-  s.max = hi;
-  s.def = Math.min(hi, Math.max(lo, def));
+// Every sound is generic full-range now — no per-drum character. The `drum` arg is kept
+// only so existing callers (which pass a reference DrumType) stay unchanged.
+export function getParamSpec(_drum: DrumType, id: ParamId): ParamSpec {
+  return baseSpec(id);
 }
 
-export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
-  const s = baseSpec(id);
-
-  switch (drum) {
-    case DrumType.Kick:
-      // A short "Knock" click layers in the beater-on-head transient under the
-      // pitch-enveloped body; a touch of drive and a slightly percussive decay
-      // shape round out the punch.
-      if (id === ParamId.Pitch) setRange(s, 35, 95, 50);
-      if (id === ParamId.PitchEnvAmount) s.def = 3.0;
-      if (id === ParamId.PitchEnvDecay) s.def = 0.07;
-      if (id === ParamId.AmpDecay) setRange(s, 0.05, 1.2, 0.45);
-      if (id === ParamId.AmpDecayShape) s.def = 0.62;
-      if (id === ParamId.NoiseLevel) setRange(s, 0, 0.5, 0.03);
-      if (id === ParamId.ToneLevel) s.def = 1.0;
-      if (id === ParamId.FilterCutoff) s.def = 6000;
-      if (id === ParamId.ClickLevel) s.def = 0.25;
-      if (id === ParamId.ClickType) s.def = 2.0; // Knock
-      if (id === ParamId.Drive) s.def = 0.15;
-      break;
-
-    case DrumType.Snare:
-      // Pink noise body + a white "Snap" transient for the stick attack, plus a
-      // touch of the modal bank's Plate (inharmonic spread) standing in for the
-      // wire buzz under the tone.
-      if (id === ParamId.Pitch) setRange(s, 160, 240, 195);
-      if (id === ParamId.NoiseLevel) setRange(s, 0.1, 1.0, 0.7);
-      if (id === ParamId.NoiseType) s.def = 1.0; // Pink
-      if (id === ParamId.AmpDecay) setRange(s, 0.04, 0.6, 0.18);
-      if (id === ParamId.PitchEnvAmount) s.def = 0.6;
-      if (id === ParamId.FilterType) s.def = 2.0; // BP
-      if (id === ParamId.FilterCutoff) s.def = 2500;
-      if (id === ParamId.ClickLevel) s.def = 0.3;
-      if (id === ParamId.ClickType) s.def = 1.0; // Snap
-      if (id === ParamId.ModalMix) s.def = 0.15;
-      if (id === ParamId.ModalMaterial) s.def = 4.0; // Plate
-      if (id === ParamId.ModalDecay) s.def = 0.3;
-      break;
-
-    case DrumType.Clap:
-      // Real clap circuits (808/909) fire several quick noise bursts, not one hit —
-      // Ratchet's per-hit retrigger stands in for that flutter, narrowed high so
-      // it's almost always on (shuffle can thin it out, but rarely to a flat single
-      // hit, which would lose the identity).
-      if (id === ParamId.Pitch) setRange(s, 700, 1050, 850);
-      if (id === ParamId.NoiseLevel) setRange(s, 0.4, 1.0, 0.95);
-      if (id === ParamId.ToneLevel) s.def = 0.1;
-      if (id === ParamId.AmpDecay) setRange(s, 0.03, 0.4, 0.12);
-      if (id === ParamId.FilterType) s.def = 2.0; // BP
-      if (id === ParamId.FilterCutoff) s.def = 1500;
-      if (id === ParamId.FilterReso) s.def = 1.5;
-      if (id === ParamId.Ratchet) setRange(s, 0.4, 1.0, 0.7);
-      break;
-
-    case DrumType.ClosedHat:
-      // Metal (sample-and-hold decimated) noise reads as gritty analog-drum-machine
-      // hat instead of plain hiss.
-      if (id === ParamId.Pitch) setRange(s, 1300, 2400, 1700);
-      if (id === ParamId.Waveform) s.def = 2.0; // Square
-      if (id === ParamId.NoiseLevel) setRange(s, 0.4, 1.0, 0.95);
-      if (id === ParamId.NoiseType) s.def = 6.0; // Metal
-      if (id === ParamId.ToneLevel) s.def = 0.2;
-      if (id === ParamId.AmpDecay) setRange(s, 0.01, 0.2, 0.05);
-      if (id === ParamId.FilterType) s.def = 1.0; // HP
-      if (id === ParamId.FilterCutoff) s.def = 8000;
-      break;
-
-    case DrumType.OpenHat:
-      // Same Metal noise source as the Closed Hat (one physical instrument, two
-      // envelopes) so the pair reads as matched hardware.
-      if (id === ParamId.Pitch) setRange(s, 1300, 2400, 1700);
-      if (id === ParamId.Waveform) s.def = 2.0; // Square
-      if (id === ParamId.NoiseLevel) setRange(s, 0.4, 1.0, 0.95);
-      if (id === ParamId.NoiseType) s.def = 6.0; // Metal
-      if (id === ParamId.ToneLevel) s.def = 0.2;
-      if (id === ParamId.AmpDecay) setRange(s, 0.08, 0.9, 0.35);
-      if (id === ParamId.FilterType) s.def = 1.0; // HP
-      if (id === ParamId.FilterCutoff) s.def = 8000;
-      break;
-
-    case DrumType.LowTom:
-      // Membrane modal resonance under the pitch-enveloped tone stands in for the
-      // drum shell — toms are literal membranophones, the modal bank's most
-      // natural home in the kit. Ring scales with tom size (low = longest).
-      if (id === ParamId.Pitch) setRange(s, 80, 130, 95);
-      if (id === ParamId.PitchEnvAmount) s.def = 1.0;
-      if (id === ParamId.AmpDecay) setRange(s, 0.1, 0.9, 0.4);
-      if (id === ParamId.AmpDecayShape) s.def = 0.6;
-      if (id === ParamId.NoiseLevel) setRange(s, 0, 0.3, 0.05);
-      if (id === ParamId.ModalMix) s.def = 0.2;
-      if (id === ParamId.ModalMaterial) s.def = 0.0; // Membrane
-      if (id === ParamId.ModalDecay) s.def = 0.6;
-      break;
-
-    case DrumType.MidTom:
-      if (id === ParamId.Pitch) setRange(s, 140, 190, 160);
-      if (id === ParamId.PitchEnvAmount) s.def = 1.0;
-      if (id === ParamId.AmpDecay) setRange(s, 0.1, 0.9, 0.35);
-      if (id === ParamId.AmpDecayShape) s.def = 0.6;
-      if (id === ParamId.NoiseLevel) setRange(s, 0, 0.3, 0.05);
-      if (id === ParamId.ModalMix) s.def = 0.18;
-      if (id === ParamId.ModalMaterial) s.def = 0.0; // Membrane
-      if (id === ParamId.ModalDecay) s.def = 0.5;
-      break;
-
-    case DrumType.HighTom:
-      if (id === ParamId.Pitch) setRange(s, 200, 270, 235);
-      if (id === ParamId.PitchEnvAmount) s.def = 1.0;
-      if (id === ParamId.AmpDecay) setRange(s, 0.08, 0.7, 0.3);
-      if (id === ParamId.AmpDecayShape) s.def = 0.6;
-      if (id === ParamId.NoiseLevel) setRange(s, 0, 0.3, 0.05);
-      if (id === ParamId.ModalMix) s.def = 0.15;
-      if (id === ParamId.ModalMaterial) s.def = 0.0; // Membrane
-      if (id === ParamId.ModalDecay) s.def = 0.4;
-      break;
-
-    case DrumType.Rim:
-      // A violet-noise "Tick" click sharpens the stick-on-rim transient on top of
-      // the short tonal body.
-      if (id === ParamId.Pitch) setRange(s, 350, 650, 480);
-      if (id === ParamId.Waveform) s.def = 2.0; // Square
-      if (id === ParamId.AmpDecay) setRange(s, 0.01, 0.12, 0.03);
-      if (id === ParamId.NoiseLevel) setRange(s, 0, 0.5, 0.15);
-      if (id === ParamId.NoiseType) s.def = 4.0; // Violet
-      if (id === ParamId.PitchEnvAmount) s.def = 1.5;
-      if (id === ParamId.FilterType) s.def = 2.0; // BP
-      if (id === ParamId.FilterCutoff) s.def = 3000;
-      if (id === ParamId.ClickLevel) s.def = 0.35;
-      if (id === ParamId.ClickType) s.def = 0.0; // Tick
-      break;
-
-    case DrumType.Cowbell:
-      // The real TR-808 cowbell circuit mixes two square waves (~540Hz + ~800Hz,
-      // roughly a fifth apart) through a resonant bandpass — Osc2 detuned +7
-      // semitones reproduces that two-oscillator clang.
-      if (id === ParamId.Pitch) setRange(s, 540, 820, 600);
-      if (id === ParamId.Waveform) s.def = 2.0; // Square
-      if (id === ParamId.AmpDecay) setRange(s, 0.05, 0.5, 0.2);
-      if (id === ParamId.NoiseLevel) setRange(s, 0, 0.3, 0.05);
-      if (id === ParamId.ToneLevel) s.def = 0.9;
-      if (id === ParamId.FilterType) s.def = 2.0; // BP
-      if (id === ParamId.FilterCutoff) s.def = 2500;
-      if (id === ParamId.FilterReso) s.def = 2.0;
-      if (id === ParamId.Osc2Mix) s.def = 0.55;
-      if (id === ParamId.Osc2Detune) setRange(s, 5, 9, 7); // ~a fifth: the 540/800Hz clang
-      break;
-
-    case DrumType.Wobble:
-      // Old-school dubstep wobble: a lightly detuned square reese whose LP filter is
-      // swung by a BEAT-LOCKED sine LFO. Lfo1Sync is narrowed to musical divisions
-      // (1/16..1/4, default 1/8), so shuffles change the wobble speed but always stay
-      // on the grid; LfoRate only applies if the user switches Sync back to Free.
-      // Kept clean on purpose: noise capped low, moderate reso/drive — growl, not
-      // screech.
-      if (id === ParamId.Pitch) setRange(s, 30, 90, 50);
-      if (id === ParamId.PitchEnvAmount) s.def = 0.0;
-      if (id === ParamId.Waveform) s.def = 2.0; // Square
-      if (id === ParamId.ToneLevel) s.def = 1.0;
-      if (id === ParamId.NoiseLevel) setRange(s, 0, 0.2, 0);
-      if (id === ParamId.Osc2Mix) s.def = 0.4;
-      if (id === ParamId.Osc2Detune) setRange(s, -0.5, 0.5, 0.2); // reese beating, never dissonant
-      if (id === ParamId.AmpAttack) s.def = 0.005;
-      if (id === ParamId.AmpDecay) setRange(s, 0.05, 1.5, 0.25);
-      if (id === ParamId.AmpSustain) s.def = 0.85;
-      if (id === ParamId.AmpRelease) s.def = 0.15;
-      if (id === ParamId.FilterType) s.def = 0.0; // LP
-      if (id === ParamId.FilterCutoff) setRange(s, 100, 3500, 500);
-      if (id === ParamId.FilterReso) s.def = 2.5;
-      if (id === ParamId.LfoTarget) s.def = 1.0; // Filter
-      if (id === ParamId.LfoRate) setRange(s, 0.5, 20, 9);
-      if (id === ParamId.Lfo1Sync) setRange(s, 2, 6, 4); // 1/16 .. 1/4, def 1/8
-      if (id === ParamId.LfoDepth) s.def = 0.85;
-      if (id === ParamId.Drive) s.def = 0.3;
-      if (id === ParamId.Unison) s.def = 1.0; // 3-voice unison thickens the reese
-      if (id === ParamId.UnisonDetune) s.def = 0.25;
-      break;
-
-    case DrumType.SynthBass:
-      // Clean sustained synth bass for basslines/melodies. An Osc2 sub layer one
-      // octave down thickens the low end without adding movement (that's Wobble's
-      // job) — no LFO here on purpose.
-      if (id === ParamId.Pitch) setRange(s, 40, 200, 90);
-      if (id === ParamId.Waveform) s.def = 2.0; // Square
-      if (id === ParamId.PitchEnvAmount) s.def = 0.2;
-      if (id === ParamId.PitchEnvDecay) s.def = 0.03;
-      if (id === ParamId.ToneLevel) s.def = 1.0;
-      if (id === ParamId.AmpAttack) s.def = 0.005;
-      if (id === ParamId.AmpDecay) setRange(s, 0.05, 1.5, 0.4);
-      if (id === ParamId.AmpSustain) s.def = 0.6;
-      if (id === ParamId.AmpRelease) s.def = 0.1;
-      if (id === ParamId.FilterType) s.def = 0.0; // LP
-      if (id === ParamId.FilterCutoff) setRange(s, 80, 8000, 1200);
-      if (id === ParamId.FilterReso) s.def = 1.2;
-      if (id === ParamId.Drive) s.def = 0.2;
-      if (id === ParamId.Osc2Mix) s.def = 0.35;
-      if (id === ParamId.Osc2Detune) s.def = -12; // one octave down
-      if (id === ParamId.Unison) s.def = 1.0; // subtle 3-voice width under the sub
-      if (id === ParamId.UnisonDetune) s.def = 0.15;
-      break;
-  }
-
-  return s;
-}
-
-/** The absolute (widest) range for a parameter, independent of any drum/preset.
-    Manual numeric entry is clamped to this, so a value can exceed the active
-    preset's range but never break the engine. Also defines the "Full Range" preset. */
+/** The widest range a parameter may take. Manual numeric entry is clamped to this, and
+    shuffle draws from it. */
 export function baseRange(id: ParamId): { min: number; max: number } {
   const s = baseSpec(id);
   return { min: s.min, max: s.max };

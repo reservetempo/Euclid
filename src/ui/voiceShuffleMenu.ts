@@ -1,30 +1,29 @@
 // The per-loop shuffle menu: a compact panel that lets you audition sounds live on
 // one loop while the track plays. It mirrors the shuffle controls from the deep
 // Sounds view (Shuffle / recap / Back / Reset / Randomness / Spread / Max-len /
-// Snap / Seed / Presets) — a shuffled sound just swaps straight into the loop (the
-// app writes it back and resends the sound table, so the engine picks it up on the
-// loop's next "on" step).
+// Snap / Seed) — a shuffled sound just swaps straight into the loop (the app writes
+// it back and resends the sound table, so the engine picks it up on the loop's next
+// "on" step).
 
 import { DrumKit } from "../model/drumKit";
 import { DrumType } from "../model/drums";
 import { ParamId } from "../model/params";
 import { getParamSpec, formatValue } from "../model/paramSpec";
-import { FACTORY_PRESETS, Preset } from "../model/presets";
 import {
   ShuffleSettings, shuffleOptions, randomSeed,
-  mkBtn, textOn, selectRow, seedRow, randomnessRow, shuffleButton,
+  mkBtn, selectRow, seedRow, randomnessRow, shuffleButton,
   normFromRange, valueFromRange,
   CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS,
 } from "./controls";
 
-/** The per-loop editor: its shuffle settings plus the kit holding the live params,
-    ranges, and undo stack for this one loop's sound. */
+/** The per-loop editor: its shuffle settings plus the kit holding the live params
+    and undo stack for this one loop's sound. */
 export interface VoiceEditor extends ShuffleSettings {
   kit: DrumKit;
 }
 
 export interface VoiceMenuCallbacks {
-  // A whole-sound change happened (shuffle/back/reset/preset): write the kit back into
+  // A whole-sound change happened (shuffle/back/reset): write the kit back into
   // the loop, resend the sound table, persist, redraw the rings. No audio. May be
   // async (the app re-levels the sound offline) — the menu awaits it before the
   // audition so the preview plays at the corrected loudness.
@@ -50,7 +49,6 @@ export function buildVoiceShuffleMenu(
 ): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "voice-shuffle";
-  let showPresets = false; // presets stay hidden behind their button until toggled
   let rolled = false;      // one-shot: spin the die on the render right after a shuffle
 
   // Apply a kit mutation, then push it into the loop (awaiting its loudness
@@ -107,32 +105,6 @@ export function buildVoiceShuffleMenu(
     // sound; see engine.js). Commits on release: persist, then audition the new length.
     panel.append(gateRow(editor.kit.get(drum), drum, afterChange));
 
-    // Presets live behind a button that shows the active preset's name + colour; tapping
-    // it reveals the grid of character windows. Picking one applies it and collapses.
-    const p = editor.kit.get(drum);
-    const presetBtn = mkBtn(p.presetName(), "cat-btn preset-name-btn");
-    const col = p.presetColor();
-    presetBtn.style.background = col;
-    presetBtn.style.color = textOn(col);
-    presetBtn.style.borderColor = "transparent";
-    presetBtn.onclick = () => { showPresets = !showPresets; render(); };
-    panel.append(presetBtn);
-
-    if (showPresets) {
-      const presets = document.createElement("div");
-      presets.className = "voice-preset-grid";
-      FACTORY_PRESETS.forEach((preset: Preset, i) => {
-        const tile = presetTile(preset.name, preset.color, () => {
-          editor.kit.applyPreset(drum, preset);
-          showPresets = false;
-          afterChange();
-        });
-        tile.style.setProperty("--i", String(i)); // staggered pop-in
-        presets.append(tile);
-      });
-      panel.append(presets);
-    }
-
     // Full Parameters: open the deep per-parameter editor for this loop (live).
     const full = mkBtn("Full Parameters", "cat-btn full-params-btn");
     full.onclick = () => cb.onFullParams();
@@ -141,15 +113,6 @@ export function buildVoiceShuffleMenu(
 
   render();
   return panel;
-}
-
-function presetTile(name: string, color: string, onPick: () => void): HTMLButtonElement {
-  const b = mkBtn(name, "preset-tile");
-  b.style.background = color;
-  b.style.color = textOn(color);
-  b.style.borderColor = "transparent";
-  b.onclick = onPick;
-  return b;
 }
 
 /** A compact Gate slider (note-hold in seconds), skew-mapped like the deep editor's

@@ -225,8 +225,6 @@ export interface Loop {
   transitions?: LoopTransition[];
   accent?: LifePlacement; // per-loop deterministic accent placement (overrides sound's own)
   ghost?: LifePlacement;  // per-loop deterministic ghost placement (overrides sound's own)
-  preset?: string;
-  ranges?: { lo: number[]; hi: number[] };
   rule: PlacementRule;
 }
 
@@ -466,8 +464,6 @@ export function loopToNode(loop: Loop, reps = 1): VoiceNode {
   n.outro = loop.outro ? { ...loop.outro, modes: loop.outro.modes?.slice() } : undefined;
   n.accent = loop.accent ? { ...loop.accent } : undefined;
   n.ghost = loop.ghost ? { ...loop.ghost } : undefined;
-  n.preset = loop.preset;
-  n.ranges = loop.ranges ? { lo: loop.ranges.lo.slice(), hi: loop.ranges.hi.slice() } : undefined;
   clampEnvelopes(n);
   return n;
 }
@@ -711,8 +707,6 @@ export function cloneLoop(loop: Loop): Loop {
       : undefined,
     accent: loop.accent ? { ...loop.accent } : undefined,
     ghost: loop.ghost ? { ...loop.ghost } : undefined,
-    preset: loop.preset,
-    ranges: loop.ranges ? { lo: loop.ranges.lo.slice(), hi: loop.ranges.hi.slice() } : undefined,
     rule: {
       every,
       forBars: loop.rule.forBars,

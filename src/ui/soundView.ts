@@ -13,11 +13,10 @@ import {
   ParamId, ParamGroup, NUM_PARAMS, getParamGroup, getParamGroupName,
 } from "../model/params";
 import { getParamSpec, formatValue, isDiscrete } from "../model/paramSpec";
-import { FACTORY_PRESETS, Preset } from "../model/presets";
 import {
   CURVE_OPTIONS, MAXLEN_OPTIONS, SNAP_OPTIONS, ShuffleSettings,
   defaultShuffleSettings, shuffleOptions, randomSeed,
-  mkBtn, textOn, selectRow, seedRow, randomnessRow, shuffleButton,
+  mkBtn, selectRow, seedRow, randomnessRow, shuffleButton,
   normFromRange, valueFromRange,
 } from "./controls";
 import { helpButton, paramHelpItems, SHUFFLE_HELP } from "./soundHelp";
@@ -131,56 +130,7 @@ export class SoundView {
     return nav;
   }
 
-  // Presets: a single button labelled with the active preset's name + colour (Full
-  // Range by default); tapping it opens the grid of factory presets. Sits in the
-  // Back/Reset row, small like those buttons.
-  private presetButton(): HTMLButtonElement {
-    const presetBtn = mkBtn(this.params().presetName(), "cat-btn preset-name-btn");
-    const col = this.params().presetColor();
-    presetBtn.style.background = col;
-    presetBtn.style.color = textOn(col);
-    presetBtn.style.borderColor = "transparent";
-    presetBtn.onclick = () => this.openPresetGrid(presetBtn);
-    return presetBtn;
-  }
-
-  // Grid overlay of every factory preset.
-  private openPresetGrid(anchor: HTMLElement): void {
-    const existing = this.el.querySelector(".preset-grid");
-    if (existing) { existing.remove(); return; }
-
-    const panel = document.createElement("div");
-    panel.className = "preset-grid";
-
-    FACTORY_PRESETS.forEach((p, i) => {
-      const b = document.createElement("button");
-      b.className = "preset-tile";
-      b.textContent = p.name;
-      b.style.setProperty("--i", String(i)); // staggered pop-in
-      b.style.background = p.color;
-      b.style.color = textOn(p.color);
-      b.style.borderColor = "transparent";
-      b.onclick = () => { panel.remove(); this.applyPreset(p); };
-      panel.append(b);
-    });
-
-    anchor.parentElement?.append(panel);
-    // Dismiss on the next outside tap.
-    const close = (ev: PointerEvent) => {
-      if (!panel.contains(ev.target as Node) && ev.target !== anchor) {
-        panel.remove();
-        document.removeEventListener("pointerdown", close, true);
-      }
-    };
-    setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
-  }
-
-  private applyPreset(p: Preset): void {
-    this.kit.applyPreset(this.drum, p);
-    this.afterReplace();
-  }
-
-  // After a whole-sound replacement (preset/shuffle/reset/back): resend params
+  // After a whole-sound replacement (shuffle/reset/back): resend params
   // + pitch range (awaiting the host's re-level pass when it provides one), then
   // audition and rebuild (values + Back-enabled state).
   private async afterReplace(): Promise<void> {
@@ -222,7 +172,7 @@ export class SoundView {
     sum.append(play, txt);
     sec.append(sum);
 
-    // Back / Reset / Preset — one small-button row.
+    // Back / Reset — one small-button row.
     const br = document.createElement("div");
     br.className = "sound-lib";
     const back = mkBtn("Back", "cat-btn");
@@ -230,7 +180,7 @@ export class SoundView {
     back.disabled = !this.kit.canBack(drum);
     back.onclick = () => { if (this.kit.backAll(drum)) this.afterReplace(); };
     reset.onclick = () => { this.kit.resetAll(drum); this.afterReplace(); };
-    br.append(back, reset, this.presetButton(), helpButton("Shuffle", SHUFFLE_HELP));
+    br.append(back, reset, helpButton("Shuffle", SHUFFLE_HELP));
     sec.append(br);
 
     sec.append(randomnessRow(this.st));

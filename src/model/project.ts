@@ -62,8 +62,6 @@ export interface LoopJSON {
   outro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number };
   accent?: LifePlacement;
   ghost?: LifePlacement;
-  preset?: string;
-  ranges?: { lo: number[]; hi: number[] };
   transitions?: LoopTransitionJSON[]; // per-loop sound → transformed-sound transitions
   rule: RuleJSON;
 }
@@ -99,8 +97,6 @@ export interface ProjectJSON {
   scale?: number;
   colors?: ColorJSON[];
   drums?: Record<number, number[]>;
-  ranges?: Record<number, { lo: number[]; hi: number[] }>;
-  presets?: Record<number, string>;
   soundName?: string;
   melodies?: MelodyItemJSON[];  // the melody row: a list of placeable per-instrument melodies
 }
@@ -149,8 +145,6 @@ const cloneLoop = (l: Loop): LoopJSON => ({
   outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, modes: l.outro.modes?.slice(), toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir, shape: l.outro.shape, cycles: l.outro.cycles } : undefined,
   accent: l.accent ? { ...l.accent } : undefined,
   ghost: l.ghost ? { ...l.ghost } : undefined,
-  preset: l.preset,
-  ranges: l.ranges ? { lo: l.ranges.lo.slice(), hi: l.ranges.hi.slice() } : undefined,
   rule: {
     every: l.rule.every,
     forBars: l.rule.forBars,
@@ -171,12 +165,8 @@ export function serialize(
   track: Track, kit: DrumKit, tempo: number, drums: DrumType[], soundName: string
 ): ProjectJSON {
   const drumSnaps: Record<number, number[]> = {};
-  const drumRanges: Record<number, { lo: number[]; hi: number[] }> = {};
-  const drumPresets: Record<number, string> = {};
   for (const d of drums) {
     drumSnaps[d] = kit.get(d).capture();
-    drumRanges[d] = kit.get(d).captureRanges();
-    drumPresets[d] = kit.get(d).presetName();
   }
   return {
     version: 12,
@@ -190,8 +180,6 @@ export function serialize(
       loops: c.loops.map(cloneLoop),
     })),
     drums: drumSnaps,
-    ranges: drumRanges,
-    presets: drumPresets,
     soundName,
     melodies: track.melodies.map((m) => ({ inst: cloneLoop(m.inst), node: cloneMelody(m.node) })),
   };
@@ -428,9 +416,6 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     outro: readEnv(s.outro, "outro"),
     accent: readLife(s.accent),
     ghost: readLife(s.ghost),
-    preset: typeof s.preset === "string" ? s.preset : undefined,
-    ranges: s.ranges && Array.isArray(s.ranges.lo) && Array.isArray(s.ranges.hi)
-      ? { lo: s.ranges.lo.slice(), hi: s.ranges.hi.slice() } : undefined,
     transitions: readTransitions(s.transitions),
     rule: readRule(s.rule),
   };
@@ -503,11 +488,6 @@ export function deserialize(
   // (Any other version: track left blank on purpose — only tempo + kit below are restored.)
 
   for (const d of drums) {
-    // Ranges first so values clamp against the right window (see DrumParameters).
-    const name = json.presets?.[d];
-    if (name) kit.adoptPresetByName(d, name);
-    const r = json.ranges?.[d];
-    if (r && Array.isArray(r.lo) && Array.isArray(r.hi)) kit.get(d).restoreRanges(r.lo, r.hi);
     const snap = json.drums?.[d];
     if (snap) kit.get(d).restore(snap);
   }

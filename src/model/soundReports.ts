@@ -10,7 +10,6 @@ export type ReportKind = "high" | "low";
 export interface SoundReport {
   at: string;             // ISO timestamp of the swipe
   name: string;           // the generated recap name (the sound's identity)
-  preset?: string;        // active shuffle preset window
   seed?: string;          // seed of the LAST shuffle, when one was rolled
   tempo: number;          // bpm when flagged (synced echoes/LFOs depend on it)
   gain?: number;          // loudness makeup that was applied (see VoiceNode.gain)
