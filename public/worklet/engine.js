@@ -42,6 +42,10 @@ const P = {
   Lfo1Sync: 62, Lfo2Sync: 63, Lfo3Sync: 64,
   // Per-sound note-hold in seconds (0/absent = the sequencer's default gate).
   Gate: 65,
+  // Sixth wave — fatter oscillators, modulation FX, wavetable morph oscillator
+  // (appended after Gate; see ParamId in src/model/params.ts). All default to off/neutral.
+  Unison: 66, UnisonDetune: 67, FmFeedback: 68, WaveTable: 69, WavePosition: 70,
+  ModFxType: 71, ModFxRate: 72, ModFxDepth: 73, ModFxFeedback: 74, ModFxMix: 75,
 };
 
 // Read a snapshot index that may not exist in older saves (undefined/null -> default).
@@ -51,7 +55,11 @@ const rd = (s, idx, def) => (s[idx] === undefined || s[idx] === null ? def : s[i
 // LFO_NONE disables the LFO (handled by falling through the routing switch); the
 // newer destinations sit AFTER it so old saves keep meaning what they meant.
 const LFO_PITCH = 0, LFO_FILTER = 1, LFO_AMP = 2, LFO_DRIVE = 3, LFO_RESO = 4, LFO_WAVE = 5, LFO_NONE = 6;
-const LFO_NOISE = 7, LFO_CRUSH = 8, LFO_RING = 9;
+const LFO_NOISE = 7, LFO_CRUSH = 8, LFO_RING = 9, LFO_WTPOS = 10; // WTPos = wavetable scan sweep
+
+// Primary-oscillator unison voice count per Unison index (0 = Off = single voice).
+const UNISON_VOICES = [1, 3, 5, 7];
+const UNISON_MAX = 7;                 // sized for the phase/detune scratch arrays
 
 // Sound-verse expansion lookup tables — keep in sync with the choice lists in
 // src/model/paramSpec.ts (the stored param is the index into these).
@@ -100,6 +108,81 @@ const VOWELS = [
 const VOWEL_GAINS = [1, 0.5, 0.25];
 const VOWEL_MAKEUP = 1.5;
 
+// --- Wavetable morph oscillator bank --------------------------------------------
+// Each family is a set of morph FRAMES; WavePosition scans/crossfades between them.
+// Every frame is band-limited into MIP levels (harmonic caps) so high notes don't
+// alias — the standard band-limited-wavetable technique. Built once at module load by
+// additive synthesis: harmonics are accumulated into one running table and snapshotted
+// at each mip's harmonic cap (a single pass per frame). Keep WATABLES/WAVETABLES in
+// src/model/paramSpec.ts in sync: family index here = stored WaveTable value minus 1.
+const WT_SIZE = 2048;                 // power of two, so phase wrap is a bit-mask
+const WT_FRAMES = 4;                  // morph frames per family
+const WT_MIP_CAPS = [256, 64, 16];    // harmonics kept per mip (bright -> dull)
+const WT_SIN = new Float32Array(WT_SIZE);
+// Math.PI*2 spelled out: this table is built at module load, before TWO_PI is declared.
+for (let i = 0; i < WT_SIZE; i++) WT_SIN[i] = Math.sin((Math.PI * 2 * i) / WT_SIZE);
+// Per-family harmonic amplitude for harmonic h (1-based) at morph position m (0..1).
+const WT_FAMILIES = [
+  // Formant: a resonant peak that slides UP the harmonic series as m rises.
+  (h, m) => { const peak = 1 + m * 22, bw = 4; return Math.exp(-((h - peak) * (h - peak)) / (2 * bw * bw)); },
+  // Harmonic: a near-sine that opens into a full 1/h saw as m rises.
+  (h, m) => (1 / h) * Math.exp(-h * (1 - m) * 0.12),
+  // Vocal: a fixed low formant plus a second peak that moves with m (vowel-ish).
+  (h, m) => (Math.exp(-((h - 3) * (h - 3)) / 6) + 0.6 * Math.exp(-((h - (6 + m * 18)) * (h - (6 + m * 18))) / 10)) / Math.sqrt(h),
+  // Digital: odd-harmonic square morphing toward a bright inharmonic comb.
+  (h, m) => { const odd = h % 2 ? 1 / h : 0; const comb = (1 / h) * (0.5 + 0.5 * Math.sin(h * (1 + m * 3))); return odd * (1 - m) + comb * m; },
+];
+function buildWavetableBank() {
+  const bank = [];
+  const maxH = WT_MIP_CAPS[0];
+  for (let fam = 0; fam < WT_FAMILIES.length; fam++) {
+    const prof = WT_FAMILIES[fam];
+    const frames = [];
+    for (let fr = 0; fr < WT_FRAMES; fr++) {
+      const m = WT_FRAMES > 1 ? fr / (WT_FRAMES - 1) : 0;
+      const mips = WT_MIP_CAPS.map(() => new Float32Array(WT_SIZE));
+      const acc = new Float32Array(WT_SIZE);
+      let mip = WT_MIP_CAPS.length - 1; // start at the dullest cap and brighten
+      for (let h = 1; h <= maxH; h++) {
+        const a = prof(h, m) || 0;
+        if (a > 1e-6 || a < -1e-6) {
+          for (let i = 0; i < WT_SIZE; i++) acc[i] += a * WT_SIN[(h * i) % WT_SIZE];
+        }
+        while (mip >= 0 && h === WT_MIP_CAPS[mip]) { mips[mip].set(acc); mip--; }
+      }
+      for (const t of mips) {                 // normalise each mip to unit peak
+        let pk = 1e-9;
+        for (let i = 0; i < WT_SIZE; i++) { const v = t[i] < 0 ? -t[i] : t[i]; if (v > pk) pk = v; }
+        const g = 1 / pk;
+        for (let i = 0; i < WT_SIZE; i++) t[i] *= g;
+      }
+      frames.push(mips);
+    }
+    bank.push(frames);
+  }
+  return bank;
+}
+const WT_BANK = buildWavetableBank();
+// Read family `fam` (0-based) at morph `pos`, phase `ph` (0..1), picking a mip from the
+// per-sample phase step `dt` so partials stay below Nyquist; crossfades the two frames
+// nearest `pos` and linearly interpolates within the table.
+function wtSample(fam, pos, ph, dt) {
+  const frames = WT_BANK[fam];
+  const maxHarm = 0.5 / (dt > 1e-6 ? dt : 1e-6);
+  let mip = WT_MIP_CAPS.length - 1;
+  for (let mm = 0; mm < WT_MIP_CAPS.length; mm++) { if (WT_MIP_CAPS[mm] <= maxHarm) { mip = mm; break; } }
+  const fp = clamp(pos, 0, 1) * (WT_FRAMES - 1);
+  const f0 = Math.min(WT_FRAMES - 1, fp | 0);
+  const f1 = Math.min(WT_FRAMES - 1, f0 + 1);
+  const ff = fp - f0;
+  const t0 = frames[f0][mip], t1 = frames[f1][mip];
+  const x = ph * WT_SIZE;
+  const i0 = x | 0, fr = x - i0, i1 = (i0 + 1) & (WT_SIZE - 1);
+  const s0 = t0[i0] * (1 - fr) + t0[i1] * fr;
+  const s1 = t1[i0] * (1 - fr) + t1[i1] * fr;
+  return s0 * (1 - ff) + s1 * ff;
+}
+
 // Echo tempo-sync divisions in BEATS (quarter notes) per EchoSync index; 0 = Free
 // (use EchoTime seconds). Mirrors ECHO_SYNC_BEATS in src/model/paramSpec.ts.
 const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
@@ -119,15 +202,17 @@ const RATCHET_VEL_DECAY = 0.85; // each ratchet sub-hit is a bit quieter
 const CHOKE_RELEASE = 0.02;   // seconds — fast fade when a choke group cuts a sound
 
 // Deterministic accent/ghost weight (0..1) for one hit, from a per-loop LifePlacement
-// (see lines.ts). "everyN" marks every Nth hit at full weight (hits 0, N, 2N… — so the
-// downbeat is hit 0), the rest 0. "ramp" swells the weight across the loop (pos01 0→1),
-// bent from linear (curve 0) toward exponential (curve 1), growing toward the loop's END
-// (dir "up") or its START (dir "down").
+// (see lines.ts). "everyN" marks one hit per group of N at full weight, the rest 0: the
+// offset picks WHICH hit in each group (0 = the first, so hits 0, N, 2N…; 1 = the second;
+// a negative offset counts from the end, -1 = the last). "ramp" swells the weight across
+// the loop (pos01 0→1), bent from linear (curve 0) toward exponential (curve 1), growing
+// toward the loop's END (dir "up") or its START (dir "down").
 function lifeWeight(spec, hitIndex, pos01) {
   if (!spec) return 0;
   if (spec.mode === "everyN") {
     const n = Math.max(1, spec.every | 0);
-    return (hitIndex % n) === 0 ? 1 : 0;
+    const off = spec.offset | 0;
+    return ((((hitIndex - off) % n) + n) % n) === 0 ? 1 : 0;
   }
   const exp = Math.pow(4, clamp(spec.curve || 0, 0, 1)); // 1 (linear) .. 4 (exponential)
   const t = spec.dir === "down" ? 1 - pos01 : pos01;
@@ -466,6 +551,13 @@ class Voice {
     // 2nd oscillator (+ hard sync), wavefolder, comb resonator.
     this.osc2Mix = 0; this.osc2Ratio = 1; this.osc2Phase = 0; this.sync = false;
     this.fold = 0;
+    // Fatter oscillators: primary-osc unison stack + FM operator self-feedback, and a
+    // wavetable morph oscillator that replaces the analog shape when wtFamily > 0.
+    this.unisonCount = 1; this.unisonNorm = 1;
+    this.uPhase = new Float32Array(UNISON_MAX);
+    this.uDetune = new Float32Array(UNISON_MAX);
+    this.fmFeedback = 0; this.fbMod = 0;
+    this.wtFamily = 0; this.wtPos = 0;
     this.combMix = 0; this.combRatio = 1; this.combFb = 0;
     this.comb = new KarplusComb();
     // Layer envelopes (per-source exponential decays) + click transient state.
@@ -549,6 +641,22 @@ class Voice {
     this.osc2Phase = 0;
     this.sync = Math.round(s[P.Sync]) >= 1;
     this.fold = clamp(s[P.Fold], 0, 1);
+
+    // Fatter oscillators: unison stack (primary osc only), FM operator self-feedback,
+    // and the wavetable morph oscillator. All read via rd() so old snapshots default off.
+    const uIdx = clamp(Math.round(rd(s, P.Unison, 0)) | 0, 0, UNISON_VOICES.length - 1);
+    this.unisonCount = UNISON_VOICES[uIdx];
+    this.unisonNorm = 1 / Math.sqrt(this.unisonCount);
+    const spreadCents = clamp(rd(s, P.UnisonDetune, 0), 0, 1) * 50; // up to ~50 cents each way
+    for (let u = 0; u < this.unisonCount; u++) {
+      const c = this.unisonCount > 1 ? (u / (this.unisonCount - 1)) * 2 - 1 : 0; // -1..1
+      this.uDetune[u] = Math.pow(2, (c * spreadCents) / 1200);
+      this.uPhase[u] = this.rng() * 0.5 + 0.5; // decorrelate the stack (rng is -1..1)
+    }
+    this.fmFeedback = clamp(rd(s, P.FmFeedback, 0), 0, 1) * Math.PI; // up to ±π feedback
+    this.fbMod = 0;
+    this.wtFamily = clamp(Math.round(rd(s, P.WaveTable, 0)) | 0, 0, WT_FAMILIES.length);
+    this.wtPos = clamp(rd(s, P.WavePosition, 0), 0, 1);
     this.combMix = clamp(s[P.CombMix], 0, 1);
     this.combRatio = s[P.CombTune] > 0 ? s[P.CombTune] : 1;
     this.combFb = 0.85 + clamp(s[P.CombDecay], 0, 1) * 0.14; // 0.85 (pluck) .. 0.99 (string)
@@ -689,7 +797,7 @@ class Voice {
       }
       // Evaluate the three LFOs and fold each into its destination's modulator.
       let pitchMul = 1, cutoffMul = 1, ampMul = 1, resoMul = 1, driveAdd = 0, pwOff = 0;
-      let noiseMul = 1, ringMul = 1, crushShift = 0;
+      let noiseMul = 1, ringMul = 1, crushShift = 0, wtPosOff = 0;
       for (let L = 0; L < 3; L++) {
         const depth = this.lfoDepths[L];
         const shape = this.lfoShapes[L];
@@ -708,6 +816,7 @@ class Voice {
           case LFO_NOISE:  noiseMul  *= 1 - depth * (0.5 * (1 - v));   break; // noise-layer tremolo
           case LFO_CRUSH:  crushShift += v * depth * 4;                break; // ± bit-depth swing
           case LFO_RING:   ringMul   *= 1 + v * depth;                 break; // bipolar AM (ring)
+          case LFO_WTPOS:  wtPosOff  += v * depth * 0.5;               break; // wavetable scan sweep
           case LFO_NONE:   default:                                   break; // disabled
         }
       }
@@ -740,15 +849,35 @@ class Voice {
       // phase modulation (FM) or amplitude/ring modulation of the carrier.
       let modOut = 0;
       if (this.modType !== 0) {
-        modOut = Math.sin(TWO_PI * this.modPhase);
+        // Self-feedback FM: the operator's own last output bends its phase, morphing the
+        // modulator sine -> saw -> noisy for grittier FM (0 feedback = the plain sine).
+        this.fbMod = Math.sin(TWO_PI * this.modPhase + this.fmFeedback * this.fbMod);
+        modOut = this.fbMod;
         this.modPhase += (freq * this.modRatio) / sr;
         if (this.modPhase >= 1) this.modPhase -= Math.floor(this.modPhase);
       }
       const pw = clamp(0.5 + pwOff, 0.05, 0.95);
       const dt = Math.min(0.25, freq / sr); // phase step for the polyBLEP edges
-      let carrierPhase = this.oscPhase;
-      if (this.modType === 1) carrierPhase += modOut * this.modAmount * FM_INDEX; // FM
-      let osc = this.osc(carrierPhase - Math.floor(carrierPhase), this.waveform, pw, dt);
+      const fmOff = this.modType === 1 ? modOut * this.modAmount * FM_INDEX : 0; // FM phase offset
+      const wtScan = this.wtPos + wtPosOff;
+      // Primary oscillator: a wavetable frame (wtFamily>0) or the analog Sine/Tri/Square/
+      // Saw shape, optionally stacked as a detuned unison (primary osc only) summed and
+      // normalised by 1/√count. Unison=Off runs the single-voice path = today's sound.
+      let osc;
+      if (this.unisonCount > 1) {
+        let sum = 0;
+        for (let u = 0; u < this.unisonCount; u++) {
+          let ph = this.uPhase[u] + fmOff; ph -= Math.floor(ph);
+          const dtu = Math.min(0.25, dt * this.uDetune[u]);
+          sum += this.wtFamily > 0 ? wtSample(this.wtFamily - 1, wtScan, ph, dtu)
+                                   : this.osc(ph, this.waveform, pw, dtu);
+        }
+        osc = sum * this.unisonNorm;
+      } else {
+        let ph = this.oscPhase + fmOff; ph -= Math.floor(ph);
+        osc = this.wtFamily > 0 ? wtSample(this.wtFamily - 1, wtScan, ph, dt)
+                                : this.osc(ph, this.waveform, pw, dt);
+      }
       if (this.modType === 2) osc *= 1 - this.modAmount + this.modAmount * modOut; // ring
 
       // Detuned 2nd oscillator, blended in (hard-sync handled at the phase advance).
@@ -791,6 +920,12 @@ class Voice {
       this.oscPhase += freq / sr;
       let masterWrapped = false;
       if (this.oscPhase >= 1) { this.oscPhase -= Math.floor(this.oscPhase); masterWrapped = true; }
+      if (this.unisonCount > 1) {
+        for (let u = 0; u < this.unisonCount; u++) {
+          this.uPhase[u] += (freq * this.uDetune[u]) / sr;
+          if (this.uPhase[u] >= 1) this.uPhase[u] -= Math.floor(this.uPhase[u]);
+        }
+      }
       if (this.osc2Mix > 0) {
         this.osc2Phase += (freq * this.osc2Ratio) / sr;
         if (this.osc2Phase >= 1) this.osc2Phase -= Math.floor(this.osc2Phase);
@@ -895,6 +1030,75 @@ class Echo {
 }
 
 //============================================================================
+// Modulation FX (chorus / flanger / phaser). Mono in, STEREO out: two quadrature
+// LFO phases (L = sin, R = sin+90°) give real width. Chorus/flanger are a modulated
+// delay line (chorus = longer delay, no/low feedback; flanger = short delay + feedback
+// resonance); phaser is a 6-stage allpass cascade whose notch frequency the LFO sweeps,
+// also with feedback. `type` 1/2/3 = chorus/flanger/phaser; mirrors MODFX_TYPES.
+class ModFx {
+  constructor(sr) {
+    this.sr = sr;
+    this.buf = new Float32Array(((sr * 0.05) | 0) + 4); // 50 ms max delay
+    this.w = 0;
+    this.phase = 0;
+    this.fbL = 0; this.fbR = 0;         // 1-sample feedback memory (per side)
+    this.apL = new Float32Array(6);     // phaser allpass state (per stage, per side)
+    this.apR = new Float32Array(6);
+    this.type = 0; this.rate = 0; this.depth = 0; this.fbAmt = 0;
+    this.baseD = 0; this.modD = 0;      // delay centre / sweep (samples)
+  }
+  setup(type, rate, depth, fb) {
+    this.type = type;
+    this.rate = clamp(rate, 0.01, 8);
+    this.depth = clamp(depth, 0, 1);
+    this.fbAmt = clamp(fb, 0, 1) * 0.9; // keep below self-oscillation
+    const sr = this.sr;
+    if (type === 1) { this.baseD = 0.012 * sr; this.modD = 0.008 * sr * this.depth; }      // chorus
+    else if (type === 2) { this.baseD = 0.0015 * sr; this.modD = 0.003 * sr * this.depth; } // flanger
+  }
+  readInterp(d) {
+    const len = this.buf.length;
+    let rp = this.w - d;
+    while (rp < 0) rp += len;
+    const i0 = rp | 0, fr = rp - i0, i1 = (i0 + 1) % len;
+    return this.buf[i0] * (1 - fr) + this.buf[i1] * fr;
+  }
+  // Phaser: run one side's 6 allpass stages, notch swept by `lfo` (-1..1), with feedback.
+  phaser(x, lfo, state, fbPrev) {
+    const f = 300 * Math.pow(30, (0.5 + 0.5 * lfo)); // ~300 Hz .. ~9 kHz sweep
+    const t = Math.tan(Math.PI * clamp(f, 20, this.sr * 0.45) / this.sr);
+    const a = (t - 1) / (t + 1);
+    let s = x + fbPrev * this.fbAmt;
+    for (let k = 0; k < 6; k++) { const y = a * s + state[k]; state[k] = s - a * y; s = y; }
+    return s;
+  }
+  // Fill stereo `outL`/`outR` (length n) from mono `inp`. No dry mix here — the caller
+  // blends wet against dry so the mix knob and pan stay in one place.
+  render(inp, n, outL, outR) {
+    const inc = this.rate / this.sr;
+    for (let i = 0; i < n; i++) {
+      const x = inp[i];
+      const lfoL = Math.sin(TWO_PI * this.phase);
+      const lfoR = Math.sin(TWO_PI * (this.phase + 0.25));
+      this.phase += inc; if (this.phase >= 1) this.phase -= 1;
+      if (this.type === 3) {
+        this.fbL = this.phaser(x, lfoL, this.apL, this.fbL);
+        this.fbR = this.phaser(x, lfoR, this.apR, this.fbR);
+        outL[i] = this.fbL; outR[i] = this.fbR;
+      } else {
+        const dL = this.baseD + this.modD * (0.5 + 0.5 * lfoL);
+        const dR = this.baseD + this.modD * (0.5 + 0.5 * lfoR);
+        const wetL = this.readInterp(dL), wetR = this.readInterp(dR);
+        this.buf[this.w] = x + (wetL + wetR) * 0.5 * this.fbAmt; // flanger feedback
+        this.w = (this.w + 1) % this.buf.length;
+        outL[i] = wetL; outR[i] = wetR;
+      }
+    }
+  }
+  reset() { this.buf.fill(0); this.w = 0; this.phase = 0; this.fbL = 0; this.fbR = 0; this.apL.fill(0); this.apR.fill(0); }
+}
+
+//============================================================================
 // Freeverb (port of juce::Reverb), mono path.
 class Comb {
   constructor(size) { this.buf = new Float32Array(size); this.i = 0; this.last = 0; }
@@ -955,6 +1159,9 @@ class Channel {
     this.next = 0;
     this.echo = new Echo(sr);
     this.reverb = new Reverb(sr);
+    this.modfx = new ModFx(sr);
+    this.wetL = new Float32Array(128); // stereo modulation-FX wet (block <= 128 samples)
+    this.wetR = new Float32Array(128);
     // Live params (FX/volume + pitch base). Set via setParams, NEVER by trigger,
     // so a pitched melody hit can't clobber the drum's base sound. Mirrors how
     // the C++ engine reads kit.params live while triggering from a snapshot.
@@ -978,6 +1185,7 @@ class Channel {
   resetFx() {
     this.echo.clear();
     this.reverb.reset();
+    this.modfx.reset();
     if (this.pingL) { this.pingL.fill(0); this.pingR.fill(0); this.pingW = 0; }
   }
   killVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].active = false; }
@@ -1013,6 +1221,16 @@ class Channel {
       this.reverb.setParameters(p[P.ReverbSize], 0.4, verbMix, 1 - verbMix);
       this.reverb.processMono(scratch, n);
     }
+    // Modulation FX (chorus/flanger/phaser): a stereo wet pair from the mono chain, blended
+    // in by ModFxMix. Dry is scaled by (1-mix) and the wet added to L/R below.
+    const modType = Math.round(rd(p, P.ModFxType, 0));
+    const modMix = clamp(rd(p, P.ModFxMix, 0), 0, 1);
+    const modOn = modType > 0 && modMix > 0.0001;
+    if (modOn) {
+      this.modfx.setup(modType, rd(p, P.ModFxRate, 0.6), rd(p, P.ModFxDepth, 0.4), rd(p, P.ModFxFeedback, 0.2));
+      this.modfx.render(scratch, n, this.wetL, this.wetR);
+    }
+    const dryG = modOn ? 1 - modMix : 1;
     const vol = p[P.Volume];
     // Constant-power pan, normalised so a CENTRED sound sums into L/R at exactly the
     // old mono level (legacy projects sound identical); hard-panned sides gain +3dB.
@@ -1040,8 +1258,16 @@ class Channel {
         this.pingL[this.pingW] = dry + drt * fb;
         this.pingR[this.pingW] = dl;
         this.pingW = (this.pingW + 1) % len;
-        masterL[offset + i] += dry * gl * (1 - echoMix) + dl * echoMix;
-        masterR[offset + i] += dry * gr * (1 - echoMix) + drt * echoMix;
+        const wl = modOn ? this.wetL[i] * vol * modMix : 0;
+        const wr = modOn ? this.wetR[i] * vol * modMix : 0;
+        masterL[offset + i] += (dry * gl * (1 - echoMix) + dl * echoMix) * dryG + wl;
+        masterR[offset + i] += (dry * gr * (1 - echoMix) + drt * echoMix) * dryG + wr;
+      }
+    } else if (modOn) {
+      for (let i = 0; i < n; i++) {
+        const s = scratch[i] * vol;
+        masterL[offset + i] += s * gl * dryG + this.wetL[i] * vol * modMix;
+        masterR[offset + i] += s * gr * dryG + this.wetR[i] * vol * modMix;
       }
     } else {
       for (let i = 0; i < n; i++) {

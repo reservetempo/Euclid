@@ -96,10 +96,13 @@ export function envTonalModes(env: { mode: TransitionMode; modes?: TransitionMod
     every Nth hit (1-based, running continuously across the loop, not per pattern
     cycle); `ramp` swells the effect from one end of the loop to the other. `amount`
     is the strength (accent depth / how ghosted), `curve` bends a ramp from linear
-    (0) toward exponential (1), and `dir` says which way a ramp grows. */
+    (0) toward exponential (1), and `dir` says which way a ramp grows. `offset` shifts
+    which hit in each group of N is marked — 0 = the first (hits 0, N, 2N…), 1 = the
+    second, and a NEGATIVE value counts from the end (-1 = the last of every group). */
 export interface LifePlacement {
   mode: "everyN" | "ramp";
   every?: number;         // everyN: the N (>= 1)
+  offset?: number;        // everyN: which hit in each group (0 = first; -1 = last)
   amount: number;         // 0..1 strength
   curve?: number;         // ramp: 0 linear .. 1 exponential
   dir?: "up" | "down";    // ramp: grow toward the end ("up") or the start ("down")

@@ -93,6 +93,20 @@ export enum ParamId {
   // stable; snapshots saved before it default to the legacy fixed hold (STEP_GATE_SEC
   // in engine.js) via rd() there and restore() in drumKit.ts.
   Gate,
+  // Sixth wave — SuperCollider-flavoured synthesis (all appended, all back-compatible):
+  // fatter oscillators (unison detune + feedback FM), a stereo modulation-FX slot
+  // (chorus / flanger / phaser), and a mip-mapped wavetable morph oscillator whose scan
+  // position is also a new LFO destination ("WTPos"). Every one is a no-op at its default.
+  Unison,          // primary-oscillator unison voice count (Off / 3 / 5 / 7)
+  UnisonDetune,    // unison spread (0 = none .. 1 ≈ 50 cents)
+  FmFeedback,      // FM operator self-feedback (0 = clean sine .. 1 = saw/noisy)
+  WaveTable,       // wavetable family (Off / Formant / Harmonic / Vocal / Digital)
+  WavePosition,    // scan/morph position through the table (0..1)
+  ModFxType,       // Off / Chorus / Flanger / Phaser
+  ModFxRate,       // modulation LFO rate (Hz)
+  ModFxDepth,      // sweep depth (0..1)
+  ModFxFeedback,   // flanger/phaser resonance (ignored by chorus)
+  ModFxMix,        // dry/wet (0 = off)
   NumParams,
 }
 
@@ -147,6 +161,12 @@ export function getParamGroup(id: ParamId): ParamGroup {
     case ParamId.ModalMaterial:
     case ParamId.ModalDecay:
       return ParamGroup.Filter;
+    case ParamId.Unison:
+    case ParamId.UnisonDetune:
+    case ParamId.FmFeedback:
+    case ParamId.WaveTable:
+    case ParamId.WavePosition:
+      return ParamGroup.Tone;
     case ParamId.LfoTarget:
     case ParamId.LfoRate:
     case ParamId.LfoDepth:
@@ -173,6 +193,11 @@ export function getParamGroup(id: ParamId): ParamGroup {
     case ParamId.ReverbMix:
     case ParamId.Crush:
     case ParamId.Downsample:
+    case ParamId.ModFxType:
+    case ParamId.ModFxRate:
+    case ParamId.ModFxDepth:
+    case ParamId.ModFxFeedback:
+    case ParamId.ModFxMix:
       return ParamGroup.Fx;
     case ParamId.AccentAmount:
     case ParamId.Humanize:

@@ -156,6 +156,30 @@ function paramDesc(id: ParamId): string {
     case ParamId.Pan:
       return "Where the voice sits in the stereo field, left to right (constant-power, so the middle isn't louder).";
 
+    // --- Fatter oscillators / wavetable (Tone) ---
+    case ParamId.Unison:
+      return "Stacks several slightly detuned copies of the main oscillator for a thicker, wider sound (supersaw-style). Off = the single classic oscillator.";
+    case ParamId.UnisonDetune:
+      return "How far the unison copies spread apart in pitch — a touch fattens, a lot swirls into a chorused, seasick detune. No effect unless Unison is on.";
+    case ParamId.FmFeedback:
+      return "Feeds the FM operator back into itself, morphing its modulating sine toward a saw and then noise for grittier, brighter FM. Only bites when Osc Mod is set to FM.";
+    case ParamId.WaveTable:
+      return "Swaps the analog Sine/Tri/Square/Saw for a scannable digital wavetable — Formant, Harmonic, Vocal or Digital families. Off = the normal oscillator.";
+    case ParamId.WavePosition:
+      return "Scans through the wavetable's frames, morphing the timbre. Assign an LFO to 'WTPos' to sweep it automatically (the Serum-style motion). Only active when a Table is chosen.";
+
+    // --- Modulation FX ---
+    case ParamId.ModFxType:
+      return "A modulated stereo effect after the echo/reverb: Chorus (lush width), Flanger (jet-sweep comb), or Phaser (sweeping notches). Off = bypassed.";
+    case ParamId.ModFxRate:
+      return "How fast the modulation sweeps back and forth, in Hz — slow for gentle movement, fast for vibrato-like shimmer.";
+    case ParamId.ModFxDepth:
+      return "How far the sweep travels — subtle at low values, dramatic seasick motion at high ones.";
+    case ParamId.ModFxFeedback:
+      return "Resonance for Flanger and Phaser: feeds the effect back into itself for a sharper, more metallic ring. Ignored by Chorus.";
+    case ParamId.ModFxMix:
+      return "Dry/wet blend for the modulation effect. 0 = off; higher folds more of the swept, widened signal into the voice.";
+
     default:
       return "";
   }
@@ -438,6 +462,57 @@ masterR[offset + i] += s * gr;`;
 const ang = (pan + 1) * 0.25 * Math.PI;
 const gl = Math.cos(ang) * Math.SQRT2;
 const gr = Math.sin(ang) * Math.SQRT2;`;
+
+    // --- Fatter oscillators / wavetable ---
+    case ParamId.Unison:
+      return `// engine.js — sum detuned copies of the primary osc, normalise by 1/√count
+for (let u = 0; u < this.unisonCount; u++) {
+  let ph = this.uPhase[u] + fmOff; ph -= Math.floor(ph);
+  sum += this.osc(ph, this.waveform, pw, dt * this.uDetune[u]);
+}
+osc = sum * this.unisonNorm;`;
+    case ParamId.UnisonDetune:
+      return `// engine.js — symmetric cent spread around 1.0, per unison voice
+const c = (u / (this.unisonCount - 1)) * 2 - 1;      // -1..1
+this.uDetune[u] = Math.pow(2, (c * spreadCents) / 1200);`;
+    case ParamId.FmFeedback:
+      return `// engine.js — the FM operator bends its own phase with its last output
+this.fbMod = Math.sin(TWO_PI * this.modPhase + this.fmFeedback * this.fbMod);
+modOut = this.fbMod; // sine -> saw -> noise as feedback rises`;
+    case ParamId.WaveTable:
+      return `// engine.js — wtFamily>0 reads a mip-mapped morph table instead of this.osc
+osc = this.wtFamily > 0
+  ? wtSample(this.wtFamily - 1, wtScan, ph, dt)
+  : this.osc(ph, this.waveform, pw, dt);`;
+    case ParamId.WavePosition:
+      return `// engine.js — scan crossfades the two frames nearest the position
+const wtScan = this.wtPos + wtPosOff; // wtPosOff from an LFO on "WTPos"
+const fp = clamp(pos, 0, 1) * (WT_FRAMES - 1);        // frame crossfade`;
+
+    // --- Modulation FX ---
+    case ParamId.ModFxType:
+      return `// engine.js — a stereo modulated delay / allpass cascade after the reverb
+if (modOn) {
+  this.modfx.setup(modType, rate, depth, feedback);
+  this.modfx.render(scratch, n, this.wetL, this.wetR); // mono in, stereo out
+}`;
+    case ParamId.ModFxRate:
+      return `// engine.js — quadrature LFO phases give L/R width at this rate
+const lfoL = Math.sin(TWO_PI * this.phase);
+const lfoR = Math.sin(TWO_PI * (this.phase + 0.25));
+this.phase += this.rate / this.sr;`;
+    case ParamId.ModFxDepth:
+      return `// engine.js — depth scales the delay sweep (chorus/flanger)
+const dL = this.baseD + this.modD * (0.5 + 0.5 * lfoL);
+const wetL = this.readInterp(dL); // modD = depth * range`;
+    case ParamId.ModFxFeedback:
+      return `// engine.js — flanger/phaser resonance feeds the wet back in
+this.buf[this.w] = x + (wetL + wetR) * 0.5 * this.fbAmt; // flanger
+// phaser: let s = x + fbPrev * this.fbAmt; (before the allpass cascade)`;
+    case ParamId.ModFxMix:
+      return `// engine.js — dry scaled by (1-mix), stereo wet added on top
+masterL[offset + i] += s * gl * dryG + this.wetL[i] * vol * modMix;
+masterR[offset + i] += s * gr * dryG + this.wetR[i] * vol * modMix;`;
 
     default:
       return "";

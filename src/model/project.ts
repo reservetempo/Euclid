@@ -281,6 +281,7 @@ function readLife(lv: unknown): LifePlacement | undefined {
   const out: LifePlacement = { mode, amount: clamp01(e.amount, 1) };
   if (mode === "everyN") {
     out.every = typeof e.every === "number" && isFinite(e.every) ? Math.max(1, Math.round(e.every)) : 2;
+    if (typeof e.offset === "number" && isFinite(e.offset)) out.offset = Math.round(e.offset);
   } else {
     out.curve = clamp01(e.curve, 0);
     out.dir = e.dir === "down" ? "down" : "up";

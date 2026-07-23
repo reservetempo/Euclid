@@ -12,7 +12,7 @@ import { ParamId, NUM_PARAMS } from "./params";
 // "None" must STAY at index 6 (old saves store it there, and engine.js hard-codes
 // LFO_NONE = 6); the newer destinations are appended after it, so "None" is NOT the
 // last entry — always reference it via LFO_NONE below, never LFO_TARGETS.length - 1.
-export const LFO_TARGETS = ["Pitch", "Filter", "Amp", "Drive", "Reso", "Wave", "None", "Noise", "Crush", "Ring"];
+export const LFO_TARGETS = ["Pitch", "Filter", "Amp", "Drive", "Reso", "Wave", "None", "Noise", "Crush", "Ring", "WTPos"];
 // Index of the "disable this LFO" destination (mirrors engine.js LFO_NONE = 6).
 export const LFO_NONE = LFO_TARGETS.indexOf("None");
 
@@ -46,6 +46,15 @@ export const CHOKE_GROUPS = ["Off", "A", "B", "C", "D"];
 // Crush bit-depth per index (0 = off); Downsample factor per index (index 0 = 1x off).
 export const CRUSH_CHOICES = ["Off", "12-bit", "10-bit", "8-bit", "6-bit", "5-bit", "4-bit", "3-bit"];
 export const DOWNSAMPLE_CHOICES = ["Off", "2x", "3x", "4x", "6x", "8x", "12x", "16x"];
+// Unison voice count for the primary oscillator (index maps to a count in engine.js
+// UNISON_VOICES). "Off" = the single classic oscillator (today's behaviour).
+export const UNISON_CHOICES = ["Off", "3", "5", "7"];
+// Modulation-FX flavours (a modulated delay / allpass cascade), mirrored in engine.js.
+export const MODFX_TYPES = ["Off", "Chorus", "Flanger", "Phaser"];
+// Wavetable families — each a precomputed bank of morph frames in engine.js. "Off" keeps
+// the analog Sine/Tri/Square/Saw oscillator; the rest replace the primary oscillator's
+// shape with a scannable digital table (WavePosition = the scan).
+export const WAVETABLES = ["Off", "Formant", "Harmonic", "Vocal", "Digital"];
 
 export interface ParamSpec {
   name: string;
@@ -85,7 +94,7 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.FilterType:     return make("Filter", 0, 3, 0, 1, 1, "", true, ["LP", "HP", "BP", "Vowel"]);
     case ParamId.FilterCutoff:   return make("Cutoff", 80, 18000, 12000, 0.3, 10, "Hz");
     case ParamId.FilterReso:     return make("Reso", 0.5, 8, 0.7, 0.5, 0.05, "Q");
-    case ParamId.LfoTarget:      return make("Dest", 0, 9, 0, 1, 1, "", true, LFO_TARGETS);
+    case ParamId.LfoTarget:      return make("Dest", 0, 10, 0, 1, 1, "", true, LFO_TARGETS);
     case ParamId.LfoRate:        return make("Rate", 0.1, 40, 5, 0.4, 0.1, "Hz");
     case ParamId.LfoDepth:       return make("Amt", 0, 1, 0, 1, 0.02, "");
     case ParamId.Drive:          return make("Drive", 0, 1, 0.1, 1, 0.02, "");
@@ -96,10 +105,10 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.ReverbMix:      return make("Verb Mix", 0, 1, 0, 1, 0.02, "");
     case ParamId.Volume:         return make("Volume", 0, 1, 0.85, 1, 0.02, "", false);
     // LFO 2 & 3 mirror LFO 1's specs (a destination + rate + depth each).
-    case ParamId.Lfo2Target:     return make("Dest", 0, 9, 1, 1, 1, "", true, LFO_TARGETS);
+    case ParamId.Lfo2Target:     return make("Dest", 0, 10, 1, 1, 1, "", true, LFO_TARGETS);
     case ParamId.Lfo2Rate:       return make("Rate", 0.1, 40, 5, 0.4, 0.1, "Hz");
     case ParamId.Lfo2Depth:      return make("Amt", 0, 1, 0, 1, 0.02, "");
-    case ParamId.Lfo3Target:     return make("Dest", 0, 9, 2, 1, 1, "", true, LFO_TARGETS);
+    case ParamId.Lfo3Target:     return make("Dest", 0, 10, 2, 1, 1, "", true, LFO_TARGETS);
     case ParamId.Lfo3Rate:       return make("Rate", 0.1, 40, 5, 0.4, 0.1, "Hz");
     case ParamId.Lfo3Depth:      return make("Amt", 0, 1, 0, 1, 0.02, "");
     // --- Sound-verse expansion. Defaults are all "off/neutral" so existing sounds
@@ -153,6 +162,18 @@ export function baseSpec(id: ParamId): ParamSpec {
     // the low skew keeps most of the slider's travel on the ordinary short gates.
     // Not randomizable — it's a length choice, not part of the sound's character.
     case ParamId.Gate:           return make("Gate", 0.02, 30, 0.4, 0.2, 0.005, "s", false);
+    // Sixth wave — fatter oscillators, modulation FX, wavetable morph oscillator.
+    // All default to Off/neutral so existing sounds are unchanged.
+    case ParamId.Unison:         return make("Unison", 0, 3, 0, 1, 1, "", true, UNISON_CHOICES);
+    case ParamId.UnisonDetune:   return make("Spread", 0, 1, 0.2, 1, 0.02, "");
+    case ParamId.FmFeedback:     return make("FB", 0, 1, 0, 1, 0.02, "");
+    case ParamId.WaveTable:      return make("Table", 0, 4, 0, 1, 1, "", true, WAVETABLES);
+    case ParamId.WavePosition:   return make("Scan", 0, 1, 0, 1, 0.02, "");
+    case ParamId.ModFxType:      return make("Mod FX", 0, 3, 0, 1, 1, "", true, MODFX_TYPES);
+    case ParamId.ModFxRate:      return make("Rate", 0.05, 8, 0.6, 0.4, 0.01, "Hz");
+    case ParamId.ModFxDepth:     return make("Depth", 0, 1, 0.4, 1, 0.02, "");
+    case ParamId.ModFxFeedback:  return make("FB", 0, 1, 0.2, 1, 0.02, "");
+    case ParamId.ModFxMix:       return make("Mix", 0, 1, 0, 1, 0.02, "");
     default:                     return make("?", 0, 1, 0, 1, 0.01, "");
   }
 }
@@ -337,6 +358,8 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       if (id === ParamId.Lfo1Sync) setRange(s, 2, 6, 4); // 1/16 .. 1/4, def 1/8
       if (id === ParamId.LfoDepth) s.def = 0.85;
       if (id === ParamId.Drive) s.def = 0.3;
+      if (id === ParamId.Unison) s.def = 1.0; // 3-voice unison thickens the reese
+      if (id === ParamId.UnisonDetune) s.def = 0.25;
       break;
 
     case DrumType.SynthBass:
@@ -358,6 +381,8 @@ export function getParamSpec(drum: DrumType, id: ParamId): ParamSpec {
       if (id === ParamId.Drive) s.def = 0.2;
       if (id === ParamId.Osc2Mix) s.def = 0.35;
       if (id === ParamId.Osc2Detune) s.def = -12; // one octave down
+      if (id === ParamId.Unison) s.def = 1.0; // subtle 3-voice width under the sub
+      if (id === ParamId.UnisonDetune) s.def = 0.15;
       break;
   }
 

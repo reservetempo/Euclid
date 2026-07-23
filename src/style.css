@@ -998,6 +998,7 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .numpad-key.back { color: var(--muted); font-size: 22px; }
 .numpad-key.clear { color: var(--muted); font-weight: 800; }
 .numpad-key.comma { font-size: 24px; font-weight: 800; }
+.numpad-key.sign, .numpad-key.frac { color: var(--muted); font-size: 22px; font-weight: 800; }
 .numpad-key.enter {
   color: #0b0d12; border: none; font-weight: 800;
   background: linear-gradient(135deg, color-mix(in srgb, var(--vc) 80%, #fff), var(--vc));

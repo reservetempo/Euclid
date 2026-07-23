@@ -5752,6 +5752,17 @@ export class App {
           spec.every = Math.max(1, Math.round(n));
           this.recompile();
         }, rerender, () => { const e = spec.every ?? 2; return `${e} hit${e === 1 ? "" : "s"}`; }));
+        // Which hit in each group of N is marked — 0 = the first, 1 = the second, a
+        // negative offset counts from the end (-1 = the last). The hint resolves the raw
+        // offset to its 1-based position within the current group size.
+        controls.append(this.numRow("Offset", () => spec.offset ?? 0, (n) => {
+          spec.offset = Math.round(n);
+          this.recompile();
+        }, rerender, () => {
+          const n = Math.max(1, spec.every ?? 2);
+          const pos = ((((spec.offset ?? 0) % n) + n) % n) + 1;
+          return `hit ${pos} of ${n}`;
+        }));
       } else {
         const dirSeg = document.createElement("div");
         dirSeg.className = "placement-seg fade-modes";
@@ -6121,10 +6132,17 @@ export class App {
     };
     refresh();
 
+    // Parse the buffer: a plain (optionally negative/decimal) number, OR an "a/b" fraction
+    // (e.g. "1/3" -> 0.333, "-3/4" -> -0.75). Guards a zero/empty denominator with NaN.
+    const evalNum = (str: string): number => {
+      const m = str.match(/^(-?\d*\.?\d+)\/(\d*\.?\d+)$/);
+      if (m) { const d = parseFloat(m[2]); return d === 0 ? NaN : parseFloat(m[1]) / d; }
+      return parseFloat(str);
+    };
     const close = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); };
     const submit = () => {
       if (list) opts.onSubmitList?.(buf);
-      else if (buf !== "" && !Number.isNaN(parseFloat(buf))) opts.onSubmit?.(parseFloat(buf));
+      else if (buf !== "" && !Number.isNaN(evalNum(buf))) opts.onSubmit?.(evalNum(buf));
       close();
     };
     const press = (d: string) => { if (buf.length < maxLen) { buf += d; refresh(); } };
@@ -6140,6 +6158,13 @@ export class App {
     };
     const backspace = () => { buf = buf.replace(/, $|.$/, ""); refresh(); };
     const clear = () => { buf = ""; refresh(); };
+    // Sign toggle: flip a leading "-" on the whole value (works with fractions too).
+    const negate = () => { buf = buf.startsWith("-") ? buf.slice(1) : "-" + buf; refresh(); };
+    // Fraction bar: one per number, never leading or straight after a decimal point.
+    const frac = () => {
+      if (buf.includes("/") || buf === "" || buf === "-" || buf.endsWith(".")) return;
+      if (buf.length < maxLen) { buf += "/"; refresh(); }
+    };
 
     const grid = document.createElement("div");
     grid.className = "numpad-grid";
@@ -6152,13 +6177,21 @@ export class App {
     };
     ["1", "2", "3", "4", "5", "6", "7", "8", "9"].forEach((d) => grid.append(key(d, "", () => press(d))));
     grid.append(key("C", "clear", clear), key("0", "", () => press("0")), key("⌫", "back", backspace));
-    if (list) grid.append(key(",", "comma", comma), key("✓", "enter wide2", submit));
-    else grid.append(key(".", "comma", dot), key("✓", "enter wide2", submit));
+    if (list) {
+      // Bar-index lists don't take signs or fractions: keep the compact comma + wide ✓.
+      grid.append(key(",", "comma", comma), key("✓", "enter wide2", submit));
+    } else {
+      // Single-value pad: a modifier row (decimal / sign / fraction) then a full-width ✓.
+      grid.append(key(".", "comma", dot), key("±", "sign", negate), key("/", "frac", frac));
+      grid.append(key("✓", "enter wide3", submit));
+    }
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key >= "0" && e.key <= "9") press(e.key);
       else if (list && (e.key === "," || e.key === " ")) comma();
       else if (!list && (e.key === "." || e.key === ",")) dot();
+      else if (!list && (e.key === "-" || e.key === "_")) negate();
+      else if (!list && e.key === "/") frac();
       else if (e.key === "Backspace") backspace();
       else if (e.key === "Enter") submit();
       else if (e.key === "Escape") close();
