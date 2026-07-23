@@ -40,7 +40,7 @@ export const SNAP_OPTIONS: { label: string; snap: PitchSnap }[] = [
 
 /** The mutable shuffle settings an editing surface keeps between shuffles. */
 export interface ShuffleSettings {
-  randomness: number; // 0..1 shuffle amount (1 = uniform over the preset window)
+  randomness: number; // 0..1 shuffle amount (1 = uniform over the full range)
   curveIdx: number;   // index into CURVE_OPTIONS
   maxLenIdx: number;  // index into MAXLEN_OPTIONS
   snapIdx: number;    // index into SNAP_OPTIONS
@@ -153,9 +153,9 @@ export function randomnessRow(st: ShuffleSettings): HTMLElement {
   return rnd;
 }
 
-/** Skew-aware slider mapping over an explicit [lo,hi] window (mirrors the paramSpec
-    helpers but on a live preset range). Shared by the deep editor's value boxes and
-    the per-loop menu's single-param sliders (e.g. Gate). */
+/** Skew-aware slider mapping over an explicit [lo,hi] range (mirrors the paramSpec
+    helpers). Shared by the deep editor's value boxes and the per-loop menu's
+    single-param sliders (e.g. Gate). */
 export function normFromRange(lo: number, hi: number, skew: number, value: number): number {
   const range = hi - lo;
   if (range <= 0) return 0;

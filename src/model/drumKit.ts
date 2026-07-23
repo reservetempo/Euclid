@@ -1,24 +1,21 @@
 // Editable, stateful drum parameters + global randomise/undo controls.
-// Port of DrumParameters.cpp + DrumKit.h (minus the Markov "Evolve", which was
-// never implemented in the C++ either). Each drum now also carries a live shuffle
-// window (lo/hi per param) that a preset sets — so any slot can take on any
-// character and "Full Range" can open the window wide.
+// Every sound is a generic full-range sound (no presets, no per-drum character): shuffle
+// draws each param from its full base range (see paramSpec baseRange).
 
 import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
 import {
-  getParamSpec, baseRange, isDiscrete, LFO_TARGETS, LFO_NONE, OSC_MOD_TYPES, NOISE_TYPES, CLICK_TYPES,
-  MODAL_MATERIALS, ECHO_SYNC_BEATS,
+  getParamSpec, baseSpec, baseRange, isDiscrete, LFO_TARGETS, LFO_NONE, OSC_MOD_TYPES, NOISE_TYPES,
+  CLICK_TYPES, MODAL_MATERIALS, MODFX_TYPES, WAVETABLES, ECHO_SYNC_BEATS,
 } from "./paramSpec";
 import { intervals } from "./melodyScale";
-import { Preset, defaultPresetFor, FACTORY_PRESETS } from "./presets";
 
 export type Snapshot = number[];
 
 // The random source every shuffle draw goes through. Normally Math.random; a seeded
-// generator is swapped in for the duration of a seeded shuffle so the same seed +
-// same preset window reproduces the same sound (exact at 100% randomness, where the
-// draw no longer depends on the pre-shuffle values).
+// generator is swapped in for the duration of a seeded shuffle so the same seed
+// reproduces the same sound (exact at 100% randomness, where the draw no longer depends
+// on the pre-shuffle values).
 let rand: () => number = Math.random;
 
 /** Deterministic RNG from a seed string (xmur3 hash into mulberry32). */
@@ -126,9 +123,9 @@ const MIN_LAYER_DECAY = 0.05;  // s; a dominant layer decaying faster is just a 
 // spectra (Blue/Violet) and S&H grit (Metal) pierce at equal level, so scale them back.
 const NOISE_COLOUR_GAIN = [1, 1, 1, 0.65, 0.5, 1, 0.7];
 
-// How many effect/filter "modules" a shuffle leaves active at once (there are 13 in
-// all — see soundModules). Weighted toward a handful so a sound is usually doing a
-// few things, but it can occasionally run most of them at once for a dense result.
+// How many effect/filter "modules" a shuffle leaves active at once (see soundModules).
+// Weighted toward a handful so a sound is usually doing a few things, but it can
+// occasionally run most of them at once for a dense result.
 function sparsityBudget(): number {
   const r = rand();
   if (r < 0.08) return 1;
@@ -242,58 +239,35 @@ function nearestLog(x: number, table: number[]): number {
 export class DrumParameters {
   readonly drum: DrumType;
   private values: number[] = new Array(NUM_PARAMS).fill(0);
-  private lo: number[] = new Array(NUM_PARAMS).fill(0);
-  private hi: number[] = new Array(NUM_PARAMS).fill(1);
-  private preset: Preset; // the last applied preset, used by Reset
 
   constructor(drum: DrumType) {
     this.drum = drum;
-    this.preset = defaultPresetFor(drum);
-    this.applyPreset(this.preset);
+    this.resetToDefault();
   }
 
   get(id: ParamId): number {
     return this.values[id];
   }
 
-  /** Write a value, clamped to this param's ABSOLUTE range (baseSpec). Manual entry
-      can therefore exceed the active preset's window without breaking the engine. */
+  /** Write a value, clamped to this param's range (baseSpec). */
   set(id: ParamId, value: number): void {
     const r = baseRange(id);
     this.values[id] = Math.min(r.max, Math.max(r.min, value));
   }
 
-  /** Current shuffle window for a param (the active preset's range). */
-  loOf(id: ParamId): number { return this.lo[id]; }
-  hiOf(id: ParamId): number { return this.hi[id]; }
-  presetName(): string { return this.preset.name; }
-  presetColor(): string { return this.preset.color; }
+  /** The shuffle window / slider range for a param — always the full base range. */
+  loOf(id: ParamId): number { return baseRange(id).min; }
+  hiOf(id: ParamId): number { return baseRange(id).max; }
 
-  /** Apply a preset: set the shuffle window AND the values it carries. */
-  applyPreset(p: Preset): void {
-    this.preset = p;
+  /** The default starting sound: continuous params centre in their range, while discrete
+      "type" params, Volume, HitChance and Gate keep their base default (centring a type,
+      going quiet, dropping hits, or a 15-second hold makes no sense as a start value). */
+  resetToDefault(): void {
     for (let i = 0; i < NUM_PARAMS; i++) {
       const id = i as ParamId;
-      const r = baseRange(id);
-      const lo = p.ranges[i]?.lo ?? r.min;
-      const hi = p.ranges[i]?.hi ?? r.max;
-      this.lo[id] = Math.min(r.max, Math.max(r.min, lo));
-      this.hi[id] = Math.min(r.max, Math.max(r.min, hi));
-      this.set(id, p.values[i] ?? getParamSpec(this.drum, id).def);
-    }
-  }
-
-  /** Adopt a preset as the "active" one for the label + Reset target, WITHOUT
-      touching current values/ranges (used on load to restore the saved name). */
-  adoptPreset(p: Preset): void {
-    this.preset = p;
-  }
-
-  /** Reset values back to the active preset's values (keeps its ranges). */
-  resetToPreset(): void {
-    for (let i = 0; i < NUM_PARAMS; i++) {
-      const id = i as ParamId;
-      this.set(id, this.preset.values[i] ?? getParamSpec(this.drum, id).def);
+      const s = baseSpec(id);
+      const keepDef = isDiscrete(s) || id === ParamId.Volume || id === ParamId.HitChance || id === ParamId.Gate;
+      this.set(id, keepDef ? s.def : (s.min + s.max) / 2);
     }
   }
 
@@ -301,8 +275,7 @@ export class DrumParameters {
     return this.values.slice();
   }
 
-  /** Restore values from a snapshot. Tolerates short (pre-expansion) snapshots and
-      JSON null "holes" by filling any missing entry with the param default. */
+  /** Restore values from a snapshot, filling any missing/NaN entry with the param default. */
   restore(snap: Snapshot): void {
     for (let i = 0; i < NUM_PARAMS; i++) {
       const id = i as ParamId;
@@ -311,39 +284,11 @@ export class DrumParameters {
     }
   }
 
-  captureRanges(): { lo: number[]; hi: number[] } {
-    return { lo: this.lo.slice(), hi: this.hi.slice() };
-  }
-
-  restoreRanges(lo: number[], hi: number[]): void {
-    for (let i = 0; i < NUM_PARAMS; i++) {
-      const id = i as ParamId;
-      const r = baseRange(id);
-      if (lo[i] !== undefined) this.lo[id] = Math.min(r.max, Math.max(r.min, lo[i]));
-      if (hi[i] !== undefined) this.hi[id] = Math.min(r.max, Math.max(r.min, hi[i]));
-      // LFO destinations are always fully shufflable; widen any range saved before
-      // the "None" option existed so it can be reached again.
-      if (id === ParamId.LfoTarget || id === ParamId.Lfo2Target || id === ParamId.Lfo3Target) {
-        this.lo[id] = r.min;
-        this.hi[id] = r.max;
-      }
-      // Gate is never shuffled, so its "range" only spans the slider — always the full
-      // base range, so saves from before the 30s drone gate can reach it too.
-      if (id === ParamId.Gate) {
-        this.lo[id] = r.min;
-        this.hi[id] = r.max;
-      }
-    }
-  }
-
   /** Randomise ("Shuffle") every randomisable param at once (Volume and ChokeGroup
-      are never touched). Continuous params are drawn uniformly from a window:
-      current lerped toward each edge of its live (preset) range by `randomness`.
-      Discrete "type" params reroll to a random choice within their preset range —
-      locked when lo==hi, so a character preset only shuffles its open discretes
-      (LFO destinations, click type, modal material, echo sync) while Full Range
-      also shuffles waves/filters. The shuffle amount is the probability that each
-      discrete param rerolls.
+      are never touched). Continuous params are drawn uniformly from a window: current
+      lerped toward each edge of the param's full base range by `randomness`. Discrete
+      "type" params (waves, filters, LFO destinations, etc.) reroll to a random choice
+      across their full range; the shuffle amount is the probability that each rerolls.
 
       `curve` reshapes the random draw of the FREQUENCY params (Pitch & Filter
       Cutoff) — see {@link FreqCurve}; `snap` then quantises the landed Pitch to a
@@ -372,17 +317,18 @@ export class DrumParameters {
         const id = i as ParamId;
         const s = getParamSpec(this.drum, id);
         if (!s.randomizable) continue;
+        const r = baseRange(id);
         if (isDiscrete(s)) {
-          const lo = Math.round(this.lo[id]);
-          const hi = Math.round(this.hi[id]);
+          const lo = Math.round(r.min);
+          const hi = Math.round(r.max);
           if (hi > lo && rand() < randomness) {
             this.set(id, lo + Math.floor(rand() * (hi - lo + 1)));
           }
           continue;
         }
         const cur = this.get(id);
-        const lo = cur + (this.lo[id] - cur) * randomness;
-        const hi = cur + (this.hi[id] - cur) * randomness;
+        const lo = cur + (r.min - cur) * randomness;
+        const hi = cur + (r.max - cur) * randomness;
         const isFreq = id === ParamId.Pitch || id === ParamId.FilterCutoff;
         // Most params draw uniformly from the window; a few get shaped draws:
         // frequency params use the perceptual curve, noise/click levels are biased
@@ -579,6 +525,9 @@ export class DrumParameters {
       lfo(ParamId.Lfo3Target, ParamId.Lfo3Depth),
       { name: round(ParamId.Sync) >= 1 ? "Sync" : "Osc2",
         on: g(ParamId.Osc2Mix) > 0.02, off: () => this.set(ParamId.Osc2Mix, 0) },
+      { name: "Unison", on: round(ParamId.Unison) > 0, off: () => this.set(ParamId.Unison, 0) },
+      { name: WAVETABLES[round(ParamId.WaveTable)],
+        on: round(ParamId.WaveTable) > 0, off: () => this.set(ParamId.WaveTable, 0) },
       { name: "Fold", on: g(ParamId.Fold) > 0.02, off: () => this.set(ParamId.Fold, 0) },
       { name: OSC_MOD_TYPES[round(ParamId.OscModType)],
         on: round(ParamId.OscModType) !== 0 && g(ParamId.OscModAmount) > 0.02,
@@ -597,6 +546,9 @@ export class DrumParameters {
         on: Math.abs(g(ParamId.PitchEnvAmount)) > 0.1, off: () => this.set(ParamId.PitchEnvAmount, 0) },
       { name: "Echo", on: g(ParamId.EchoMix) > 0.03, off: () => this.set(ParamId.EchoMix, 0) },
       { name: "Verb", on: g(ParamId.ReverbMix) > 0.05, off: () => this.set(ParamId.ReverbMix, 0) },
+      { name: MODFX_TYPES[round(ParamId.ModFxType)],
+        on: round(ParamId.ModFxType) !== 0 && g(ParamId.ModFxMix) > 0.02,
+        off: () => this.set(ParamId.ModFxType, 0) },
       // Per-hit Life modules — pattern-domain variation rather than timbre.
       { name: "Accent", on: g(ParamId.AccentAmount) > 0.1, off: () => this.set(ParamId.AccentAmount, 0) },
       { name: "Ghosts", on: g(ParamId.HitChance) < 0.95, off: () => this.set(ParamId.HitChance, 1) },
@@ -741,9 +693,9 @@ export class DrumParameters {
 
 const MAX_UNDO = 20;
 
-// One undo entry captures the full editable state (values + ranges) so undoing a
-// preset change or shuffle is exact.
-interface UndoState { values: number[]; lo: number[]; hi: number[]; }
+// One undo entry captures the full editable state (values) so undoing a shuffle or
+// reset is exact.
+interface UndoState { values: number[]; }
 
 export class DrumKit {
   private params = new Map<DrumType, DrumParameters>();
@@ -757,7 +709,7 @@ export class DrumKit {
     return this.params.get(drum)!;
   }
 
-  /** Live Pitch range for melody mapping (reflects the applied preset). */
+  /** Live Pitch range for melody mapping (the full base Pitch range). */
   pitchRange(drum: DrumType): [number, number] {
     const p = this.get(drum);
     return [p.loOf(ParamId.Pitch), p.hiOf(ParamId.Pitch)];
@@ -765,9 +717,7 @@ export class DrumKit {
 
   private pushUndo(drum: DrumType): void {
     const stack = this.undo.get(drum) ?? [];
-    const p = this.get(drum);
-    const r = p.captureRanges();
-    stack.push({ values: p.capture(), lo: r.lo, hi: r.hi });
+    stack.push({ values: this.get(drum).capture() });
     if (stack.length > MAX_UNDO) stack.shift();
     this.undo.set(drum, stack);
   }
@@ -777,21 +727,10 @@ export class DrumKit {
     this.get(drum).randomize(opts);
   }
 
+  /** Reset a drum to the default starting sound. */
   resetAll(drum: DrumType): void {
     this.pushUndo(drum);
-    this.get(drum).resetToPreset();
-  }
-
-  applyPreset(drum: DrumType, preset: Preset): void {
-    this.pushUndo(drum);
-    this.get(drum).applyPreset(preset);
-  }
-
-  /** Restore which preset is "active" by name (for the label/Reset after a load).
-      No-op if the name isn't a known factory preset. */
-  adoptPresetByName(drum: DrumType, name: string): void {
-    const p = FACTORY_PRESETS.find((x) => x.name === name);
-    if (p) this.get(drum).adoptPreset(p);
+    this.get(drum).resetToDefault();
   }
 
   canBack(drum: DrumType): boolean {
@@ -804,9 +743,7 @@ export class DrumKit {
     const stack = this.undo.get(drum);
     if (!stack || stack.length === 0) return false;
     const s = stack.pop()!;
-    const p = this.get(drum);
-    p.restore(s.values);
-    p.restoreRanges(s.lo, s.hi);
+    this.get(drum).restore(s.values);
     return true;
   }
 }
