@@ -12,46 +12,45 @@
   float snapshots in. Parameter indices below MUST match src/model/params.ts (ParamId).
 */
 
-// --- Parameter indices (keep in sync with ParamId in src/model/params.ts) ---
+// --- Parameter indices: mirror ParamId in src/model/params.ts EXACTLY (grouped
+// Tone / Amp / Filter / LFO / Fx / Life / Output). A check script asserts they match. ---
 const P = {
+  // Tone
   Pitch: 0, PitchEnvAmount: 1, PitchEnvDecay: 2, Waveform: 3, ToneLevel: 4, NoiseLevel: 5,
-  AmpAttack: 6, AmpDecay: 7, AmpSustain: 8, AmpRelease: 9,
-  FilterType: 10, FilterCutoff: 11, FilterReso: 12,
-  LfoTarget: 13, LfoRate: 14, LfoDepth: 15,
-  Drive: 16, EchoTime: 17, EchoFeedback: 18, EchoMix: 19,
-  ReverbSize: 20, ReverbMix: 21, Volume: 22,
-  // LFO 2 & 3 (appended after Volume; see ParamId in src/model/params.ts).
-  Lfo2Target: 23, Lfo2Rate: 24, Lfo2Depth: 25,
-  Lfo3Target: 26, Lfo3Rate: 27, Lfo3Depth: 28,
-  // Sound-verse expansion (appended after the LFOs; see ParamId in src/model/params.ts).
-  NoiseType: 29, OscModType: 30, OscModRatio: 31, OscModAmount: 32,
-  Crush: 33, Downsample: 34,
-  Lfo1Shape: 35, Lfo2Shape: 36, Lfo3Shape: 37,
-  // 2nd oscillator + sync, wavefolder, Karplus-Strong/comb resonator.
-  Osc2Mix: 38, Osc2Detune: 39, Sync: 40, Fold: 41,
-  CombMix: 42, CombTune: 43, CombDecay: 44,
-  // Envelope curvature + layering (shape 0.5 = linear = legacy; decays 0 = follow amp).
-  AmpAttackShape: 45, AmpDecayShape: 46,
-  ToneDecay: 47, NoiseDecay: 48, ClickLevel: 49, ClickType: 50,
-  // Modal resonators, echo sync/ping-pong, pan, and the per-hit Life params.
-  ModalMix: 51, ModalMaterial: 52, ModalDecay: 53,
-  EchoSync: 54, EchoPing: 55, Pan: 56,
-  AccentAmount: 57, Humanize: 58, HitChance: 59, Ratchet: 60, ChokeGroup: 61,
-  // LFO tempo-sync, one per LFO (Free = LfoRate Hz; a division = one LFO cycle
-  // per that note length at the live tempo, phase-locked to the beat grid).
-  Lfo1Sync: 62, Lfo2Sync: 63, Lfo3Sync: 64,
-  // Per-sound note-hold in seconds (0/absent = the sequencer's default gate).
-  Gate: 65,
+  NoiseType: 6, OscModType: 7, OscModRatio: 8, OscModAmount: 9,
+  Osc2Mix: 10, Osc2Detune: 11, Sync: 12, Fold: 13,
+  Unison: 14, UnisonDetune: 15, FmFeedback: 16, WaveTable: 17, WavePosition: 18,
+  ClickLevel: 19, ClickType: 20,
+  // Amp envelope + per-layer decays
+  AmpAttack: 21, AmpDecay: 22, AmpSustain: 23, AmpRelease: 24,
+  AmpAttackShape: 25, AmpDecayShape: 26, ToneDecay: 27, NoiseDecay: 28, Gate: 29,
+  // Filter + physical-model resonators
+  FilterType: 30, FilterCutoff: 31, FilterReso: 32,
+  CombMix: 33, CombTune: 34, CombDecay: 35,
+  ModalMix: 36, ModalMaterial: 37, ModalDecay: 38,
+  // LFOs (three blocks: dest / rate / depth / shape / sync)
+  LfoTarget: 39, LfoRate: 40, LfoDepth: 41, Lfo1Shape: 42, Lfo1Sync: 43,
+  Lfo2Target: 44, Lfo2Rate: 45, Lfo2Depth: 46, Lfo2Shape: 47, Lfo2Sync: 48,
+  Lfo3Target: 49, Lfo3Rate: 50, Lfo3Depth: 51, Lfo3Shape: 52, Lfo3Sync: 53,
+  // Drive & FX
+  Drive: 54, Crush: 55, Downsample: 56,
+  ModFxType: 57, ModFxRate: 58, ModFxDepth: 59, ModFxFeedback: 60, ModFxMix: 61,
+  EchoTime: 62, EchoFeedback: 63, EchoMix: 64, EchoSync: 65, EchoPing: 66,
+  ReverbSize: 67, ReverbMix: 68,
+  // Per-hit life
+  AccentAmount: 69, Humanize: 70, HitChance: 71, Ratchet: 72, ChokeGroup: 73,
+  // Output
+  Volume: 74, Pan: 75,
 };
 
-// Read a snapshot index that may not exist in older saves (undefined/null -> default).
-const rd = (s, idx, def) => (s[idx] === undefined || s[idx] === null ? def : s[idx]);
+// LFO destination indices, in sync with LFO_TARGETS in src/model/paramSpec.ts. LFO_NONE
+// disables the LFO (falls through the routing switch); it sits LAST in the list.
+const LFO_PITCH = 0, LFO_FILTER = 1, LFO_AMP = 2, LFO_DRIVE = 3, LFO_RESO = 4, LFO_WAVE = 5;
+const LFO_NOISE = 6, LFO_CRUSH = 7, LFO_RING = 8, LFO_WTPOS = 9, LFO_NONE = 10; // WTPos = wavetable scan sweep
 
-// LFO destination indices, in sync with LFO_TARGETS in src/model/paramSpec.ts.
-// LFO_NONE disables the LFO (handled by falling through the routing switch); the
-// newer destinations sit AFTER it so old saves keep meaning what they meant.
-const LFO_PITCH = 0, LFO_FILTER = 1, LFO_AMP = 2, LFO_DRIVE = 3, LFO_RESO = 4, LFO_WAVE = 5, LFO_NONE = 6;
-const LFO_NOISE = 7, LFO_CRUSH = 8, LFO_RING = 9;
+// Primary-oscillator unison voice count per Unison index (0 = Off = single voice).
+const UNISON_VOICES = [1, 3, 5, 7];
+const UNISON_MAX = 7;                 // sized for the phase/detune scratch arrays
 
 // Sound-verse expansion lookup tables — keep in sync with the choice lists in
 // src/model/paramSpec.ts (the stored param is the index into these).
@@ -100,6 +99,81 @@ const VOWELS = [
 const VOWEL_GAINS = [1, 0.5, 0.25];
 const VOWEL_MAKEUP = 1.5;
 
+// --- Wavetable morph oscillator bank --------------------------------------------
+// Each family is a set of morph FRAMES; WavePosition scans/crossfades between them.
+// Every frame is band-limited into MIP levels (harmonic caps) so high notes don't
+// alias — the standard band-limited-wavetable technique. Built once at module load by
+// additive synthesis: harmonics are accumulated into one running table and snapshotted
+// at each mip's harmonic cap (a single pass per frame). Keep WATABLES/WAVETABLES in
+// src/model/paramSpec.ts in sync: family index here = stored WaveTable value minus 1.
+const WT_SIZE = 2048;                 // power of two, so phase wrap is a bit-mask
+const WT_FRAMES = 4;                  // morph frames per family
+const WT_MIP_CAPS = [256, 64, 16];    // harmonics kept per mip (bright -> dull)
+const WT_SIN = new Float32Array(WT_SIZE);
+// Math.PI*2 spelled out: this table is built at module load, before TWO_PI is declared.
+for (let i = 0; i < WT_SIZE; i++) WT_SIN[i] = Math.sin((Math.PI * 2 * i) / WT_SIZE);
+// Per-family harmonic amplitude for harmonic h (1-based) at morph position m (0..1).
+const WT_FAMILIES = [
+  // Formant: a resonant peak that slides UP the harmonic series as m rises.
+  (h, m) => { const peak = 1 + m * 22, bw = 4; return Math.exp(-((h - peak) * (h - peak)) / (2 * bw * bw)); },
+  // Harmonic: a near-sine that opens into a full 1/h saw as m rises.
+  (h, m) => (1 / h) * Math.exp(-h * (1 - m) * 0.12),
+  // Vocal: a fixed low formant plus a second peak that moves with m (vowel-ish).
+  (h, m) => (Math.exp(-((h - 3) * (h - 3)) / 6) + 0.6 * Math.exp(-((h - (6 + m * 18)) * (h - (6 + m * 18))) / 10)) / Math.sqrt(h),
+  // Digital: odd-harmonic square morphing toward a bright inharmonic comb.
+  (h, m) => { const odd = h % 2 ? 1 / h : 0; const comb = (1 / h) * (0.5 + 0.5 * Math.sin(h * (1 + m * 3))); return odd * (1 - m) + comb * m; },
+];
+function buildWavetableBank() {
+  const bank = [];
+  const maxH = WT_MIP_CAPS[0];
+  for (let fam = 0; fam < WT_FAMILIES.length; fam++) {
+    const prof = WT_FAMILIES[fam];
+    const frames = [];
+    for (let fr = 0; fr < WT_FRAMES; fr++) {
+      const m = WT_FRAMES > 1 ? fr / (WT_FRAMES - 1) : 0;
+      const mips = WT_MIP_CAPS.map(() => new Float32Array(WT_SIZE));
+      const acc = new Float32Array(WT_SIZE);
+      let mip = WT_MIP_CAPS.length - 1; // start at the dullest cap and brighten
+      for (let h = 1; h <= maxH; h++) {
+        const a = prof(h, m) || 0;
+        if (a > 1e-6 || a < -1e-6) {
+          for (let i = 0; i < WT_SIZE; i++) acc[i] += a * WT_SIN[(h * i) % WT_SIZE];
+        }
+        while (mip >= 0 && h === WT_MIP_CAPS[mip]) { mips[mip].set(acc); mip--; }
+      }
+      for (const t of mips) {                 // normalise each mip to unit peak
+        let pk = 1e-9;
+        for (let i = 0; i < WT_SIZE; i++) { const v = t[i] < 0 ? -t[i] : t[i]; if (v > pk) pk = v; }
+        const g = 1 / pk;
+        for (let i = 0; i < WT_SIZE; i++) t[i] *= g;
+      }
+      frames.push(mips);
+    }
+    bank.push(frames);
+  }
+  return bank;
+}
+const WT_BANK = buildWavetableBank();
+// Read family `fam` (0-based) at morph `pos`, phase `ph` (0..1), picking a mip from the
+// per-sample phase step `dt` so partials stay below Nyquist; crossfades the two frames
+// nearest `pos` and linearly interpolates within the table.
+function wtSample(fam, pos, ph, dt) {
+  const frames = WT_BANK[fam];
+  const maxHarm = 0.5 / (dt > 1e-6 ? dt : 1e-6);
+  let mip = WT_MIP_CAPS.length - 1;
+  for (let mm = 0; mm < WT_MIP_CAPS.length; mm++) { if (WT_MIP_CAPS[mm] <= maxHarm) { mip = mm; break; } }
+  const fp = clamp(pos, 0, 1) * (WT_FRAMES - 1);
+  const f0 = Math.min(WT_FRAMES - 1, fp | 0);
+  const f1 = Math.min(WT_FRAMES - 1, f0 + 1);
+  const ff = fp - f0;
+  const t0 = frames[f0][mip], t1 = frames[f1][mip];
+  const x = ph * WT_SIZE;
+  const i0 = x | 0, fr = x - i0, i1 = (i0 + 1) & (WT_SIZE - 1);
+  const s0 = t0[i0] * (1 - fr) + t0[i1] * fr;
+  const s1 = t1[i0] * (1 - fr) + t1[i1] * fr;
+  return s0 * (1 - ff) + s1 * ff;
+}
+
 // Echo tempo-sync divisions in BEATS (quarter notes) per EchoSync index; 0 = Free
 // (use EchoTime seconds). Mirrors ECHO_SYNC_BEATS in src/model/paramSpec.ts.
 const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
@@ -119,15 +193,17 @@ const RATCHET_VEL_DECAY = 0.85; // each ratchet sub-hit is a bit quieter
 const CHOKE_RELEASE = 0.02;   // seconds — fast fade when a choke group cuts a sound
 
 // Deterministic accent/ghost weight (0..1) for one hit, from a per-loop LifePlacement
-// (see lines.ts). "everyN" marks every Nth hit at full weight (hits 0, N, 2N… — so the
-// downbeat is hit 0), the rest 0. "ramp" swells the weight across the loop (pos01 0→1),
-// bent from linear (curve 0) toward exponential (curve 1), growing toward the loop's END
-// (dir "up") or its START (dir "down").
+// (see lines.ts). "everyN" marks one hit per group of N at full weight, the rest 0: the
+// offset picks WHICH hit in each group (0 = the first, so hits 0, N, 2N…; 1 = the second;
+// a negative offset counts from the end, -1 = the last). "ramp" swells the weight across
+// the loop (pos01 0→1), bent from linear (curve 0) toward exponential (curve 1), growing
+// toward the loop's END (dir "up") or its START (dir "down").
 function lifeWeight(spec, hitIndex, pos01) {
   if (!spec) return 0;
   if (spec.mode === "everyN") {
     const n = Math.max(1, spec.every | 0);
-    return (hitIndex % n) === 0 ? 1 : 0;
+    const off = spec.offset | 0;
+    return ((((hitIndex - off) % n) + n) % n) === 0 ? 1 : 0;
   }
   const exp = Math.pow(4, clamp(spec.curve || 0, 0, 1)); // 1 (linear) .. 4 (exponential)
   const t = spec.dir === "down" ? 1 - pos01 : pos01;
@@ -466,6 +542,13 @@ class Voice {
     // 2nd oscillator (+ hard sync), wavefolder, comb resonator.
     this.osc2Mix = 0; this.osc2Ratio = 1; this.osc2Phase = 0; this.sync = false;
     this.fold = 0;
+    // Fatter oscillators: primary-osc unison stack + FM operator self-feedback, and a
+    // wavetable morph oscillator that replaces the analog shape when wtFamily > 0.
+    this.unisonCount = 1; this.unisonNorm = 1;
+    this.uPhase = new Float32Array(UNISON_MAX);
+    this.uDetune = new Float32Array(UNISON_MAX);
+    this.fmFeedback = 0; this.fbMod = 0;
+    this.wtFamily = 0; this.wtPos = 0;
     this.combMix = 0; this.combRatio = 1; this.combFb = 0;
     this.comb = new KarplusComb();
     // Layer envelopes (per-source exponential decays) + click transient state.
@@ -518,7 +601,7 @@ class Voice {
     this.lfoRates = [s[P.LfoRate], s[P.Lfo2Rate], s[P.Lfo3Rate]];
     this.lfoDepths = [s[P.LfoDepth], s[P.Lfo2Depth], s[P.Lfo3Depth]];
     this.lfoShapes = [Math.round(s[P.Lfo1Shape]), Math.round(s[P.Lfo2Shape]), Math.round(s[P.Lfo3Shape])];
-    this.lfoSyncs = [Math.round(rd(s, P.Lfo1Sync, 0)), Math.round(rd(s, P.Lfo2Sync, 0)), Math.round(rd(s, P.Lfo3Sync, 0))];
+    this.lfoSyncs = [Math.round(s[P.Lfo1Sync]), Math.round(s[P.Lfo2Sync]), Math.round(s[P.Lfo3Sync])];
     // A tempo-synced LFO starts phase-locked to the transport's beat grid (the
     // echo's tempo-sync applied to modulation): every hit's wobble lands the same
     // way against the bar, wherever in the cycle the note falls. Free LFOs keep
@@ -549,21 +632,36 @@ class Voice {
     this.osc2Phase = 0;
     this.sync = Math.round(s[P.Sync]) >= 1;
     this.fold = clamp(s[P.Fold], 0, 1);
+
+    // Fatter oscillators: unison stack (primary osc only), FM operator self-feedback,
+    // and the wavetable morph oscillator.
+    const uIdx = clamp(Math.round(s[P.Unison]) | 0, 0, UNISON_VOICES.length - 1);
+    this.unisonCount = UNISON_VOICES[uIdx];
+    this.unisonNorm = 1 / Math.sqrt(this.unisonCount);
+    const spreadCents = clamp(s[P.UnisonDetune], 0, 1) * 50; // up to ~50 cents each way
+    for (let u = 0; u < this.unisonCount; u++) {
+      const c = this.unisonCount > 1 ? (u / (this.unisonCount - 1)) * 2 - 1 : 0; // -1..1
+      this.uDetune[u] = Math.pow(2, (c * spreadCents) / 1200);
+      this.uPhase[u] = this.rng() * 0.5 + 0.5; // decorrelate the stack (rng is -1..1)
+    }
+    this.fmFeedback = clamp(s[P.FmFeedback], 0, 1) * Math.PI; // up to ±π feedback
+    this.fbMod = 0;
+    this.wtFamily = clamp(Math.round(s[P.WaveTable]) | 0, 0, WT_FAMILIES.length);
+    this.wtPos = clamp(s[P.WavePosition], 0, 1);
     this.combMix = clamp(s[P.CombMix], 0, 1);
     this.combRatio = s[P.CombTune] > 0 ? s[P.CombTune] : 1;
     this.combFb = 0.85 + clamp(s[P.CombDecay], 0, 1) * 0.14; // 0.85 (pluck) .. 0.99 (string)
     this.comb.reset();
 
     // Layering: per-source exponential decays (0 = follow the amp envelope) and the
-    // click transient. `|| 0` guards snapshots saved before these params existed
-    // (shorter arrays read undefined) so they behave as "off".
-    const toneDec = s[P.ToneDecay] || 0;
-    const noiseDec = s[P.NoiseDecay] || 0;
+    // click transient.
+    const toneDec = s[P.ToneDecay];
+    const noiseDec = s[P.NoiseDecay];
     this.toneEnvCoef = toneDec > 0.004 ? Math.exp(-1 / (toneDec * this.sr)) : 0;
     this.noiseEnvCoef = noiseDec > 0.004 ? Math.exp(-1 / (noiseDec * this.sr)) : 0;
     this.toneEnv = 1; this.noiseEnv = 1;
-    this.clickLevel = clamp(s[P.ClickLevel] || 0, 0, 1);
-    this.clickType = clamp(Math.round(s[P.ClickType] || 0), 0, CLICK_DECAY.length - 1);
+    this.clickLevel = clamp(s[P.ClickLevel], 0, 1);
+    this.clickType = clamp(Math.round(s[P.ClickType]), 0, CLICK_DECAY.length - 1);
     this.clickEnv = this.clickLevel > 0 ? 1 : 0;
     this.clickCoef = Math.exp(-1 / (CLICK_DECAY[this.clickType] * this.sr));
     this.clickPhase = 0;
@@ -572,10 +670,10 @@ class Voice {
 
     // Modal resonator bank, tuned to the note's base pitch. ModalDecay scales every
     // mode's ring time by 4^(2(v-0.5)) — 0.25x tight .. 4x long ring.
-    this.modalMix = clamp(rd(s, P.ModalMix, 0), 0, 1);
+    this.modalMix = clamp(s[P.ModalMix], 0, 1);
     if (this.modalMix > 0) {
-      const decayScale = Math.pow(4, (clamp(rd(s, P.ModalDecay, 0.5), 0, 1) - 0.5) * 2);
-      this.modal.setup(Math.round(rd(s, P.ModalMaterial, 0)), this.basePitch, decayScale, this.sr);
+      const decayScale = Math.pow(4, (clamp(s[P.ModalDecay], 0, 1) - 0.5) * 2);
+      this.modal.setup(Math.round(s[P.ModalMaterial]), this.basePitch, decayScale, this.sr);
     }
     for (let i = 0; i < 3; i++) this.vf[i].reset();
 
@@ -585,7 +683,7 @@ class Voice {
       clamp(s[P.AmpSustain], 0, 1),
       Math.max(0.0001, s[P.AmpRelease]),
       this.sr,
-      s[P.AmpAttackShape], // undefined (old snapshot) -> linear, see shapeExp
+      s[P.AmpAttackShape], // 0.5 = linear, see shapeExp
       s[P.AmpDecayShape]
     );
 
@@ -595,7 +693,7 @@ class Voice {
     this.samplesPlayed = 0; this.noteOffSent = false;
     // A per-sound Gate (seconds) sets the note-hold; an absent/zero param (old
     // snapshots) falls back to the fixed gate the sequencer passed in.
-    const gateSec = rd(s, P.Gate, 0);
+    const gateSec = s[P.Gate];
     this.gateSamples = gateSec > 0 ? Math.max(1, (gateSec * this.sr) | 0) : Math.max(1, gate);
     this.adsr.noteOn();
     this.active = true;
@@ -689,7 +787,7 @@ class Voice {
       }
       // Evaluate the three LFOs and fold each into its destination's modulator.
       let pitchMul = 1, cutoffMul = 1, ampMul = 1, resoMul = 1, driveAdd = 0, pwOff = 0;
-      let noiseMul = 1, ringMul = 1, crushShift = 0;
+      let noiseMul = 1, ringMul = 1, crushShift = 0, wtPosOff = 0;
       for (let L = 0; L < 3; L++) {
         const depth = this.lfoDepths[L];
         const shape = this.lfoShapes[L];
@@ -708,6 +806,7 @@ class Voice {
           case LFO_NOISE:  noiseMul  *= 1 - depth * (0.5 * (1 - v));   break; // noise-layer tremolo
           case LFO_CRUSH:  crushShift += v * depth * 4;                break; // ± bit-depth swing
           case LFO_RING:   ringMul   *= 1 + v * depth;                 break; // bipolar AM (ring)
+          case LFO_WTPOS:  wtPosOff  += v * depth * 0.5;               break; // wavetable scan sweep
           case LFO_NONE:   default:                                   break; // disabled
         }
       }
@@ -740,15 +839,35 @@ class Voice {
       // phase modulation (FM) or amplitude/ring modulation of the carrier.
       let modOut = 0;
       if (this.modType !== 0) {
-        modOut = Math.sin(TWO_PI * this.modPhase);
+        // Self-feedback FM: the operator's own last output bends its phase, morphing the
+        // modulator sine -> saw -> noisy for grittier FM (0 feedback = the plain sine).
+        this.fbMod = Math.sin(TWO_PI * this.modPhase + this.fmFeedback * this.fbMod);
+        modOut = this.fbMod;
         this.modPhase += (freq * this.modRatio) / sr;
         if (this.modPhase >= 1) this.modPhase -= Math.floor(this.modPhase);
       }
       const pw = clamp(0.5 + pwOff, 0.05, 0.95);
       const dt = Math.min(0.25, freq / sr); // phase step for the polyBLEP edges
-      let carrierPhase = this.oscPhase;
-      if (this.modType === 1) carrierPhase += modOut * this.modAmount * FM_INDEX; // FM
-      let osc = this.osc(carrierPhase - Math.floor(carrierPhase), this.waveform, pw, dt);
+      const fmOff = this.modType === 1 ? modOut * this.modAmount * FM_INDEX : 0; // FM phase offset
+      const wtScan = this.wtPos + wtPosOff;
+      // Primary oscillator: a wavetable frame (wtFamily>0) or the analog Sine/Tri/Square/
+      // Saw shape, optionally stacked as a detuned unison (primary osc only) summed and
+      // normalised by 1/√count. Unison=Off runs the single-voice path = today's sound.
+      let osc;
+      if (this.unisonCount > 1) {
+        let sum = 0;
+        for (let u = 0; u < this.unisonCount; u++) {
+          let ph = this.uPhase[u] + fmOff; ph -= Math.floor(ph);
+          const dtu = Math.min(0.25, dt * this.uDetune[u]);
+          sum += this.wtFamily > 0 ? wtSample(this.wtFamily - 1, wtScan, ph, dtu)
+                                   : this.osc(ph, this.waveform, pw, dtu);
+        }
+        osc = sum * this.unisonNorm;
+      } else {
+        let ph = this.oscPhase + fmOff; ph -= Math.floor(ph);
+        osc = this.wtFamily > 0 ? wtSample(this.wtFamily - 1, wtScan, ph, dt)
+                                : this.osc(ph, this.waveform, pw, dt);
+      }
       if (this.modType === 2) osc *= 1 - this.modAmount + this.modAmount * modOut; // ring
 
       // Detuned 2nd oscillator, blended in (hard-sync handled at the phase advance).
@@ -791,6 +910,12 @@ class Voice {
       this.oscPhase += freq / sr;
       let masterWrapped = false;
       if (this.oscPhase >= 1) { this.oscPhase -= Math.floor(this.oscPhase); masterWrapped = true; }
+      if (this.unisonCount > 1) {
+        for (let u = 0; u < this.unisonCount; u++) {
+          this.uPhase[u] += (freq * this.uDetune[u]) / sr;
+          if (this.uPhase[u] >= 1) this.uPhase[u] -= Math.floor(this.uPhase[u]);
+        }
+      }
       if (this.osc2Mix > 0) {
         this.osc2Phase += (freq * this.osc2Ratio) / sr;
         if (this.osc2Phase >= 1) this.osc2Phase -= Math.floor(this.osc2Phase);
@@ -895,6 +1020,75 @@ class Echo {
 }
 
 //============================================================================
+// Modulation FX (chorus / flanger / phaser). Mono in, STEREO out: two quadrature
+// LFO phases (L = sin, R = sin+90°) give real width. Chorus/flanger are a modulated
+// delay line (chorus = longer delay, no/low feedback; flanger = short delay + feedback
+// resonance); phaser is a 6-stage allpass cascade whose notch frequency the LFO sweeps,
+// also with feedback. `type` 1/2/3 = chorus/flanger/phaser; mirrors MODFX_TYPES.
+class ModFx {
+  constructor(sr) {
+    this.sr = sr;
+    this.buf = new Float32Array(((sr * 0.05) | 0) + 4); // 50 ms max delay
+    this.w = 0;
+    this.phase = 0;
+    this.fbL = 0; this.fbR = 0;         // 1-sample feedback memory (per side)
+    this.apL = new Float32Array(6);     // phaser allpass state (per stage, per side)
+    this.apR = new Float32Array(6);
+    this.type = 0; this.rate = 0; this.depth = 0; this.fbAmt = 0;
+    this.baseD = 0; this.modD = 0;      // delay centre / sweep (samples)
+  }
+  setup(type, rate, depth, fb) {
+    this.type = type;
+    this.rate = clamp(rate, 0.01, 8);
+    this.depth = clamp(depth, 0, 1);
+    this.fbAmt = clamp(fb, 0, 1) * 0.9; // keep below self-oscillation
+    const sr = this.sr;
+    if (type === 1) { this.baseD = 0.012 * sr; this.modD = 0.008 * sr * this.depth; }      // chorus
+    else if (type === 2) { this.baseD = 0.0015 * sr; this.modD = 0.003 * sr * this.depth; } // flanger
+  }
+  readInterp(d) {
+    const len = this.buf.length;
+    let rp = this.w - d;
+    while (rp < 0) rp += len;
+    const i0 = rp | 0, fr = rp - i0, i1 = (i0 + 1) % len;
+    return this.buf[i0] * (1 - fr) + this.buf[i1] * fr;
+  }
+  // Phaser: run one side's 6 allpass stages, notch swept by `lfo` (-1..1), with feedback.
+  phaser(x, lfo, state, fbPrev) {
+    const f = 300 * Math.pow(30, (0.5 + 0.5 * lfo)); // ~300 Hz .. ~9 kHz sweep
+    const t = Math.tan(Math.PI * clamp(f, 20, this.sr * 0.45) / this.sr);
+    const a = (t - 1) / (t + 1);
+    let s = x + fbPrev * this.fbAmt;
+    for (let k = 0; k < 6; k++) { const y = a * s + state[k]; state[k] = s - a * y; s = y; }
+    return s;
+  }
+  // Fill stereo `outL`/`outR` (length n) from mono `inp`. No dry mix here — the caller
+  // blends wet against dry so the mix knob and pan stay in one place.
+  render(inp, n, outL, outR) {
+    const inc = this.rate / this.sr;
+    for (let i = 0; i < n; i++) {
+      const x = inp[i];
+      const lfoL = Math.sin(TWO_PI * this.phase);
+      const lfoR = Math.sin(TWO_PI * (this.phase + 0.25));
+      this.phase += inc; if (this.phase >= 1) this.phase -= 1;
+      if (this.type === 3) {
+        this.fbL = this.phaser(x, lfoL, this.apL, this.fbL);
+        this.fbR = this.phaser(x, lfoR, this.apR, this.fbR);
+        outL[i] = this.fbL; outR[i] = this.fbR;
+      } else {
+        const dL = this.baseD + this.modD * (0.5 + 0.5 * lfoL);
+        const dR = this.baseD + this.modD * (0.5 + 0.5 * lfoR);
+        const wetL = this.readInterp(dL), wetR = this.readInterp(dR);
+        this.buf[this.w] = x + (wetL + wetR) * 0.5 * this.fbAmt; // flanger feedback
+        this.w = (this.w + 1) % this.buf.length;
+        outL[i] = wetL; outR[i] = wetR;
+      }
+    }
+  }
+  reset() { this.buf.fill(0); this.w = 0; this.phase = 0; this.fbL = 0; this.fbR = 0; this.apL.fill(0); this.apR.fill(0); }
+}
+
+//============================================================================
 // Freeverb (port of juce::Reverb), mono path.
 class Comb {
   constructor(size) { this.buf = new Float32Array(size); this.i = 0; this.last = 0; }
@@ -955,6 +1149,9 @@ class Channel {
     this.next = 0;
     this.echo = new Echo(sr);
     this.reverb = new Reverb(sr);
+    this.modfx = new ModFx(sr);
+    this.wetL = new Float32Array(128); // stereo modulation-FX wet (block <= 128 samples)
+    this.wetR = new Float32Array(128);
     // Live params (FX/volume + pitch base). Set via setParams, NEVER by trigger,
     // so a pitched melody hit can't clobber the drum's base sound. Mirrors how
     // the C++ engine reads kit.params live while triggering from a snapshot.
@@ -978,6 +1175,7 @@ class Channel {
   resetFx() {
     this.echo.clear();
     this.reverb.reset();
+    this.modfx.reset();
     if (this.pingL) { this.pingL.fill(0); this.pingR.fill(0); this.pingW = 0; }
   }
   killVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].active = false; }
@@ -998,9 +1196,9 @@ class Channel {
 
     const p = this.params;
     const echoMix = p[P.EchoMix];
-    const ping = echoMix > 0.0001 && rd(p, P.EchoPing, 0) >= 0.5;
+    const ping = echoMix > 0.0001 && p[P.EchoPing] >= 0.5;
     // Effective echo delay: a tempo division when synced, else free EchoTime seconds.
-    const sync = Math.round(rd(p, P.EchoSync, 0));
+    const sync = Math.round(p[P.EchoSync]);
     const beats = ECHO_SYNC_BEATS[sync] || 0;
     const delaySec = beats > 0 ? (beats * 60) / Math.max(1, tempo || 120) : p[P.EchoTime];
     const delay = (delaySec * this.sr) | 0;
@@ -1013,10 +1211,20 @@ class Channel {
       this.reverb.setParameters(p[P.ReverbSize], 0.4, verbMix, 1 - verbMix);
       this.reverb.processMono(scratch, n);
     }
+    // Modulation FX (chorus/flanger/phaser): a stereo wet pair from the mono chain, blended
+    // in by ModFxMix. Dry is scaled by (1-mix) and the wet added to L/R below.
+    const modType = Math.round(p[P.ModFxType]);
+    const modMix = clamp(p[P.ModFxMix], 0, 1);
+    const modOn = modType > 0 && modMix > 0.0001;
+    if (modOn) {
+      this.modfx.setup(modType, p[P.ModFxRate], p[P.ModFxDepth], p[P.ModFxFeedback]);
+      this.modfx.render(scratch, n, this.wetL, this.wetR);
+    }
+    const dryG = modOn ? 1 - modMix : 1;
     const vol = p[P.Volume];
     // Constant-power pan, normalised so a CENTRED sound sums into L/R at exactly the
     // old mono level (legacy projects sound identical); hard-panned sides gain +3dB.
-    const pan = clamp(rd(p, P.Pan, 0), -1, 1);
+    const pan = clamp(p[P.Pan], -1, 1);
     const ang = (pan + 1) * 0.25 * Math.PI;
     const gl = Math.cos(ang) * Math.SQRT2;
     const gr = Math.sin(ang) * Math.SQRT2;
@@ -1040,8 +1248,16 @@ class Channel {
         this.pingL[this.pingW] = dry + drt * fb;
         this.pingR[this.pingW] = dl;
         this.pingW = (this.pingW + 1) % len;
-        masterL[offset + i] += dry * gl * (1 - echoMix) + dl * echoMix;
-        masterR[offset + i] += dry * gr * (1 - echoMix) + drt * echoMix;
+        const wl = modOn ? this.wetL[i] * vol * modMix : 0;
+        const wr = modOn ? this.wetR[i] * vol * modMix : 0;
+        masterL[offset + i] += (dry * gl * (1 - echoMix) + dl * echoMix) * dryG + wl;
+        masterR[offset + i] += (dry * gr * (1 - echoMix) + drt * echoMix) * dryG + wr;
+      }
+    } else if (modOn) {
+      for (let i = 0; i < n; i++) {
+        const s = scratch[i] * vol;
+        masterL[offset + i] += s * gl * dryG + this.wetL[i] * vol * modMix;
+        masterR[offset + i] += s * gr * dryG + this.wetR[i] * vol * modMix;
       }
     } else {
       for (let i = 0; i < n; i++) {
@@ -1229,12 +1445,12 @@ class EngineProcessor extends AudioWorkletProcessor {
   triggerSound(id, baseSnap, voiceSnap, gate, tailSec, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack) {
     // Choke groups: this hit silences every other sound in its group (fast-release,
     // not a hard cut) — the classic closed-hat-chokes-open-hat relationship.
-    const group = Math.round(rd(baseSnap, P.ChokeGroup, 0));
+    const group = Math.round(baseSnap[P.ChokeGroup]);
     if (group > 0) {
       for (const [sid, ci] of this.soundToChannel) {
         if (sid === id) continue;
         const os = this.sounds.get(sid);
-        if (os && Math.round(rd(os.snap, P.ChokeGroup, 0)) === group) this.channels[ci].chokeVoices();
+        if (os && Math.round(os.snap[P.ChokeGroup]) === group) this.channels[ci].chokeVoices();
       }
     }
     const c = this.allocate(id);
@@ -1242,7 +1458,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     ch.setParams(baseSnap);
     // Match the voice's per-sound gate so a long-held sound keeps its channel for the
     // whole hold (not just the default gate) before it's eligible to be stolen.
-    const gateSec = rd(baseSnap, P.Gate, 0);
+    const gateSec = baseSnap[P.Gate];
     const holdSamples = gateSec > 0 ? (gateSec * this.sr) | 0 : gate;
     ch.busyUntil = this.clock + holdSamples + Math.max(0, tailSec || 0) * this.sr;
     ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack);
@@ -1270,7 +1486,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       const w = lifeWeight(accentSpec, ctx.hitIndex, ctx.pos01); // 1 = full, 0 = ducked
       vel *= 1 - ACCENT_DUCK * accentSpec.amount * (1 - w);
     } else {
-      const accent = clamp(rd(s, P.AccentAmount, 0), 0, 1);
+      const accent = clamp(s[P.AccentAmount], 0, 1);
       if (accent > 0 && !isAccent) vel *= 1 - ACCENT_DUCK * accent;
     }
 
@@ -1280,17 +1496,17 @@ class EngineProcessor extends AudioWorkletProcessor {
       const w = lifeWeight(ghostSpec, ctx.hitIndex, ctx.pos01); // 1 = fully ghosted
       vel *= 1 - (1 - GHOST_LEVEL) * ghostSpec.amount * w;
     } else {
-      const chance = clamp(rd(s, P.HitChance, 1), 0, 1);
+      const chance = clamp(s[P.HitChance], 0, 1);
       if (chance < 1 && Math.random() > chance) {
         if (Math.random() < GHOST_P) vel *= GHOST_LEVEL;
         else return null; // dropped hit
       }
     }
 
-    const human = clamp(rd(s, P.Humanize, 0), 0, 1);
+    const human = clamp(s[P.Humanize], 0, 1);
     if (human > 0) vel *= 1 + (Math.random() * 2 - 1) * HUMANIZE_LEVEL * human;
     let count = 0, interval = 0;
-    const ratchet = clamp(rd(s, P.Ratchet, 0), 0, 1);
+    const ratchet = clamp(s[P.Ratchet], 0, 1);
     if (ratchet > 0 && Math.random() < ratchet) {
       const r = Math.random();
       count = r < 0.5 ? 2 : r < 0.8 ? 3 : 4;
@@ -1329,15 +1545,15 @@ class EngineProcessor extends AudioWorkletProcessor {
   // params and the volume duck are unchanged.
   silentVariant(snap, mode, to) {
     const v = snap.slice();
-    const vol = rd(v, P.Volume, 0.85);
+    const vol = v[P.Volume];
     const has = to !== undefined && to !== null;
     if (mode === "filter") {
-      const hp = Math.round(rd(v, P.FilterType, 0)) === 1;
+      const hp = Math.round(v[P.FilterType]) === 1;
       v[P.FilterCutoff] = has ? to : (hp ? 9000 : 120); // just past the UI's 200..8000 sweep
       v[P.Volume] = vol * 0.25;
     } else if (mode === "wash") {
       v[P.ReverbMix] = has ? to : 1;
-      v[P.ReverbSize] = Math.max(0.8, rd(v, P.ReverbSize, 0.5));
+      v[P.ReverbSize] = Math.max(0.8, v[P.ReverbSize]);
       v[P.Volume] = vol * 0.2;
     } else if (mode === "thin") {
       v[P.HitChance] = has ? to : 0;
@@ -1351,7 +1567,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       v[P.Volume] = vol * 0.4;
     } else if (mode === "echo") {
       v[P.EchoMix] = has ? to : 0.6; // drowned in delay at the far end, drying into the sound
-      v[P.EchoFeedback] = Math.max(0.6, rd(v, P.EchoFeedback, 0));
+      v[P.EchoFeedback] = Math.max(0.6, v[P.EchoFeedback]);
       v[P.Volume] = vol * 0.3;
     } else {
       v[P.Volume] = has ? to : 0; // "fade": a pure level ramp
@@ -1375,15 +1591,10 @@ class EngineProcessor extends AudioWorkletProcessor {
   // Linear blend of two parameter snapshots at t∈[0,1] — the per-hit morph a
   // transition node plays. Continuous params glide; discrete "type" params (waveform,
   // filter, etc.) land on the nearer end because the voice reads them through
-  // Math.round, so they flip at the midpoint. Tolerates short/older snapshots.
+  // Math.round, so they flip at the midpoint. Both snapshots are full-length.
   lerpSnap(a, b, t) {
-    const len = Math.max(a.length, b.length);
-    const out = new Array(len);
-    for (let i = 0; i < len; i++) {
-      const av = (a[i] === undefined || a[i] === null) ? (b[i] || 0) : a[i];
-      const bv = (b[i] === undefined || b[i] === null) ? (a[i] || 0) : b[i];
-      out[i] = av + (bv - av) * t;
-    }
+    const out = new Array(a.length);
+    for (let i = 0; i < a.length; i++) out[i] = a[i] + (b[i] - a[i]) * t;
     return out;
   }
 
@@ -1522,7 +1733,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         const snd = nd ? this.sounds.get(nd.soundId) : null;
         if (!snd) continue;
         let snap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
-        const preSweepPitch = rd(snap, P.Pitch, 0);
+        const preSweepPitch = snap[P.Pitch];
         // Compose every covering window's tonal morph at the onset's own position —
         // the speed window's own tonal styles included (a "Rush + Filter" sweep rushes
         // WHILE the filter closes), other windows at the same progress they'd give a
@@ -1596,7 +1807,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       hasMorph = modes.includes("morph") && !!sw.morphSnap;
     }
     if (!hasMorph) return null;
-    const gateSec = rd(snap, P.Gate, 0);
+    const gateSec = snap[P.Gate];
     const durSamples = gateSec > 0 ? Math.max(1, (gateSec * this.sr) | 0) : Math.max(1, (this.sr * STEP_GATE_SEC) | 0);
     const durSteps = durSamples / this.samplesPerStep();
     // Composed swept pitch at lane position `fp` — mirrors sweptSnap's morph lerp,
@@ -1609,7 +1820,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         if (!modes.includes("morph") || !sw.morphSnap) continue;
         const raw = clamp((fp - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
         const t = shapeY(raw, sw);
-        const tgt = rd(sw.morphSnap, P.Pitch, p);
+        const tgt = sw.morphSnap[P.Pitch];
         p = sw.side === "in" ? tgt + (p - tgt) * t : p + (tgt - p) * t;
       }
       return Math.max(1, p);
@@ -1635,7 +1846,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (m === "morph") {
         if (!morphSnap) continue;
         const tgt = morphSnap.slice();
-        tgt[P.Volume] = rd(v, P.Volume, 0) * rd(morphSnap, P.Volume, 1);
+        tgt[P.Volume] = v[P.Volume] * morphSnap[P.Volume];
         v = side === "in" ? this.lerpSnap(tgt, v, t) : this.lerpSnap(v, tgt, t);
         continue;
       }
@@ -1810,7 +2021,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (sws) {
         // Melody notes carry their own pitch: sweep a pitched copy so the fade keeps the tune.
         let snap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
-        const preSweepPitch = rd(snap, P.Pitch, 0);
+        const preSweepPitch = snap[P.Pitch];
         for (let si = 0; si < sws.length; si++) {
           const sw = sws[si];
           const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);

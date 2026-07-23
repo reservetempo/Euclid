@@ -289,10 +289,9 @@ export class SoundView {
     return sec;
   }
 
-  // The LFO params rendered as three labelled sub-sections (Dest + Shape + Rate +
-  // Sync + Amt each). Listed explicitly because Shape/Sync were appended at the
-  // param tail and so are not adjacent to their LFO's other params in index order.
-  // Rate only applies while Sync = Free; a division overrides it with a beat-locked
+  // The LFO params rendered as three labelled sub-sections, each listing its five
+  // controls in display order (Dest + Shape + Rate + Sync + Amt) rather than raw enum
+  // order. Rate only applies while Sync = Free; a division overrides it with a beat-locked
   // cycle length (like the echo's sync).
   private lfoSections(): HTMLElement {
     const blocks: ParamId[][] = [
