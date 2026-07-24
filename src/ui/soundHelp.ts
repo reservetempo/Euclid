@@ -98,7 +98,7 @@ function paramDesc(id: ParamId): string {
     case ParamId.LfoTarget:
     case ParamId.Lfo2Target:
     case ParamId.Lfo3Target:
-      return "What this LFO wobbles: Pitch (vibrato, sirens), Filter (cutoff sweeps — wah and wobble), Amp (tremolo), Drive, Reso, or Wave (waveform morphing). None switches the LFO off.";
+      return "What this LFO wobbles. Some destinations swing symmetrically around the current value — Pitch (vibrato/sirens), Filter (cutoff wah & wobble), Amp (tremolo), Ring (through-zero AM), Wave (the square's pulse width), WTPos (sweeps a wavetable's scan). Others DRIVE their effect up from wherever it sits, so they bite even from off — Drive (pumps saturation), Reso (into squelchy resonance), Crush (pumps bit-crush grit), and Noise, which INJECTS noise: the crest hands the sound over to noise (fully at full depth), even if the noise layer is silent — a rhythmic noise burst. None switches the LFO off.";
     case ParamId.Lfo1Shape:
     case ParamId.Lfo2Shape:
     case ParamId.Lfo3Shape:
@@ -346,15 +346,17 @@ const r = Math.exp(-1 / (decay * sr));`;
     case ParamId.LfoTarget:
     case ParamId.Lfo2Target:
     case ParamId.Lfo3Target:
-      return `// engine.js — each LFO's value v (-1..1) folds into its destination
-case LFO_PITCH:  pitchMul  *= Math.pow(2, v * depth * 0.5); break;
-case LFO_FILTER: cutoffMul *= Math.pow(2, v * depth * 2);   break;
-case LFO_AMP:    ampMul    *= 1 - depth * (0.5 * (1 - v));  break;
-case LFO_RESO:   resoMul   *= Math.pow(2, v * depth);       break;
-case LFO_WAVE:   pwOff     += v * depth * 0.45;             break;
-case LFO_NOISE:  noiseMul  *= 1 - depth * (0.5 * (1 - v));  break; // noise tremolo
-case LFO_CRUSH:  crushShift += v * depth * 4;               break; // ± bit depth
-case LFO_RING:   ringMul   *= 1 + v * depth;                break; // bipolar AM`;
+      return `// engine.js — each LFO's value v (-1..1) folds into its destination.
+// The "amount" dests use a unipolar u = ½+½v so they drive up from off.
+case LFO_PITCH:  pitchMul  *= Math.pow(2, v * depth * 0.5);     break; // vibrato
+case LFO_FILTER: cutoffMul *= Math.pow(2, v * depth * 2);       break; // wah
+case LFO_AMP:    ampMul    *= 1 - depth * (0.5 * (1 - v));      break; // tremolo
+case LFO_RING:   ringMul   *= 1 + v * depth;                    break; // through-zero AM
+case LFO_WAVE:   pwOff     += v * depth * 0.45;                 break; // pulse width
+case LFO_DRIVE:  driveAdd  += u * depth * 2;                    break; // pump saturation
+case LFO_RESO:   resoMul   *= Math.pow(2, u * depth * 2.5);     break; // into resonance
+case LFO_CRUSH:  crushShift += u * depth * 8;                   break; // pump crush
+case LFO_NOISE:  noiseInj  += u * depth;  // → noiseAmp blends up to full, tone ducks`;
     case ParamId.Lfo1Shape:
     case ParamId.Lfo2Shape:
     case ParamId.Lfo3Shape:

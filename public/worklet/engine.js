@@ -787,7 +787,7 @@ class Voice {
       }
       // Evaluate the three LFOs and fold each into its destination's modulator.
       let pitchMul = 1, cutoffMul = 1, ampMul = 1, resoMul = 1, driveAdd = 0, pwOff = 0;
-      let noiseMul = 1, ringMul = 1, crushShift = 0, wtPosOff = 0;
+      let noiseInj = 0, ringMul = 1, crushShift = 0, wtPosOff = 0;
       for (let L = 0; L < 3; L++) {
         const depth = this.lfoDepths[L];
         const shape = this.lfoShapes[L];
@@ -797,17 +797,20 @@ class Voice {
         if (this.lfoPhase[L] >= 1) { this.lfoPhase[L] -= 1; this.lfoSH[L] = this.rng(); }
         if (depth <= 0) continue;
         switch (this.lfoTargets[L]) {
-          case LFO_PITCH:  pitchMul  *= Math.pow(2, v * depth * 0.5); break;
-          case LFO_FILTER: cutoffMul *= Math.pow(2, v * depth * 2);   break;
-          case LFO_AMP:    ampMul    *= 1 - depth * (0.5 * (1 - v));   break;
-          case LFO_DRIVE:  driveAdd  += v * depth;                     break;
-          case LFO_RESO:   resoMul   *= Math.pow(2, v * depth);        break;
-          case LFO_WAVE:   pwOff     += v * depth * 0.45;              break;
-          case LFO_NOISE:  noiseMul  *= 1 - depth * (0.5 * (1 - v));   break; // noise-layer tremolo
-          case LFO_CRUSH:  crushShift += v * depth * 4;                break; // ± bit-depth swing
-          case LFO_RING:   ringMul   *= 1 + v * depth;                 break; // bipolar AM (ring)
-          case LFO_WTPOS:  wtPosOff  += v * depth * 0.5;               break; // wavetable scan sweep
-          case LFO_NONE:   default:                                   break; // disabled
+          // The "amount" destinations (Drive/Reso/Noise/Crush) drive their effect UP from
+          // wherever it sits — a unipolar 0..1 wave (½+½v) so the effect actually engages
+          // even from off, instead of a bipolar wobble that mostly clamps at zero.
+          case LFO_PITCH:  pitchMul  *= Math.pow(2, v * depth * 0.5);           break;
+          case LFO_FILTER: cutoffMul *= Math.pow(2, v * depth * 2);             break;
+          case LFO_AMP:    ampMul    *= 1 - depth * (0.5 * (1 - v));            break;
+          case LFO_DRIVE:  driveAdd  += (0.5 + 0.5 * v) * depth * 2;            break; // pump saturation
+          case LFO_RESO:   resoMul   *= Math.pow(2, (0.5 + 0.5 * v) * depth * 2.5); break; // into resonance
+          case LFO_WAVE:   pwOff     += v * depth * 0.45;                       break; // pulse width (square)
+          case LFO_NOISE:  noiseInj  += (0.5 + 0.5 * v) * depth;                break; // inject/override noise
+          case LFO_CRUSH:  crushShift += (0.5 + 0.5 * v) * depth * 8;           break; // pump bit-crush
+          case LFO_RING:   ringMul   *= 1 + v * depth;                          break; // bipolar AM (ring)
+          case LFO_WTPOS:  wtPosOff  += v * depth * 0.5;                        break; // wavetable scan sweep
+          case LFO_NONE:   default:                                            break; // disabled
         }
       }
 
@@ -886,7 +889,14 @@ class Voice {
       let toneAmp = this.toneLevel, noiseAmp = this.noiseLevel;
       if (this.toneEnvCoef > 0) { toneAmp *= this.toneEnv; this.toneEnv *= this.toneEnvCoef; }
       if (this.noiseEnvCoef > 0) { noiseAmp *= this.noiseEnv; this.noiseEnv *= this.noiseEnvCoef; }
-      if (noiseMul !== 1) noiseAmp *= noiseMul; // a NOISE-destination LFO breathes the layer
+      // A NOISE-destination LFO INJECTS noise: it blends the noise level up toward full and
+      // ducks the tone, so the wave crest can override the sound with noise (fully at depth 1)
+      // even when the noise layer is off — a rhythmic noise burst, not just a tremolo.
+      if (noiseInj > 0) {
+        const inj = noiseInj > 1 ? 1 : noiseInj;
+        noiseAmp += (1 - noiseAmp) * inj;
+        toneAmp *= 1 - 0.7 * inj;
+      }
       let mixed = toneAmp * osc + noiseAmp * noise;
 
       // A RING-destination LFO amplitude-modulates the whole mix (bipolar — full depth
