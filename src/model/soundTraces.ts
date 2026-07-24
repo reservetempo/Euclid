@@ -15,7 +15,8 @@
 // setting is INACTIVE (not drawn); giving its level a value brings it to life.
 
 import { ParamId } from "./params";
-import { LFO_NONE } from "./paramSpec";
+import { LFO_NONE, ENV_SHAPES } from "./paramSpec";
+import { BlendShapeId, blendShape, blendShapeSpec } from "./lines";
 
 /** One editable variable of a trace's formula, bound to a snapshot param. */
 export interface TraceVar {
@@ -131,9 +132,35 @@ function lfoWave(shape: number, p: number): number {
   }
 }
 
-/** One decaying layer (level · e^(−t/decay)); decay 0 = follows the amp (persists). */
-const layerCurve = (level: number, decay: number, t: number) =>
-  clamp01(level * (decay > 0.004 ? Math.exp(-t / decay) : 1));
+// Envelope-contour shapes for the pitch sweep + the layer decays. Stored index → BlendShapeId
+// (null = "Exp", the legacy exponential). MUST mirror ENV_SHAPE_IDS in engine.js and the
+// ENV_SHAPES choice list in paramSpec.ts (Line = ramp, Triangle = zigzag).
+const ENV_SHAPE_IDS: (BlendShapeId | null)[] = [null, "ramp", "scurve", "parabola", "sine", "cos", "zigzag", "wobble"];
+const envShapeIdx = (v: number) => Math.max(0, Math.min(ENV_SHAPE_IDS.length - 1, Math.round(v)));
+const envShapeId = (v: number): BlendShapeId | null => ENV_SHAPE_IDS[envShapeIdx(v)];
+
+/** A shaped decay envelope value (1 → 0/…) at time t over a window of D seconds — mirrors
+    the engine: null shape = the legacy e^(−t/D); otherwise 1 − blendShape(t/D), so it starts
+    at 1 and (for the monotonic shapes) leaves at 0, while sine/wobble rise-and-fall en route. */
+function shapedDecay(shape: BlendShapeId | null, curve: number, cycles: number, t: number, D: number): number {
+  const d = Math.max(0.001, D);
+  return shape === null ? Math.exp(-t / d) : 1 - blendShape({ shape, curve, cycles }, Math.min(1, t / d));
+}
+
+/** The formula-text pieces for a shaped envelope (used by pitch + the layer decays): the
+    exponential form for Exp, else "<shape>(t/D)" with the shape's curve knob and (for the
+    periodic shapes) its wave count. `dIdx`/`curveIdx`/`cyclesIdx` are the var indices. */
+function shapeParts(
+  shapeVal: number, lead: (string | number)[], tail: string,
+  dIdx: number, curveIdx: number, cyclesIdx: number,
+): (string | number)[] {
+  const shape = envShapeId(shapeVal);
+  if (shape === null) return [...lead, "e^(−t/", dIdx, ")", tail];
+  const nm = ENV_SHAPES[envShapeIdx(shapeVal)].toLowerCase();
+  const spec = blendShapeSpec(shape);
+  const out = [...lead, `${nm}(t/`, dIdx, ")", tail, `  ·  ${spec.curveLabel} `, curveIdx];
+  return spec.usesCycles ? [...out, ", waves ", cyclesIdx] : out;
+}
 
 /** The modal ring envelope: the material's real mode sum Σ gₖ·e^(−t/τₖ), τₖ scaled by
     the decay knob (0.45s base · 4^(2(D−½)) · the material's per-mode weight). */
@@ -205,23 +232,29 @@ switch (target) {
 export const SOUND_TRACES: TraceSpec[] = [
   {
     id: "pitch", label: "Pitch", color: "#ff6b6b",
-    parts: ["f(t) = ", 0, " · (1 + ", 1, " · e^(−t/", 2, ")) Hz"],
+    parts: (g) => shapeParts(g(ParamId.PitchEnvShape), ["f(t) = ", 0, " · (1 + ", 1, " · "], ") Hz", 2, 3, 4),
     vars: [
       { sym: "P", param: ParamId.Pitch, step: 5, fmt: hzFmt },
       { sym: "A", param: ParamId.PitchEnvAmount, step: 0.1, fmt: (v) => String(r2(v)) },
       { sym: "D", param: ParamId.PitchEnvDecay, step: 0.01, fmt: secFmt },
+      { sym: "curve", param: ParamId.PitchEnvCurve, step: 2, scale: 100, fmt: pctFmt },
+      { sym: "waves", param: ParamId.PitchEnvCycles, step: 0.25, fmt: (v) => String(r2(v)) },
     ],
+    types: [{ label: "Shape", param: ParamId.PitchEnvShape }],
     active: (g) => g(ParamId.ToneLevel) > 0.001,
     duration: () => Infinity, // the tone holds its base pitch for the whole note
-    curve: (g, t) => hzNorm(g(ParamId.Pitch) * (1 + g(ParamId.PitchEnvAmount) * Math.exp(-t / Math.max(0.001, g(ParamId.PitchEnvDecay))))),
+    curve: (g, t) => hzNorm(g(ParamId.Pitch) * (1 + g(ParamId.PitchEnvAmount)
+      * shapedDecay(envShapeId(g(ParamId.PitchEnvShape)), g(ParamId.PitchEnvCurve), g(ParamId.PitchEnvCycles), t, g(ParamId.PitchEnvDecay)))),
     fromTo: (g) => {
       const p = g(ParamId.Pitch);
-      return `${Math.round(p * (1 + g(ParamId.PitchEnvAmount)))} Hz → ${Math.round(p)} Hz`;
+      const nm = ENV_SHAPES[envShapeIdx(g(ParamId.PitchEnvShape))];
+      return `${Math.round(p * (1 + g(ParamId.PitchEnvAmount)))} Hz → ${Math.round(p)} Hz  (${nm})`;
     },
-    about: "The tone's frequency for the note's whole life: it starts at P·(1+A), settles onto the base pitch P as the sweep decays, and holds there (negative A rises up into the note instead). For a wobbling pitch, point an LFO at Pitch.",
-    code: `// engine.js — Voice.renderAdding: the per-sample pitch
+    about: "The tone's frequency for the note's whole life. It starts at P·(1+A) and moves toward the base pitch P over the D window (negative A rises up into the note instead). SHAPE picks HOW it travels: Exp is the classic exponential drop; Line is a straight sloped ramp whose angle the curve bends toward exponential; S-curve/Parabola bend differently; and Sine/Cos/Triangle/Wobble make the pitch rise AND fall across the sweep (waves = how many times). For a continuous wobble over the whole note instead, point an LFO at Pitch.",
+    code: `// engine.js — Voice.renderAdding: the per-sample pitch (env runs 1→0)
 let freq = basePitch * (1 + pitchEnvAmount * pitchEnv) * pitchMul;
-pitchEnv *= pitchEnvCoef; // = exp(-1 / (D * sampleRate)) — the e^(−t/D)`,
+if (pitchEnvShape === null) pitchEnv *= pitchEnvCoef;      // Exp: exp(−t/D)
+else pitchEnv = 1 - shapeT(min(1, t/D), {shape, curve, cycles}); // shaped contour`,
   },
   {
     id: "amp", label: "Amp", color: "#ffa94d",
@@ -266,44 +299,57 @@ if (samplesPlayed >= gateSeconds * sampleRate) adsr.noteOff();`,
   },
   {
     id: "tone", label: "Tone", color: "#ffd43b",
-    parts: ["y(t) = ", 0, " · e^(−t/", 1, ")"],
+    parts: (g) => shapeParts(g(ParamId.ToneEnvShape), ["y(t) = ", 0, " · "], "", 1, 2, 3),
     vars: [
       { sym: "L", param: ParamId.ToneLevel, step: 2, scale: 100, fmt: pctFmt },
       { sym: "D", param: ParamId.ToneDecay, step: 0.01, fmt: secFmt },
+      { sym: "curve", param: ParamId.ToneEnvCurve, step: 2, scale: 100, fmt: pctFmt },
+      { sym: "waves", param: ParamId.ToneEnvCycles, step: 0.25, fmt: (v) => String(r2(v)) },
     ],
-    types: [{ label: "Wave", param: ParamId.Waveform }],
+    types: [{ label: "Wave", param: ParamId.Waveform }, { label: "Shape", param: ParamId.ToneEnvShape }],
     active: (g) => g(ParamId.ToneLevel) > 0.001,
     // Its OWN decay ends it early; D = 0 follows the amp (persists with the note).
     duration: (g) => (g(ParamId.ToneDecay) > 0.004 ? Math.min(8, g(ParamId.ToneDecay) * 4) : Infinity),
-    curve: (g, t) => layerCurve(g(ParamId.ToneLevel), g(ParamId.ToneDecay), t),
-    fromTo: (g) => `${Math.round(g(ParamId.ToneLevel) * 100)}% → ${g(ParamId.ToneDecay) > 0.004 ? "0" : "held (follows the amp)"}`,
-    about: "The oscillator layer's own level and decay clock (D = 0 rides the amp envelope for the whole note instead). L = 0 removes the tone entirely — noise-only sounds.",
-    code: `// engine.js — Voice.renderAdding: the tone layer's own clock
+    curve: (g, t) => clamp01(g(ParamId.ToneLevel) * (g(ParamId.ToneDecay) > 0.004
+      ? shapedDecay(envShapeId(g(ParamId.ToneEnvShape)), g(ParamId.ToneEnvCurve), g(ParamId.ToneEnvCycles), t, g(ParamId.ToneDecay))
+      : 1)),
+    fromTo: (g) => `${Math.round(g(ParamId.ToneLevel) * 100)}% → ${g(ParamId.ToneDecay) > 0.004 ? `0 (${ENV_SHAPES[envShapeIdx(g(ParamId.ToneEnvShape))]})` : "held (follows the amp)"}`,
+    about: "The oscillator layer's own level and decay clock (D = 0 rides the amp envelope for the whole note instead). SHAPE bends the decay contour — Exp is the classic exponential fall, Line a straight slope, and Sine/Wobble make the layer swell and duck across its decay. L = 0 removes the tone entirely — noise-only sounds.",
+    code: `// engine.js — Voice.renderAdding: the tone layer's own clock (env 1→0)
 let toneAmp = toneLevel;
-if (toneEnvCoef > 0) {          // D > 0: its own exponential decay
+if (toneEnvCoef > 0) {          // D > 0: its own decay
   toneAmp *= toneEnv;
-  toneEnv *= toneEnvCoef;       // = exp(-1 / (D * sampleRate))
+  if (toneEnvShape === null) toneEnv *= toneEnvCoef;        // Exp: exp(−t/D)
+  else toneEnv = 1 - shapeT(min(1, t/D), {shape, curve, cycles}); // shaped
 }                               // D = 0: rides the amp ADSR instead
 mixed = toneAmp * osc + noiseAmp * noise;`,
   },
   {
     id: "noise", label: "Noise", color: "#a9e34b",
-    parts: ["y(t) = ", 0, " · e^(−t/", 1, ")"],
+    parts: (g) => shapeParts(g(ParamId.NoiseEnvShape), ["y(t) = ", 0, " · "], "", 1, 2, 3),
     vars: [
       { sym: "L", param: ParamId.NoiseLevel, step: 2, scale: 100, fmt: pctFmt },
       { sym: "D", param: ParamId.NoiseDecay, step: 0.01, fmt: secFmt },
+      { sym: "curve", param: ParamId.NoiseEnvCurve, step: 2, scale: 100, fmt: pctFmt },
+      { sym: "waves", param: ParamId.NoiseEnvCycles, step: 0.25, fmt: (v) => String(r2(v)) },
     ],
-    types: [{ label: "Colour", param: ParamId.NoiseType }],
+    types: [{ label: "Colour", param: ParamId.NoiseType }, { label: "Shape", param: ParamId.NoiseEnvShape }],
     active: (g) => g(ParamId.NoiseLevel) > 0.001,
     duration: (g) => (g(ParamId.NoiseDecay) > 0.004 ? Math.min(8, g(ParamId.NoiseDecay) * 4) : Infinity),
-    curve: (g, t) => layerCurve(g(ParamId.NoiseLevel), g(ParamId.NoiseDecay), t),
-    fromTo: (g) => `${Math.round(g(ParamId.NoiseLevel) * 100)}% → ${g(ParamId.NoiseDecay) > 0.004 ? "0" : "held (follows the amp)"}`,
-    about: "The noise layer's level and its own decay (D = 0 rides the amp for the whole note). The colour tilts its spectrum — white hiss to crackle and metal.",
-    code: `// engine.js — Voice.renderAdding: the noise layer + its colour
+    curve: (g, t) => clamp01(g(ParamId.NoiseLevel) * (g(ParamId.NoiseDecay) > 0.004
+      ? shapedDecay(envShapeId(g(ParamId.NoiseEnvShape)), g(ParamId.NoiseEnvCurve), g(ParamId.NoiseEnvCycles), t, g(ParamId.NoiseDecay))
+      : 1)),
+    fromTo: (g) => `${Math.round(g(ParamId.NoiseLevel) * 100)}% → ${g(ParamId.NoiseDecay) > 0.004 ? `0 (${ENV_SHAPES[envShapeIdx(g(ParamId.NoiseEnvShape))]})` : "held (follows the amp)"}`,
+    about: "The noise layer's level and its own decay (D = 0 rides the amp for the whole note). SHAPE bends the decay the same way the tone's does (Line slope, Sine/Wobble swell-and-duck). The colour tilts its spectrum — white hiss to crackle and metal.",
+    code: `// engine.js — Voice.renderAdding: the noise layer + its colour (env 1→0)
 const noise = this.nextNoise();  // white / pink / brown / blue / violet /
                                  // crackle (sparse impulses) / metal (S&H)
 let noiseAmp = noiseLevel;
-if (noiseEnvCoef > 0) { noiseAmp *= noiseEnv; noiseEnv *= noiseEnvCoef; }
+if (noiseEnvCoef > 0) {
+  noiseAmp *= noiseEnv;
+  if (noiseEnvShape === null) noiseEnv *= noiseEnvCoef;      // Exp: exp(−t/D)
+  else noiseEnv = 1 - shapeT(min(1, t/D), {shape, curve, cycles}); // shaped
+}
 mixed = toneAmp * osc + noiseAmp * noise;`,
   },
   {

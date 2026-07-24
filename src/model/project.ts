@@ -2,10 +2,15 @@
 // every drum's sound, and tempo. Plain JSON, used for both localStorage autosave and
 // files.
 //
-// The project is serialized as version 12: a procedural placement model (see track.ts)
+// The project is serialized as version 13: a procedural placement model (see track.ts)
 // where each colour is an ordered list of loops carrying a placement rule. Only version
-// 12 loads; any other version loads with a BLANK track (its tempo and drum kit are still
-// restored). The format is not back-compatible with earlier generations of the app.
+// 13 loads; any other version loads with a BLANK track (tempo is still restored). The
+// format is not back-compatible with earlier generations of the app.
+//
+// v13 (from v12) inserted the pitch/tone/noise envelope-SHAPE params mid-snapshot, so the
+// stored parameter indices shifted — an old snapshot no longer lines up. The drum kit is
+// therefore only restored for v13; older files fall back to the default kit (their sound
+// snapshots would otherwise be scrambled by the index shift).
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
@@ -90,7 +95,7 @@ export interface ColorJSON {
 }
 
 export interface ProjectJSON {
-  version: number; // 12 = current format; anything else loads blank
+  version: number; // 13 = current format; anything else loads blank
   tempo: number;
   barLimit?: number;
   root?: number;
@@ -169,7 +174,7 @@ export function serialize(
     drumSnaps[d] = kit.get(d).capture();
   }
   return {
-    version: 12,
+    version: 13,
     tempo,
     barLimit: track.barLimit,
     root: track.root,
@@ -469,7 +474,7 @@ export function deserialize(
   track.melodies = [];
 
   const v = json && json.version;
-  if (json && typeof v === "number" && v === 12) {
+  if (json && typeof v === "number" && v === 13) {
     track.melodies = readMelodies(json);
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
@@ -485,11 +490,16 @@ export function deserialize(
     track.root = typeof json.root === "number" ? ((json.root % 12) + 12) % 12 : 0;
     track.scale = typeof json.scale === "number" ? json.scale : 0;
   }
-  // (Any other version: track left blank on purpose — only tempo + kit below are restored.)
+  // (Any other version: track left blank on purpose — only the tempo below is restored.)
 
-  for (const d of drums) {
-    const snap = json.drums?.[d];
-    if (snap) kit.get(d).restore(snap);
+  // The drum kit is only restored for the current version: v13 shifted the snapshot
+  // indices (envelope-shape params), so an older kit snapshot would map onto the wrong
+  // params. Older files keep the default kit rather than a scrambled one.
+  if (v === 13) {
+    for (const d of drums) {
+      const snap = json.drums?.[d];
+      if (snap) kit.get(d).restore(snap);
+    }
   }
 
   return typeof json.tempo === "number" ? json.tempo : 120;

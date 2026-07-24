@@ -8,6 +8,9 @@ export enum ParamId {
   Pitch = 0,
   PitchEnvAmount,
   PitchEnvDecay,
+  PitchEnvShape,   // pitch-sweep contour: Exp (legacy) / Line / S-curve / Parabola / Sine / Cos / Triangle / Wobble
+  PitchEnvCurve,   // the shape's curve knob: slope-bend / steepness / warp / depth (0..1)
+  PitchEnvCycles,  // wave count for the periodic shapes (Sine/Cos/Triangle/Wobble)
   Waveform,
   ToneLevel,
   NoiseLevel,
@@ -34,7 +37,13 @@ export enum ParamId {
   AmpAttackShape,  // attack curve: 0 plucky .. 0.5 linear .. 1 slow swell
   AmpDecayShape,   // decay+release curve: 0 gated hold .. 0.5 linear .. 1 percussive
   ToneDecay,       // independent exponential decay for the oscillator layer (0 = follow amp)
+  ToneEnvShape,    // oscillator-layer decay contour (Exp legacy / Line / S-curve / ... — see PitchEnvShape)
+  ToneEnvCurve,    // the tone-decay shape's curve knob (0..1)
+  ToneEnvCycles,   // wave count for the tone-decay periodic shapes
   NoiseDecay,      // independent exponential decay for the noise layer (0 = follow amp)
+  NoiseEnvShape,   // noise-layer decay contour (Exp legacy / Line / S-curve / ...)
+  NoiseEnvCurve,   // the noise-decay shape's curve knob (0..1)
+  NoiseEnvCycles,  // wave count for the noise-decay periodic shapes
   Gate,            // note-hold in seconds before note-off (with Sustain = note length)
   // --- Filter + physical-model resonators ---
   FilterType,
