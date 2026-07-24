@@ -85,7 +85,10 @@ export function baseSpec(id: ParamId): ParamSpec {
     // Bipolar: negative amounts START the note low and rise into the base pitch
     // (reverse-cymbal swells, zap risers); positive is the classic drop-from-above.
     case ParamId.PitchEnvAmount: return make("Pitch Env", -2, 5, 0, 1, 0.05, "x");
-    case ParamId.PitchEnvDecay:  return make("Pitch Dec", 0.005, 0.6, 0.06, 0.35, 0.005, "s");
+    // Max reaches 2s so a pitch sweep can span a long note (the shuffle keeps ordinary
+    // draws short — see PITCH_DECAY_SHUFFLE_CAP in drumKit.ts — and only its occasional
+    // "evolve to the end" pass uses the top of this range).
+    case ParamId.PitchEnvDecay:  return make("Pitch Dec", 0.005, 2.0, 0.06, 0.3, 0.005, "s");
     // Pitch-sweep contour: Exp (default) = the classic exponential drop/rise; Line +
     // Curve = a straight sloped ramp bendable toward exponential; the rest give
     // s-curve / parabola / oscillating (sine/cos/triangle/wobble) motion over the decay.
