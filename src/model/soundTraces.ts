@@ -15,6 +15,7 @@
 // setting is INACTIVE (not drawn); giving its level a value brings it to life.
 
 import { ParamId } from "./params";
+import { LFO_NONE } from "./paramSpec";
 
 /** One editable variable of a trace's formula, bound to a snapshot param. */
 export interface TraceVar {
@@ -173,7 +174,7 @@ function lfoTrace(
       { label: "Dest", param: target },
       { label: "Sync", param: sync },
     ],
-    active: (g) => g(depth) > 0.001 && Math.round(g(target)) !== 6, // 6 = Off destination
+    active: (g) => g(depth) > 0.001 && Math.round(g(target)) !== LFO_NONE, // hide when routed to "None"
     duration: () => Infinity, // the wobble runs as long as the note does
     curve: (g, t, ctx) => clamp01(0.5 + 0.5 * g(depth) * lfoWave(g(shape), lfoHz(g, rate, sync, ctx) * t)),
     fromTo: (g, ctx) => `±${Math.round(g(depth) * 100)}% at ${r2(lfoHz(g, rate, sync, ctx))} Hz`,
