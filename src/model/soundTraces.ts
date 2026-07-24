@@ -177,21 +177,25 @@ function lfoTrace(
     duration: () => Infinity, // the wobble runs as long as the note does
     curve: (g, t, ctx) => clamp01(0.5 + 0.5 * g(depth) * lfoWave(g(shape), lfoHz(g, rate, sync, ctx) * t)),
     fromTo: (g, ctx) => `±${Math.round(g(depth) * 100)}% at ${r2(lfoHz(g, rate, sync, ctx))} Hz`,
-    about: "A repeating wobble applied to its destination for the note's whole life — the wave is the function's shape, Dest picks WHAT it bends (pitch vibrato, filter wah, amp or noise tremolo, drive, reso, pulse width, crush grit, ring AM…), Sync beat-locks one cycle to that note length at the live tempo (the Rate knob is ignored then, and the formula shows the synced rate instead). Depth 0 turns it off.",
+    about: "A repeating wobble applied to its destination for the note's whole life — the wave is the function's shape and Dest picks WHAT it bends. The bends fall into two families. Bipolar ones swing symmetrically around the current value: Pitch (vibrato, ±½ octave at full depth), Filter (wah, ±2 octaves), Amp (tremolo down to silence), Ring (through-zero AM), Wave (the square's pulse width — silent on sine/tri/saw), and WTPos (sweeps a wavetable's scan — needs a Table chosen). The \"amount\" ones instead DRIVE their effect up from wherever it sits, so they bite even from off: Drive pumps saturation, Reso pushes the filter into squelchy resonance, Crush pumps the bit-crush grit, and Noise INJECTS noise — blending the noise level up toward full (and ducking the tone) so the crest can hand the whole sound over to noise, even when the noise layer is silent: a rhythmic noise burst rather than a tremolo. Sync beat-locks one cycle to that note length at the live tempo (the Rate knob is ignored then, and the formula shows the synced rate). Depth 0 turns it off.",
     code: `// engine.js — Voice.renderAdding: the per-sample LFO
 const beats = LFO_SYNC_BEATS[sync] || 0;
 lfoInc = (beats > 0 ? tempo / (60 * beats)   // synced: one cycle per division
                     : lfoRate) / sampleRate; // free: the Rate knob in Hz
 v = shape === S_AND_H ? heldRandom : lfoWave(shape, lfoPhase); // -1..1
 lfoPhase += lfoInc;
+const u = 0.5 + 0.5 * v;                      // unipolar 0..1, for the "amount" dests
 switch (target) {
-  case PITCH:  pitchMul  *= Math.pow(2, v * depth * 0.5); break;
-  case FILTER: cutoffMul *= Math.pow(2, v * depth * 2);   break;
-  case AMP:    ampMul    *= 1 - depth * (0.5 * (1 - v));  break;
-  case NOISE:  noiseMul  *= 1 - depth * (0.5 * (1 - v));  break; // noise tremolo
-  case CRUSH:  crushShift += v * depth * 4;               break; // ± bit depth
-  case RING:   ringMul   *= 1 + v * depth;                break; // bipolar AM
-  // … DRIVE, RESO, WAVE (pulse width)
+  case PITCH:  pitchMul  *= Math.pow(2, v * depth * 0.5);        break; // vibrato
+  case FILTER: cutoffMul *= Math.pow(2, v * depth * 2);          break; // wah
+  case AMP:    ampMul    *= 1 - depth * (0.5 * (1 - v));         break; // tremolo
+  case RING:   ringMul   *= 1 + v * depth;                       break; // through-zero AM
+  case WAVE:   pwOff     += v * depth * 0.45;                    break; // pulse width (square)
+  case DRIVE:  driveAdd  += u * depth * 2;                       break; // pump saturation
+  case RESO:   resoMul   *= Math.pow(2, u * depth * 2.5);        break; // into resonance
+  case CRUSH:  crushShift += u * depth * 8;                      break; // pump bit-crush
+  case NOISE:  noiseInj  += u * depth;                           break; // inject/override noise
+  // NOISE at the mix: noiseAmp += (1 - noiseAmp) * inj; toneAmp *= 1 - 0.7 * inj;
 }`,
   };
 }
@@ -425,7 +429,7 @@ masterL[i] += s * gl * (1 - mix) + wetL[i] * mix; // blended by Mix`,
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.Drive) / 2),
     fromTo: (g) => `${r2(g(ParamId.Drive))} of 2 the whole time`,
-    about: "Saturation pressed onto the whole sound — constant, so it draws as a level line. Point an LFO at Drive to make it seethe. 0 is clean.",
+    about: "A tanh saturator pressed onto the whole post-filter sound: low amounts fatten and glue the layers together, high amounts overdrive into buzz and clip the peaks (its makeup is bounded so it thickens rather than just getting louder). Constant across the note, so it draws as a level line — point an LFO at Drive and it now pumps the saturation up hard on each crest (a rhythmic grind), and reach for it to make a thin tone sit bigger in the mix. 0 is clean.",
     code: `// engine.js — Voice.renderAdding: the saturator
 const drive = clamp(driveKnob + driveLfo, 0, 2);
 if (drive > 0) filtered = Math.tanh(filtered * (1 + drive * 5));`,
@@ -478,7 +482,7 @@ if (bits > 0) {                            // quantise to 2^bits levels
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.Fold)),
     fromTo: (g) => `${Math.round(g(ParamId.Fold) * 100)}% the whole time`,
-    about: "The wavefolder bending the wave back on itself — steady, so a level line. 0 is off.",
+    about: "A wavefolder: instead of clipping the peaks flat, it folds the waveform back on itself through a sine shaper, so more input keeps adding new harmonics — subtle amounts add a metallic sheen, high amounts turn even a plain sine into a bright, hollow, almost-vocal buzz. Steady across the note, so it draws as a level line; it pairs especially well with a slow Pitch or Filter LFO, which sweeps the folds. 0 is off (the dry wave is untouched).",
     code: `// engine.js — Voice.renderAdding: the wavefolder
 if (fold > 0) osc = Math.sin(osc * (1 + fold * FOLD_GAIN) * 1.5707963);
 // more gain → the sine folds the wave back on itself → extra harmonics`,

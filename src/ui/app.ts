@@ -3714,11 +3714,11 @@ export class App {
     },
     {
       name: "The setting buttons",
-      desc: "One coloured button per setting, matching its line. The first page is the active settings; ‹ › pages through the inactive ones (dashed). Tap one to open its formula — every value editable inline (tap = keypad, drag = scrub), with its own ? explaining the function and the engine code behind it. Give an inactive setting's level a value and its line appears.",
+      desc: "One coloured button per setting, matching its line. The first page is the ACTIVE settings; ‹ › pages through the inactive ones (drawn dashed). Every corner of the engine is here — the oscillators (Tone, Osc 2, Unison, Wavetable, FM/Ring), the noise and click layers, the filter and its resonators (Comb, Modal), the three LFOs, the effects (Drive, Fold, Bitcrush, Echo, Reverb, Mod FX) and per-hit Life. Tap one to open its formula: every value is editable inline (tap = keypad, drag = scrub), with its own ? explaining the function and the engine code behind it. Give an inactive setting's level a value and its line springs to life on the graph.",
     },
     {
       name: "The toolbar",
-      desc: "The line above the graph. 🎲 (highlighted) shuffles a whole new sound — watch the graph redraw; ↩ steps back through shuffles; ↺ resets to the preset. Tapping the graph itself plays the current sound (no loop needed). The ? on the far right opens this glossary.",
+      desc: "The line above the graph. 🎲 (highlighted) shuffles a whole new sound — every setting redrawn at once, watch the graph redraw; ↩ steps back through previous shuffles; ↺ resets to the default sound (continuous values centred, types and levels at their defaults). Tapping the graph itself plays the current sound (no loop needed). The ? on the far right opens this glossary.",
     },
     {
       name: "Gate / Max len / Spread",
