@@ -289,7 +289,7 @@ else pitchEnv = 1 - shapeT(min(1, t/D), {shape, curve, cycles}); // shaped conto
       return clamp01(at(gate) * Math.pow(Math.max(0, 1 - (t - gate) / r), dExp));
     },
     fromTo: (g) => `held ${r2(g(ParamId.Gate) > 0 ? g(ParamId.Gate) : 0.4)}s, then ${r2(g(ParamId.AmpRelease))}s release`,
-    about: "The loudness envelope every hit rides: attack up (bent by a-curve — under 50 is plucky, over 50 swells), decay to the sustain level (bent by d-curve), held while the note is on (the gate), then the release tail.",
+    about: "The master loudness shape every hit rides from trigger to silence — the single biggest thing deciding whether a sound reads as a drum or a pad. It climbs over the attack (atk, bent by a-curve — under 50 is plucky and immediate, over 50 a slow swell), falls to the sustain level over the decay (dec, bent by d-curve — low is a gated hold-then-drop, high the natural percussive tail), holds at that level while the note is gated on, then fades over the release (rel). With sustain at 0 the hit dies during its decay and never holds — the normal drum case; raise sustain for held notes and drones.",
     code: `// engine.js — the shaped ADSR (t = each segment's 0..1 phase)
 attack:  value = Math.pow(t, aExp);                    // a-curve → aExp = 4^(2s−1)
 decay:   value = sus + (1 - sus) * Math.pow(1 - t, dExp);
@@ -314,7 +314,7 @@ if (samplesPlayed >= gateSeconds * sampleRate) adsr.noteOff();`,
       ? shapedDecay(envShapeId(g(ParamId.ToneEnvShape)), g(ParamId.ToneEnvCurve), g(ParamId.ToneEnvCycles), t, g(ParamId.ToneDecay))
       : 1)),
     fromTo: (g) => `${Math.round(g(ParamId.ToneLevel) * 100)}% → ${g(ParamId.ToneDecay) > 0.004 ? `0 (${ENV_SHAPES[envShapeIdx(g(ParamId.ToneEnvShape))]})` : "held (follows the amp)"}`,
-    about: "The oscillator layer's own level and decay clock (D = 0 rides the amp envelope for the whole note instead). SHAPE bends the decay contour — Exp is the classic exponential fall, Line a straight slope, and Sine/Wobble make the layer swell and duck across its decay. L = 0 removes the tone entirely — noise-only sounds.",
+    about: "The pitched oscillator layer — the part of the hit that has a note. L is its level; D gives it its OWN decay clock, separate from the amp envelope, so the tone can die faster (a short thump under a long sizzle) or ring on longer. D = 0 means it simply rides the amp envelope for the whole note. SHAPE bends that decay contour — Exp is the classic exponential fall, Line a straight slope, S-curve/Parabola bow differently, and Sine/Cos/Triangle/Wobble make the layer swell and duck as it fades (waves = how many times). L = 0 removes the tone entirely, leaving a noise-only sound.",
     code: `// engine.js — Voice.renderAdding: the tone layer's own clock (env 1→0)
 let toneAmp = toneLevel;
 if (toneEnvCoef > 0) {          // D > 0: its own decay
@@ -340,7 +340,7 @@ mixed = toneAmp * osc + noiseAmp * noise;`,
       ? shapedDecay(envShapeId(g(ParamId.NoiseEnvShape)), g(ParamId.NoiseEnvCurve), g(ParamId.NoiseEnvCycles), t, g(ParamId.NoiseDecay))
       : 1)),
     fromTo: (g) => `${Math.round(g(ParamId.NoiseLevel) * 100)}% → ${g(ParamId.NoiseDecay) > 0.004 ? `0 (${ENV_SHAPES[envShapeIdx(g(ParamId.NoiseEnvShape))]})` : "held (follows the amp)"}`,
-    about: "The noise layer's level and its own decay (D = 0 rides the amp for the whole note). SHAPE bends the decay the same way the tone's does (Line slope, Sine/Wobble swell-and-duck). The colour tilts its spectrum — white hiss to crackle and metal.",
+    about: "The un-pitched noise layer — the hiss, sizzle and crackle where hats, snares and cymbals live. L is its level; D gives it its own decay clock (D = 0 rides the amp for the whole note), so the sizzle can outlast or undercut the tone. SHAPE bends that decay the same way the tone's does — Exp fall, Line slope, or Sine/Wobble swell-and-duck. The colour tilts its spectrum, from flat white hiss through warm pink and dark brown to bright blue/violet, sparse crackle and gritty metal. L = 0 turns the layer off.",
     code: `// engine.js — Voice.renderAdding: the noise layer + its colour (env 1→0)
 const noise = this.nextNoise();  // white / pink / brown / blue / violet /
                                  // crackle (sparse impulses) / metal (S&H)
@@ -364,7 +364,7 @@ mixed = toneAmp * osc + noiseAmp * noise;`,
     duration: (g) => Math.min(0.12, CLICK_DECAY[Math.max(0, Math.min(CLICK_DECAY.length - 1, Math.round(g(ParamId.ClickType))))] * 8 + 0.01),
     curve: (g, t) => clamp01(g(ParamId.ClickLevel) * Math.exp(-t / CLICK_DECAY[Math.max(0, Math.min(CLICK_DECAY.length - 1, Math.round(g(ParamId.ClickType))))])),
     fromTo: (g) => `${Math.round(g(ParamId.ClickLevel) * 100)}% → 0 in a few ms`,
-    about: "The transient snap at the very start of each hit — a few milliseconds long (the τ in the formula comes from the click type). L = 0 removes it. It genuinely ends, hence the short domain.",
+    about: "The transient snap at the very start of each hit — only a few milliseconds long (the τ in the formula is set by the click type), layered on top for extra point and definition so the sound cuts through even when its body is soft. L is how loud it is; L = 0 removes it. Match the type to the sound — Knock for kicks, Tick/Snap for hats and snares, Blip/Clank for blips and percussion. Unlike most layers it genuinely ends almost at once, which is why its curve occupies only a sliver at the far left of the graph.",
     code: `// engine.js — Voice.renderAdding: the click layer (post-filter)
 const CLICK_DECAY = [0.0015, 0.006, 0.012, 0.004, 0.008]; // per type, seconds
 filtered += clickSample * clickEnv * clickLevel * CLICK_GAIN;
@@ -382,7 +382,7 @@ clickEnv *= clickCoef; // = exp(-1 / (CLICK_DECAY[type] * sampleRate))`,
     duration: () => Infinity,
     curve: (g) => hzNorm(g(ParamId.FilterCutoff)),
     fromTo: (g) => `${Math.round(g(ParamId.FilterCutoff))} Hz steady`,
-    about: "Where the filter sits (drawn on the same log-frequency scale as Pitch), for the whole note. Point an LFO at Filter to make it sweep — in Vowel type that literally makes it talk.",
+    about: "Where the filter sits across the note — its cutoff C (drawn on the same log-frequency scale as Pitch) and resonance Q (the emphasis peak right at the cutoff). It draws as a steady line because on its own the filter holds still for the whole note; the Type decides what that line means — LP darkens by cutting highs, HP thins by cutting lows, BP narrows to a band, and Vowel morphs through the A–E–I–O–U vowels as the cutoff moves. High Q makes the filter sing and zing on a sweep. Point an LFO at Filter to make the cutoff sweep — that's wah and dubstep wobble, and in Vowel type it literally makes the sound talk.",
     code: `// engine.js — Voice.renderAdding: the TPT state-variable filter
 const cutoff = clamp(filterCutoff * cutoffMul, 20, nyquist); // LFO rides cutoffMul
 const gCoef = Math.tan(Math.PI * cutoff / sampleRate);
@@ -418,7 +418,7 @@ filtered = svf.process(mixed, gCoef, k, type);               // LP / HP / BP
     },
     curve: (g, t, ctx) => clamp01(g(ParamId.EchoMix) * Math.pow(Math.max(0.02, g(ParamId.EchoFeedback)), t / echoSec(g, ctx))),
     fromTo: (g, ctx) => `${Math.round(g(ParamId.EchoMix) * 100)}% fading by ×${r2(g(ParamId.EchoFeedback))} every ${r2(echoSec(g, ctx))}s`,
-    about: "The envelope of the echo's repeats: each pass T seconds later comes back F times as loud — the domain is how long the tail audibly rings. Sync locks the delay to a beat division at the live tempo (the T knob is ignored then, and the formula shows the synced time); ping-pong bounces repeats left/right. M = 0 turns it off.",
+    about: "The dying tail of the echo repeats: each pass arrives T seconds after the last and comes back F (feedback) times as loud, so the curve traces how the repeats fade — the domain is how long the tail stays audible. Higher F means more repeats and a longer trail; M (mix) sets how loud the echoes are against the dry hit, and M = 0 turns it off. Sync locks the delay to a beat division at the live tempo (the T knob is ignored then, and the formula shows the synced time) so repeats land on the grid; ping-pong bounces the repeats left/right for a wide stereo delay.",
     code: `// engine.js — Channel.renderInto: the feedback delay
 const beats = ECHO_SYNC_BEATS[sync] || 0;
 const delaySec = beats > 0 ? (beats * 60) / tempo  // synced to the beat
@@ -438,7 +438,7 @@ out = input * (1 - mix) + delayed * mix;`,
     duration: (g) => Math.min(8, (0.2 + 2 * clamp01(g(ParamId.ReverbSize))) * 3),
     curve: (g, t) => clamp01(g(ParamId.ReverbMix) * Math.exp(-t / (0.2 + 2 * clamp01(g(ParamId.ReverbSize))))),
     fromTo: (g) => `${Math.round(g(ParamId.ReverbMix) * 100)}% in a ${Math.round(g(ParamId.ReverbSize) * 100)}% room`,
-    about: "The reverb wash dying away — bigger rooms (S) ring longer, the mix (M) sets how much of the sound lives in it. M = 0 turns it off. (The drawn decay is a portrait; the real thing is 8 comb + 4 allpass filters.)",
+    about: "The reverb wash dying away after each hit — the tail that places the sound in a space. Bigger rooms (S) ring longer, so the curve decays more slowly; the mix (M) sets how much of the sound lives in that space, and M = 0 turns it off. A touch adds air and depth; a lot blurs the hit into a long ambient cloud that fills the gaps between hits. (The drawn decay is a simple portrait — the real reverb is 8 comb + 4 allpass filters.)",
     code: `// engine.js — Reverb (freeverb): 8 combs + 4 allpasses, ring time from S
 this.roomSize = size * 0.28 + 0.7;   // comb feedback — bigger S rings longer
 for (const c of combs) out += c.process(input, damp, this.roomSize);
@@ -462,7 +462,7 @@ buf[i] = out * wet + buf[i] * dry;   // M sets wet/dry`,
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.ModFxMix)),
     fromTo: (g) => `${Math.round(g(ParamId.ModFxMix) * 100)}% ${["Off", "Chorus", "Flanger", "Phaser"][Math.max(0, Math.min(3, Math.round(g(ParamId.ModFxType))))]} at ${r2(g(ParamId.ModFxRate))} Hz`,
-    about: "A modulated stereo effect after the echo/reverb — Chorus, Flanger or Phaser — sweeping at Rate with Depth, plus feedback (fb) resonance for flanger/phaser. Steady wet mix, so it draws as a level line. Mix 0 or Type Off = inactive.",
+    about: "A modulated stereo effect placed after the echo and reverb — Chorus (lush detuned width), Flanger (a swirling jet-plane comb sweep) or Phaser (softer sweeping notches). It sweeps back and forth at Rate, as far as Depth, with feedback (fb) adding resonance for a sharper flanger/phaser (chorus ignores fb). The wet level holds constant across the note, so it draws as a flat line at the mix amount. Mix 0 or Type Off = inactive. It's the finishing 'movement and width' effect — a little for stereo width, a lot for obvious motion.",
     code: `// engine.js — Channel.renderInto: the stereo modulation FX (after reverb)
 this.modfx.setup(modType, rate, depth, feedback);
 this.modfx.render(scratch, n, wetL, wetR); // quadrature LFO L/R → real width
@@ -508,7 +508,7 @@ if (drive > 0) filtered = Math.tanh(filtered * (1 + drive * 5));`,
       const ds = DOWNSAMPLE_FACTOR[Math.max(0, Math.min(DOWNSAMPLE_FACTOR.length - 1, Math.round(g(ParamId.Downsample))))];
       return `${bits > 0 ? `${bits}-bit` : "full depth"} · rate ÷${ds}`;
     },
-    about: "Lo-fi degradation, steady across the note (the line's height is how hard it bites): Bits quantises the wave to fewer levels, Rate ÷ holds each sample for several — telephone grit to broken-console. Both Off = inactive. Point an LFO at Crush to make the grit wobble.",
+    about: "Lo-fi digital degradation, steady across the note (the line's height is how hard it bites). Bits quantises the wave to fewer levels — 12-bit is a subtle vintage grit, each step down (10, 8, 6…) harsher, 3-bit fully destroyed. Rate ÷ holds each sample for several in a row, dulling and dirtying the top end like a cheap old sampler (telephone grit to broken-console). Both Off = inactive; the two stack for a full lo-fi treatment, and they're grittier and more digital than Drive's warm saturation. Point an LFO at Crush to make the grit pump in time.",
     code: `// engine.js — Voice.renderAdding: the bitcrusher
 const CRUSH_BITS = [0, 12, 10, 8, 6, 5, 4, 3];       // per Bits choice
 const DOWNSAMPLE_FACTOR = [1, 2, 3, 4, 6, 8, 12, 16]; // per Rate ÷ choice
@@ -546,7 +546,7 @@ if (fold > 0) osc = Math.sin(osc * (1 + fold * FOLD_GAIN) * 1.5707963);
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.Osc2Mix)),
     fromTo: (g) => `${Math.round(g(ParamId.Osc2Mix) * 100)}% detuned ${r2(g(ParamId.Osc2Detune))} semitones`,
-    about: "A second oscillator blended in, detuned in semitones; hard sync snaps its cycle to the first oscillator for the classic ripping sync tone. M = 0 turns it off.",
+    about: "A second oscillator blended in under the first at level M, tuned apart by dt semitones — drawn as a steady line at its mix. Tiny detune (a fraction of a semitone) gives a fat, slowly beating unison; -12 adds a sub octave for weight; +7 a fifth (that cowbell clang). Hard sync instead snaps its cycle back to the first oscillator every time oscillator 1 restarts, for the classic ripping, vowel-y sync tone — sweep the detune to hear it tear. M = 0 turns it off.",
     code: `// engine.js — Voice.renderAdding: the detuned second oscillator
 osc2Ratio = Math.pow(2, detuneSemitones / 12);
 osc += osc2Wave * mix;
@@ -566,7 +566,7 @@ if (hardSync && osc1Wrapped) osc2Phase = 0; // snap to oscillator 1's cycle`,
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.OscModAmount)),
     fromTo: (g) => `${Math.round(g(ParamId.OscModAmount) * 100)}% at ratio ${r2(g(ParamId.OscModRatio))}${g(ParamId.FmFeedback) > 0.001 ? `, fb ${Math.round(g(ParamId.FmFeedback) * 100)}%` : ""}`,
-    about: "A second operator bending the tone — FM growl or ring-mod metal, at a frequency ratio r of the note. Feedback (fb) folds the FM operator back on itself, morphing its sine toward a saw and then noise for grittier FM. Amount 0 (or type Off) disables it.",
+    about: "A second operator that bends the main oscillator for tones a single wave can't make — FM (growl, bells, electric pianos) or Ring (metallic, inharmonic, robotic clang), chosen by Type. It runs at a frequency ratio r of the note: whole-number ratios (1×, 2×, 3×) stay harmonic and musical, in-between ratios (1.5×, 2.7×…) go clangy and bell-like. A (amount) is how hard it pushes — from a subtle sheen up to a gnarly, noisy growl. Feedback (fb) folds the FM operator back on itself, morphing its sine toward a saw and then noise for a grittier, brighter FM (fb affects FM only). Amount 0, or Type Off, disables it. It draws as a steady line at the amount, since the modulation holds across the whole note.",
     code: `// engine.js — Voice.renderAdding: the second operator (with self-feedback)
 this.fbMod = Math.sin(2π * modPhase + fmFeedback * this.fbMod); // fb: sine → saw → noise
 modOut = this.fbMod;
@@ -586,7 +586,7 @@ modPhase += (freq * ratio) / sampleRate;    // a sine at freq × r
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.UnisonDetune)),
     fromTo: (g) => `${["1", "3", "5", "7"][Math.max(0, Math.min(3, Math.round(g(ParamId.Unison))))]} voices, ${Math.round(g(ParamId.UnisonDetune) * 100)}% spread`,
-    about: "Stacks several detuned copies of the main oscillator for a thicker, wider sound (supersaw-style) — steady across the note, so it draws as a level line at the detune spread. Voices Off = the single oscillator.",
+    about: "Stacks several slightly detuned copies of the main oscillator — 3, 5 or 7 voices — for a much thicker, wider supersaw-style sound, drawn as a steady line at the detune spread. More voices are bigger and more chorused (and cost more, with a softer transient). Spread sets how far the copies drift apart in pitch: a touch fattens, a lot swirls into a wide, seasick detune — too much starts to sound out of tune. Voices Off = the single classic oscillator.",
     code: `// engine.js — Voice.renderAdding: the unison stack (primary osc)
 for (let u = 0; u < unisonCount; u++) {
   let ph = uPhase[u] + fmOff; ph -= Math.floor(ph);
@@ -606,7 +606,7 @@ osc = sum * unisonNorm; // normalise by 1/√count`,
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.WavePosition)),
     fromTo: (g) => `${["Off", "Formant", "Harmonic", "Vocal", "Digital"][Math.max(0, Math.min(4, Math.round(g(ParamId.WaveTable))))]} table at ${Math.round(g(ParamId.WavePosition) * 100)}% scan`,
-    about: "Replaces the analog oscillator with a scannable digital wavetable — the Table picks the family (Formant / Harmonic / Vocal / Digital) and Scan morphs through its frames (point an LFO at WTPos to sweep it). Table Off = the normal Sine/Tri/Square/Saw oscillator.",
+    about: "Replaces the analog Sine/Tri/Square/Saw with a scannable digital wavetable — a bank of morphing frames. The Table picks the family (Formant, Harmonic, Vocal or Digital), each with its own evolving character, and Scan crossfades through the frames to morph the timbre, from one tone into a very different one across the sweep. Point an LFO at WTPos (or sweep Scan per hit) for that continuously-evolving, Serum-style digital motion. Table Off = the normal analog oscillator.",
     code: `// engine.js — Voice.renderAdding: the wavetable oscillator (wtFamily > 0)
 osc = this.wtFamily > 0
   ? wtSample(this.wtFamily - 1, this.wtPos + wtPosOff, ph, dt) // scan crossfades frames
@@ -624,7 +624,7 @@ osc = this.wtFamily > 0
     duration: (g) => Math.min(6, (0.1 + 2 * clamp01(g(ParamId.CombDecay))) * 3),
     curve: (g, t) => clamp01(g(ParamId.CombMix) * Math.exp(-t / (0.1 + 2 * clamp01(g(ParamId.CombDecay))))),
     fromTo: (g) => `${Math.round(g(ParamId.CombMix) * 100)}% ringing ${Math.round(g(ParamId.CombDecay) * 100)}%`,
-    about: "The plucked-string resonator ringing at the note's pitch × tune — short D is a pluck, long D a sustained string. M = 0 turns it off. (The drawn decay is a portrait of the ring time; the real thing is a tuned delay loop.)",
+    about: "A plucked-string resonator (Karplus–Strong): it rings at the note's pitch × tune, turning a click or noise burst into a struck or plucked string tone. M (mix) blends it against the dry sound; D sets the ring — short D is a dead, muted pluck, long D a sustained, singing string (the curve is a portrait of that ring time). Because tune tracks the pitch, the ring stays in key as the notes change; whole ratios stay musical, odd ones go metallic. M = 0 turns it off.",
     code: `// engine.js — KarplusComb: a tuned delay loop with damped feedback
 const delaySamples = sampleRate / (freq * tune);  // the ring pitch
 delayed = buf[w - delaySamples];
@@ -656,7 +656,7 @@ out = dry * (1 - mix) + delayed * mix;`,
       const mat = Math.max(0, Math.min(MODAL_NAMES.length - 1, Math.round(g(ParamId.ModalMaterial))));
       return `${Math.round(g(ParamId.ModalMix) * 100)}% ringing as ${MODAL_NAMES[mat]}`;
     },
-    about: "The resonator bank ringing at the note's modes — a SUM of decaying partials whose frequencies, gains (gₖ) and ring times (τₖ) come from the material's measured table (membrane, bell, bar, bowl, plate). Switching material swaps the whole τₖ/gₖ set, so the formula and the drawn curve change with it. D scales every mode's ring time.",
+    about: "The resonator bank ringing at the note's modes — a SUM of decaying partials whose frequencies, gains (gₖ) and ring times (τₖ) come from the material's measured table, turning a plain hit into a struck metallic or wooden object (bells, glocks, tabla, gongs). Membrane is a drumhead, Bell inharmonic metal, Bar tuned like a marimba, Bowl rounded and singing, Plate a dense inharmonic wash. Switching material swaps the whole τₖ/gₖ set, so the formula and the drawn curve change with it. D scales every mode's ring time together — short for a damped thud, long for a bell-like sustain. M = 0 turns it off.",
     code: `// engine.js — ModalBank.setup: the material's measured mode table
 const t = MODAL_TABLES[material]; // { r: freq ratios, g: gains, d: decay weights }
 for (let k = 0; k < t.r.length; k++) {
@@ -682,7 +682,7 @@ for (let k = 0; k < t.r.length; k++) {
       const p = g(ParamId.Pan);
       return `${Math.round(g(ParamId.Volume) * 100)}% ${Math.abs(p) < 0.005 ? "centred" : `panned ${p < 0 ? "left" : "right"} ${Math.round(Math.abs(p) * 100)}%`}`;
     },
-    about: "The channel's place in the mix: its level (also what the mixer fader moves) and its stereo position, constant across the note. Volume 0 silences the sound entirely.",
+    about: "The channel's place in the final mix: its overall level (vol — the same thing the mixer fader moves) and its stereo position (pan, constant-power so the centre isn't louder than the sides), both steady across the note. Spread voices across the field for width, but keep bass and kicks near centre so they stay solid — very low sounds are pulled back toward centre automatically. Volume 0 silences the sound entirely.",
     code: `// engine.js — Channel.renderInto: constant-power pan
 const ang = (pan + 1) * 0.25 * Math.PI;
 const gl = Math.cos(ang) * Math.SQRT2, gr = Math.sin(ang) * Math.SQRT2;

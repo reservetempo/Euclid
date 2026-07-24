@@ -1384,48 +1384,13 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   color: var(--text); font-variant-numeric: tabular-nums;
 }
 
-/* --- sound editor (deep view + per-loop shuffle panel) --------------------------- */
-/* The deep editor keeps the app's glass-card language but wears its OWN accent, and a
-   wrapping pill bar (same segmented style as the loop popup's nav) swaps between the
-   sections — one card at a time instead of a long scroll. */
-.soundview { --vc: #ff9f43; display: flex; flex-direction: column; gap: 12px; }
-.sound-nav {
-  justify-content: stretch; gap: 4px;
-  background: var(--field); border: 1px solid var(--line-soft);
-  border-radius: 12px; padding: 4px;
-}
-.sound-nav .seg-btn {
-  flex: 1 1 auto; min-width: 54px; text-align: center; padding: 9px 6px; font-size: 12.5px;
-  background: transparent; border-color: transparent; box-shadow: none;
-}
-.sound-nav .seg-btn.on {
-  color: var(--vc);
-  background: color-mix(in srgb, var(--vc) 14%, var(--panel2));
-  border-color: color-mix(in srgb, var(--vc) 40%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--vc) 20%, transparent);
-}
-.cat {
-  background: var(--panel-glass); border: 1px solid var(--line-soft);
-  border-radius: var(--r-md); padding: 12px 14px;
-  box-shadow: var(--card-shadow);
-}
-.cat-head { position: relative; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
-.cat-name {
-  font-weight: 700; font-size: 12px; margin-right: auto;
-  text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted);
-}
+/* --- per-loop shuffle panel ------------------------------------------------------ */
+/* The shuffle menu (voiceShuffleMenu.ts) flows inline inside the sheet / instrument
+   page; its Back/Reset use the small .cat-btn pill. */
 .cat-btn { padding: 6px 12px; font-size: 13px; background: var(--panel2); border-radius: 9px; }
 .cat-btn:disabled { opacity: 0.4; }
 
-/* The per-loop shuffle panel (flows inline inside the sheet / instrument page). */
 .voice-shuffle { display: flex; flex-direction: column; gap: 10px; }
-.full-params-btn {
-  width: 100%; font-weight: 600;
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent);
-}
-@media (hover: hover) {
-  .full-params-btn:hover { box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 22%, transparent); }
-}
 /* Gate slider in the per-loop menu: label + range + seconds readout on one row. */
 .gate-row { --slider: #b197fc; }
 .gate-row input[type="range"] { flex: 1; min-width: 0; }
@@ -1510,9 +1475,7 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .shuffle-summary.swipe-high { background: rgba(255, 107, 107, 0.16); box-shadow: inset 0 0 0 1.5px rgba(255, 107, 107, 0.55); }
 .shuffle-summary.swipe-low { background: rgba(77, 171, 247, 0.16); box-shadow: inset 0 0 0 1.5px rgba(77, 171, 247, 0.55); }
 
-/* Parameter boxes. */
-.cat-params { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
-@media (min-width: 560px) { .cat-params { grid-template-columns: repeat(3, 1fr); } }
+/* Parameter boxes (the graph editor's formula variables). */
 .vbox { display: flex; flex-direction: column; gap: 5px; }
 .vbox-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
 .vbox-name { font-size: 12px; color: var(--muted); }
@@ -1530,25 +1493,6 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .vbox-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .vbox-num:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55%, var(--line)); }
 .vbox-select { font-size: 13px; padding: 7px 28px 7px 8px; }
-
-/* Sound JSON box. */
-.json-box .cat-head { margin-bottom: 8px; }
-.json-copy { padding: 4px 10px; font-size: 12px; }
-.json-pre {
-  margin: 0; max-height: 220px; overflow: auto;
-  background: var(--field); border: 1px solid var(--line-soft); border-radius: 8px;
-  padding: 10px; font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-  font-size: 11px; line-height: 1.45; color: var(--text);
-  white-space: pre; user-select: text; -webkit-user-select: text;
-}
-
-/* LFO sub-sections. */
-.lfo-sections { display: flex; flex-direction: column; gap: 10px; }
-.lfo-block { border: 1px solid var(--line-soft); border-radius: var(--r-sm); padding: 8px 10px; background: rgba(0, 0, 0, 0.12); }
-.lfo-head {
-  font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 8px;
-  text-transform: uppercase; letter-spacing: 0.07em;
-}
 
 /* Section help: the little "?" in each section head opens a glossary of that
    section's controls; each entry expands into a plain-words description. */
