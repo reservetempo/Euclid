@@ -109,7 +109,7 @@ const NOISE_DECAY_OFF_P = 0.5;
 // contour to span the note so its shape keeps changing all the way to the end (see
 // applyContourEvolution). CONTOUR_EVOLVE_P is the base odds it fires (scaled by the
 // shuffle amount); the rest of the time sounds keep their punchy, quick-flatten character.
-const CONTOUR_EVOLVE_P = 0.25;
+const CONTOUR_EVOLVE_P = 0.5;
 // Ordinary PitchEnvDecay draws stay short even though the param now ranges to 2s — only the
 // evolution pass reaches past this cap, so a raised ceiling doesn't make every shuffle sweep.
 const PITCH_DECAY_SHUFFLE_CAP = 0.6;
@@ -704,7 +704,7 @@ export class DrumParameters {
       with odds CONTOUR_EVOLVE_P (scaled by the shuffle amount), a random subset of the
       AUDIBLE layers' contours gets a window sized to the note's amp body — and a non-trivial
       amount plus, half the time, an oscillating shape — so the graph shows real motion right
-      to the edge. The other ~3-in-4 shuffles keep their punchy character untouched. */
+      to the edge. The other ~half of shuffles keep their punchy character untouched. */
   private applyContourEvolution(randomness: number): void {
     if (randomness <= 0) return;
     if (rand() >= CONTOUR_EVOLVE_P * randomness) return;
