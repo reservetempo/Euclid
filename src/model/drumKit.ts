@@ -6,7 +6,7 @@ import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS } from "./params";
 import {
   getParamSpec, baseSpec, baseRange, isDiscrete, LFO_TARGETS, LFO_NONE, OSC_MOD_TYPES, NOISE_TYPES,
-  CLICK_TYPES, MODAL_MATERIALS, MODFX_TYPES, WAVETABLES, ECHO_SYNC_BEATS,
+  CLICK_TYPES, MODAL_MATERIALS, MODFX_TYPES, WAVETABLES, ECHO_SYNC_BEATS, ENV_SHAPES,
 } from "./paramSpec";
 import { intervals } from "./melodyScale";
 
@@ -102,6 +102,21 @@ const DECAY_SHAPE_BIAS = 1.7; // mean ≈ 0.63 of the window
 // window like every draw, so gentle shuffles stay near the current sound.
 const TONE_DECAY_OFF_P = 0.7;
 const NOISE_DECAY_OFF_P = 0.5;
+
+// Envelope-contour dynamism. The pitch/tone/noise contour shapes only evolve WITHIN their
+// decay window, so short windows (and the off-rolls above) make shuffled shapes flatten
+// early or never appear. This is the counterweight: occasionally the shuffle lengthens a
+// contour to span the note so its shape keeps changing all the way to the end (see
+// applyContourEvolution). CONTOUR_EVOLVE_P is the base odds it fires (scaled by the
+// shuffle amount); the rest of the time sounds keep their punchy, quick-flatten character.
+const CONTOUR_EVOLVE_P = 0.25;
+// Ordinary PitchEnvDecay draws stay short even though the param now ranges to 2s — only the
+// evolution pass reaches past this cap, so a raised ceiling doesn't make every shuffle sweep.
+const PITCH_DECAY_SHUFFLE_CAP = 0.6;
+// Contour shapes (index into ENV_SHAPES) that visibly rise AND fall across the window — the
+// most obviously "still moving at the end" options for the evolution pass to reach for.
+const PERIODIC_ENV_SHAPES = ["Sine", "Triangle", "Wobble"]
+  .map((n) => ENV_SHAPES.indexOf(n)).filter((i) => i >= 0);
 
 // --- Shuffle harshness guard --------------------------------------------------
 // Caps applied AFTER the draw (shuffle-only — manual editing can still go anywhere).
@@ -341,6 +356,9 @@ export class DrumParameters {
         else if (id === ParamId.AmpDecayShape) v = hi - Math.pow(rand(), DECAY_SHAPE_BIAS) * (hi - lo);
         else if (id === ParamId.ToneDecay) v = rand() < TONE_DECAY_OFF_P ? lo : lo + rand() * (hi - lo);
         else if (id === ParamId.NoiseDecay) v = rand() < NOISE_DECAY_OFF_P ? lo : lo + rand() * (hi - lo);
+        // Keep everyday pitch sweeps short (the param ranges to 2s, but only the evolution
+        // pass should reach up there — see PITCH_DECAY_SHUFFLE_CAP).
+        else if (id === ParamId.PitchEnvDecay) { const cap = Math.min(hi, PITCH_DECAY_SHUFFLE_CAP); v = lo + rand() * (Math.max(lo, cap) - lo); }
         else if (id === ParamId.AccentAmount) v = lo + Math.pow(rand(), ACCENT_BIAS) * (hi - lo);
         else if (id === ParamId.Humanize) v = lo + Math.pow(rand(), HUMANIZE_BIAS) * (hi - lo);
         else if (id === ParamId.HitChance) v = hi - Math.pow(rand(), HIT_CHANCE_BIAS) * (hi - lo);
@@ -353,6 +371,9 @@ export class DrumParameters {
       this.dedupeLfoTargets();
       this.applySparsity(randomness);
       if (randomness > 0) {
+        // After sparsity (so an evolved pitch contour isn't immediately stripped) but
+        // before tameHarshness (so the pitch-amount screech guard still applies to it).
+        this.applyContourEvolution(randomness);
         this.ensureAudibleLevel();
         this.tameHarshness();
       }
@@ -673,6 +694,62 @@ export class DrumParameters {
       this.set(ParamId.AmpAttack, fA + (A - fA) * k);
       this.set(ParamId.AmpDecay, fD + (D - fD) * k);
       this.set(ParamId.AmpRelease, fR + (R - fR) * k);
+    }
+  }
+
+  /** Occasionally stretch an envelope CONTOUR so its shape keeps changing all the way to
+      the note's end, instead of flattening early. The pitch/tone/noise contour shapes only
+      evolve within their decay window, and the base shuffle draws those windows short (and
+      leaves the layer decays off most of the time), so shapes usually flatten fast. Here,
+      with odds CONTOUR_EVOLVE_P (scaled by the shuffle amount), a random subset of the
+      AUDIBLE layers' contours gets a window sized to the note's amp body — and a non-trivial
+      amount plus, half the time, an oscillating shape — so the graph shows real motion right
+      to the edge. The other ~3-in-4 shuffles keep their punchy character untouched. */
+  private applyContourEvolution(randomness: number): void {
+    if (randomness <= 0) return;
+    if (rand() >= CONTOUR_EVOLVE_P * randomness) return;
+
+    // The note's audible body (same measure clampLength uses) is the target contour length.
+    const body = this.get(ParamId.AmpAttack) + this.get(ParamId.AmpDecay)
+      + this.get(ParamId.AmpSustain) * this.get(ParamId.AmpRelease);
+
+    // Only layers you can actually hear are worth animating.
+    const toneAudible = this.get(ParamId.ToneLevel) > 0.05;
+    const noiseAudible = this.get(ParamId.NoiseLevel) > 0.05;
+    const cands: Array<"pitch" | "tone" | "noise"> = [];
+    if (toneAudible) { cands.push("pitch"); cands.push("tone"); } // pitch env rides the tone
+    if (noiseAudible) cands.push("noise");
+    if (!cands.length) return;
+
+    // Keep a random 1..n of the candidates (variety in which contour(s) evolve).
+    for (let i = cands.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [cands[i], cands[j]] = [cands[j], cands[i]];
+    }
+    const keep = 1 + Math.floor(rand() * cands.length);
+    for (let i = 0; i < keep; i++) this.evolveContour(cands[i], body);
+  }
+
+  /** Give one contour a window ≈ the note body (jittered), a non-trivial amount, and — half
+      the time — an oscillating shape with a low cycle count so it reads as motion, not blur. */
+  private evolveContour(which: "pitch" | "tone" | "noise", body: number): void {
+    const jitter = 0.85 + rand() * 0.35; // ~0.85..1.2 of the body
+    const win = body * jitter;
+    const periodic = rand() < 0.5;
+    const pick = PERIODIC_ENV_SHAPES[Math.floor(rand() * PERIODIC_ENV_SHAPES.length)];
+    const cycles = 1 + Math.floor(rand() * 3); // 1..3 waves across the window
+    const window = Math.max(0.05, win); // set() clamps the top to each param's own max
+    if (which === "pitch") {
+      this.set(ParamId.PitchEnvDecay, window);
+      const amt = this.get(ParamId.PitchEnvAmount);
+      if (Math.abs(amt) < 0.4) this.set(ParamId.PitchEnvAmount, (amt < 0 ? -1 : 1) * (0.5 + rand() * 1.5));
+      if (periodic) { this.set(ParamId.PitchEnvShape, pick); this.set(ParamId.PitchEnvCycles, cycles); }
+    } else if (which === "tone") {
+      this.set(ParamId.ToneDecay, window);
+      if (periodic) { this.set(ParamId.ToneEnvShape, pick); this.set(ParamId.ToneEnvCycles, cycles); }
+    } else {
+      this.set(ParamId.NoiseDecay, window);
+      if (periodic) { this.set(ParamId.NoiseEnvShape, pick); this.set(ParamId.NoiseEnvCycles, cycles); }
     }
   }
 
