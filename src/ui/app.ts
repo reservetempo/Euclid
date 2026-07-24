@@ -51,7 +51,6 @@ import {
 import { detectPitchHz, SingTracker, SungNote, sungToMelodyNotes, midiName } from "../model/sing";
 import { EuclidView, RingState } from "./euclidView";
 import { helpButton, HelpItem } from "./soundHelp";
-import { SoundView } from "./soundView";
 import {
   defaultShuffleSettings, shuffleOptions, randomSeed, MAXLEN_OPTIONS, CURVE_OPTIONS,
 } from "./controls";
@@ -73,7 +72,7 @@ const ROW_MAXLEN_IDX = [0, 0, 0, 0, 0, 0];
 // stays legible; the playhead loops back at each wrap and a badge names the active line.
 const BARS_PER_ROW = 32;
 
-type View = "track" | "color" | "sound" | "mixer" | "melody";
+type View = "track" | "color" | "mixer" | "melody";
 
 /** A live Sing recording: the mic stream + analyser tap, the pitch tracker, and the DOM
     bits the rAF loop writes into (rebound whenever the Sing tab re-renders). */
@@ -183,7 +182,6 @@ export class App {
   private previewToken = 0;
   private transPreviewMode: "transition" | "result" = "transition";
   private transPreviewBars = 4;
-  private soundLoop: Loop | null = null; // loop the deep sound view is editing
   private selectedDrum: DrumType = DrumType.Kick;
   private soundName = "";
   private playing = false;
@@ -194,7 +192,6 @@ export class App {
   private playToBar = 0;
   private nextSoundId = 0;             // monotonic id for loop sounds
 
-  private soundReturn: View = "color"; // where the deep sound view's Back returns to
   private mixerReturn: View = "track"; // where the mixer's Back returns to
 
   // Per-loop inline shuffle editors, keyed by loop identity. Rebuilt from a loop's saved
@@ -523,7 +520,6 @@ export class App {
     this.editTransition = null;
     this.nextSoundId = 0;
     this.editLoop = null;
-    this.soundLoop = null;
     this.openColor = 0;
     this.playFromBar = 0;
     this.playToBar = 0;
@@ -546,7 +542,6 @@ export class App {
     for (const m of this.track.melodies) if (m.inst.soundId > maxId) maxId = m.inst.soundId;
     this.nextSoundId = maxId + 1;
     this.editLoop = null;
-    this.soundLoop = null;
   }
 
   private afterProjectChange(): void {
@@ -565,13 +560,12 @@ export class App {
 
   // --- main render ------------------------------------------------------
   private render(): void {
-    // A melody's headphone-solo lives only while EDITING that melody (its pages, or its
-    // instrument's deep sound view); navigating anywhere else restores the full mix.
+    // A melody's headphone-solo lives only while EDITING that melody (its pages);
+    // navigating anywhere else restores the full mix.
     const hs = this.melodySoloItem;
     if (hs) {
       const onItem = this.view === "melody" && this.currentMelodyItem() === hs;
-      const onSound = this.view === "sound" && this.soundLoop === hs.inst;
-      if (!this.track.melodies.includes(hs) || (!onItem && !onSound)) {
+      if (!this.track.melodies.includes(hs) || !onItem) {
         this.melodySoloItem = null;
         this.pushSounds();
       }
@@ -611,11 +605,10 @@ export class App {
     this.viewRoot.className = "viewroot" + (sameView ? "" : " view-enter");
     this.root.append(this.viewRoot);
 
-    if (this.view === "track") this.renderTrackPanel();
-    else if (this.view === "color") this.renderColorPanel();
+    if (this.view === "color") this.renderColorPanel();
     else if (this.view === "mixer") this.renderMixer();
     else if (this.view === "melody") this.renderMelodyPanel();
-    else this.renderSound();
+    else this.renderTrackPanel();
 
     this.updateLoopTime();
     if (!this.playing) this.refreshRings();
@@ -2164,7 +2157,6 @@ export class App {
     return buildVoiceShuffleMenu(this.voiceEditorFor(inst), REF_DRUM, {
       onChange: async () => { await this.writeAndNormalizeLoop(inst); this.render(); },
       audition: () => this.auditionLoop(inst),
-      onFullParams: () => { this.soundLoop = inst; this.soundReturn = "melody"; this.view = "sound"; this.render(); },
       context: () => this.shuffleContext(),
       report: (kind) => this.reportLoopSound(inst, kind),
     });
@@ -6320,33 +6312,4 @@ export class App {
     return row;
   }
 
-  // --- sound view (full per-parameter editor for one loop, live) -------
-  private renderSound(): void {
-    const v = this.viewRoot;
-    const loop = this.soundLoop;
-    if (!loop) { this.view = "track"; this.renderTrackPanel(); return; }
-
-    const head = document.createElement("div");
-    head.className = "mixer-head";
-    const back = document.createElement("button");
-    back.className = "mixer-back";
-    back.textContent = this.soundReturn === "color" ? "‹ Loops" : "‹ Track";
-    // Returning to "color" with an editLoop set reopens the placement popup via render().
-    back.onclick = () => { this.view = this.soundReturn; this.render(); };
-    const title = document.createElement("h2");
-    title.className = "mixer-title";
-    title.textContent = loop.name || "Loop";
-    head.append(back, title);
-    v.append(head);
-
-    const editor = this.voiceEditorFor(loop);
-    const sound = new SoundView(editor.kit, REF_DRUM, {
-      onChange: () => this.writeLoopFromEditor(loop),
-      onRangeChange: () => this.writeLoopFromEditor(loop),
-      onReplace: () => this.writeAndNormalizeLoop(loop),
-      onAudition: () => this.auditionLoop(loop),
-      context: () => this.shuffleContext(),
-    }, { settings: editor });
-    v.append(sound.el);
-  }
 }

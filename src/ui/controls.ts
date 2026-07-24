@@ -1,7 +1,6 @@
-// Small shared UI pieces + the shuffle settings both sound-editing surfaces keep:
-// the deep Sounds view (soundView.ts) and the per-loop shuffle menu
-// (voiceShuffleMenu.ts) render the same Randomness / Spread / Max-len / Snap / Seed
-// controls and feed the same options into DrumKit.shuffleAll.
+// Small shared UI pieces + the shuffle settings the per-loop shuffle menu
+// (voiceShuffleMenu.ts) renders: the Randomness / Spread / Max-len / Snap / Seed
+// controls that feed the same options into DrumKit.shuffleAll.
 
 import { FreqCurve, PitchSnap, ShuffleOptions } from "../model/drumKit";
 

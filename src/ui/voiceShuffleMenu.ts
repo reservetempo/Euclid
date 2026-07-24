@@ -30,8 +30,6 @@ export interface VoiceMenuCallbacks {
   onChange: () => void | Promise<void>;
   // Preview the current sound once (also used by the ▶ button).
   audition: () => void;
-  // Open the full per-parameter editor for this loop (the "Full Parameters" button).
-  onFullParams: () => void;
   // Key + tempo context for the shuffle (Key snap + synced-echo length estimates).
   context: () => { root: number; scale: number; bpm: number };
   // File the CURRENT sound in a feedback log: "high" = too screechy (recap row
@@ -104,11 +102,6 @@ export function buildVoiceShuffleMenu(
     // this is the note-length control (it replaced the old fixed 0.4s hold — now per
     // sound; see engine.js). Commits on release: persist, then audition the new length.
     panel.append(gateRow(editor.kit.get(drum), drum, afterChange));
-
-    // Full Parameters: open the deep per-parameter editor for this loop (live).
-    const full = mkBtn("Full Parameters", "cat-btn full-params-btn");
-    full.onclick = () => cb.onFullParams();
-    panel.append(full);
   };
 
   render();
