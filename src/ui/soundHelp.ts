@@ -27,6 +27,12 @@ function paramDesc(id: ParamId): string {
       return "A pitch sweep at the start of each hit. Positive starts above and drops down onto the pitch (the classic kick punch); negative starts low and rises into it (reverse swells, zap risers). 0 = no sweep.";
     case ParamId.PitchEnvDecay:
       return "How long the pitch sweep takes to settle onto the base pitch, in seconds. Short = a tight click of punch; long = an audible whoop or riser.";
+    case ParamId.PitchEnvShape:
+      return "The SHAPE of the pitch sweep, not just its speed. Exp is the classic exponential drop/rise. Line is a straight sloped ramp — pair it with Pitch Curve to set the slope angle. S-curve and Parabola bend differently, and Sine/Cos/Triangle/Wobble make the pitch rise AND fall across the sweep (a warble baked into the hit).";
+    case ParamId.PitchEnvCurve:
+      return "How much the chosen pitch Shape bends: on Line it tips a straight ramp toward exponential (steeper start), on the wave shapes it warps or deepens them. 0 = the plain shape.";
+    case ParamId.PitchEnvCycles:
+      return "For the oscillating pitch shapes (Sine/Cos/Triangle/Wobble) only: how many rises-and-falls fit inside the sweep. Ignored by the straight/curved shapes.";
     case ParamId.Waveform:
       return "The oscillator's waveform: Sine is pure and round, Tri adds a little edge, Square is hollow and buzzy, Saw is the brightest and richest.";
     case ParamId.ToneLevel:
@@ -69,8 +75,20 @@ function paramDesc(id: ParamId): string {
       return "Curvature of the decay and release: 0 holds then drops like a gate, 0.5 a straight line, 1 falls fast then trails off — the natural percussive shape.";
     case ParamId.ToneDecay:
       return "A separate decay for just the oscillator layer, so the tone can die quicker (or ring longer) than the noise. 0 = follow the main envelope.";
+    case ParamId.ToneEnvShape:
+      return "The contour of the tone layer's own decay (only when Tone Dec > 0). Exp is the classic exponential fall, Line a straight slope, and Sine/Wobble make the tone swell and duck as it fades. Tone Curve/Cycles tune the shape.";
+    case ParamId.ToneEnvCurve:
+      return "How much the tone-decay Shape bends — steepens a Line, or warps/deepens the wave shapes. 0 = the plain shape.";
+    case ParamId.ToneEnvCycles:
+      return "For the oscillating tone-decay shapes (Sine/Cos/Triangle/Wobble): how many swells fit inside the decay. Ignored by the straight/curved shapes.";
     case ParamId.NoiseDecay:
       return "A separate decay for just the noise layer — e.g. a short tone with a longer sizzle tail. 0 = follow the main envelope.";
+    case ParamId.NoiseEnvShape:
+      return "The contour of the noise layer's own decay (only when Noise Dec > 0). Same family as the tone's — Exp fall, Line slope, or Sine/Wobble swelling sizzle. Noise Curve/Cycles tune it.";
+    case ParamId.NoiseEnvCurve:
+      return "How much the noise-decay Shape bends — steepens a Line, or warps/deepens the wave shapes. 0 = the plain shape.";
+    case ParamId.NoiseEnvCycles:
+      return "For the oscillating noise-decay shapes (Sine/Cos/Triangle/Wobble): how many swells fit inside the decay. Ignored by the straight/curved shapes.";
     case ParamId.Gate:
       return "How long each hit is held 'on' before it releases, in seconds — the note-length control. With Sustain at 0 the hit already dies during its Decay, so gate barely matters; with any Sustain the sound holds for the whole gate and then Release fades it. Short gate = choked/staccato; long (up to 30s) = a drone that rings across bars — and keeps gliding with any transition running over it.";
 
@@ -201,7 +219,14 @@ if (freq < 5) freq = 5; // negative amounts pin low, then RISE into the note`;
     case ParamId.PitchEnvDecay:
       return `// engine.js — the sweep decays exponentially with this time constant
 this.pitchEnvCoef = Math.exp(-1 / (this.pitchEnvDecay * this.sr));
-this.pitchEnv *= this.pitchEnvCoef; // every sample`;
+this.pitchEnv *= this.pitchEnvCoef; // every sample (Exp shape)`;
+    case ParamId.PitchEnvShape:
+    case ParamId.PitchEnvCurve:
+    case ParamId.PitchEnvCycles:
+      return `// engine.js — non-Exp shapes ride the blend-shape family over the D window
+if (this.pitchEnvShape === null) this.pitchEnv *= this.pitchEnvCoef;   // Exp
+else this.pitchEnv = 1 - shapeT(Math.min(1, this.pitchEnvT / this.pitchEnvDurSamples),
+                                { shape, curve, cycles }); // Line / S-curve / Sine / …`;
     case ParamId.Waveform:
       return `// engine.js — osc(): one sample of the chosen shape (polyBLEP de-aliased)
 if (wave === 1) return 2 * Math.abs(2 * (phase - Math.floor(phase + 0.5))) - 1; // tri
@@ -292,10 +317,24 @@ this.value = this.sustain + (1 - this.sustain) * Math.pow(1 - this.t, this.dExp)
       return `// engine.js — the oscillator layer gets its own exponential decay
 this.toneEnvCoef = toneDec > 0.004 ? Math.exp(-1 / (toneDec * this.sr)) : 0;
 if (this.toneEnvCoef > 0) { toneAmp *= this.toneEnv; this.toneEnv *= this.toneEnvCoef; }`;
+    case ParamId.ToneEnvShape:
+    case ParamId.ToneEnvCurve:
+    case ParamId.ToneEnvCycles:
+      return `// engine.js — a non-Exp Shape swaps the tone layer's decay for a blend shape
+if (this.toneEnvShape === null) this.toneEnv *= this.toneEnvCoef;      // Exp
+else this.toneEnv = 1 - shapeT(Math.min(1, this.toneEnvT / this.toneEnvDurSamples),
+                               { shape, curve, cycles });              // Line / Sine / …`;
     case ParamId.NoiseDecay:
       return `// engine.js — same trick for the noise layer, on its own clock
 this.noiseEnvCoef = noiseDec > 0.004 ? Math.exp(-1 / (noiseDec * this.sr)) : 0;
 if (this.noiseEnvCoef > 0) { noiseAmp *= this.noiseEnv; this.noiseEnv *= this.noiseEnvCoef; }`;
+    case ParamId.NoiseEnvShape:
+    case ParamId.NoiseEnvCurve:
+    case ParamId.NoiseEnvCycles:
+      return `// engine.js — the noise layer's decay can take the same blend shapes
+if (this.noiseEnvShape === null) this.noiseEnv *= this.noiseEnvCoef;   // Exp
+else this.noiseEnv = 1 - shapeT(Math.min(1, this.noiseEnvT / this.noiseEnvDurSamples),
+                                { shape, curve, cycles });             // Line / Sine / …`;
     case ParamId.Gate:
       return `// engine.js — the note is held for gateSamples, then note-off fires the release
 const gateSec = rd(s, P.Gate, 0); // per-sound; 0/absent → the sequencer's default gate

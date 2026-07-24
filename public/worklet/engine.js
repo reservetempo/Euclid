@@ -16,32 +16,42 @@
 // Tone / Amp / Filter / LFO / Fx / Life / Output). A check script asserts they match. ---
 const P = {
   // Tone
-  Pitch: 0, PitchEnvAmount: 1, PitchEnvDecay: 2, Waveform: 3, ToneLevel: 4, NoiseLevel: 5,
-  NoiseType: 6, OscModType: 7, OscModRatio: 8, OscModAmount: 9,
-  Osc2Mix: 10, Osc2Detune: 11, Sync: 12, Fold: 13,
-  Unison: 14, UnisonDetune: 15, FmFeedback: 16, WaveTable: 17, WavePosition: 18,
-  ClickLevel: 19, ClickType: 20,
-  // Amp envelope + per-layer decays
-  AmpAttack: 21, AmpDecay: 22, AmpSustain: 23, AmpRelease: 24,
-  AmpAttackShape: 25, AmpDecayShape: 26, ToneDecay: 27, NoiseDecay: 28, Gate: 29,
+  Pitch: 0, PitchEnvAmount: 1, PitchEnvDecay: 2,
+  PitchEnvShape: 3, PitchEnvCurve: 4, PitchEnvCycles: 5,
+  Waveform: 6, ToneLevel: 7, NoiseLevel: 8,
+  NoiseType: 9, OscModType: 10, OscModRatio: 11, OscModAmount: 12,
+  Osc2Mix: 13, Osc2Detune: 14, Sync: 15, Fold: 16,
+  Unison: 17, UnisonDetune: 18, FmFeedback: 19, WaveTable: 20, WavePosition: 21,
+  ClickLevel: 22, ClickType: 23,
+  // Amp envelope + per-layer decays (each layer decay carries its own contour shape)
+  AmpAttack: 24, AmpDecay: 25, AmpSustain: 26, AmpRelease: 27,
+  AmpAttackShape: 28, AmpDecayShape: 29,
+  ToneDecay: 30, ToneEnvShape: 31, ToneEnvCurve: 32, ToneEnvCycles: 33,
+  NoiseDecay: 34, NoiseEnvShape: 35, NoiseEnvCurve: 36, NoiseEnvCycles: 37, Gate: 38,
   // Filter + physical-model resonators
-  FilterType: 30, FilterCutoff: 31, FilterReso: 32,
-  CombMix: 33, CombTune: 34, CombDecay: 35,
-  ModalMix: 36, ModalMaterial: 37, ModalDecay: 38,
+  FilterType: 39, FilterCutoff: 40, FilterReso: 41,
+  CombMix: 42, CombTune: 43, CombDecay: 44,
+  ModalMix: 45, ModalMaterial: 46, ModalDecay: 47,
   // LFOs (three blocks: dest / rate / depth / shape / sync)
-  LfoTarget: 39, LfoRate: 40, LfoDepth: 41, Lfo1Shape: 42, Lfo1Sync: 43,
-  Lfo2Target: 44, Lfo2Rate: 45, Lfo2Depth: 46, Lfo2Shape: 47, Lfo2Sync: 48,
-  Lfo3Target: 49, Lfo3Rate: 50, Lfo3Depth: 51, Lfo3Shape: 52, Lfo3Sync: 53,
+  LfoTarget: 48, LfoRate: 49, LfoDepth: 50, Lfo1Shape: 51, Lfo1Sync: 52,
+  Lfo2Target: 53, Lfo2Rate: 54, Lfo2Depth: 55, Lfo2Shape: 56, Lfo2Sync: 57,
+  Lfo3Target: 58, Lfo3Rate: 59, Lfo3Depth: 60, Lfo3Shape: 61, Lfo3Sync: 62,
   // Drive & FX
-  Drive: 54, Crush: 55, Downsample: 56,
-  ModFxType: 57, ModFxRate: 58, ModFxDepth: 59, ModFxFeedback: 60, ModFxMix: 61,
-  EchoTime: 62, EchoFeedback: 63, EchoMix: 64, EchoSync: 65, EchoPing: 66,
-  ReverbSize: 67, ReverbMix: 68,
+  Drive: 63, Crush: 64, Downsample: 65,
+  ModFxType: 66, ModFxRate: 67, ModFxDepth: 68, ModFxFeedback: 69, ModFxMix: 70,
+  EchoTime: 71, EchoFeedback: 72, EchoMix: 73, EchoSync: 74, EchoPing: 75,
+  ReverbSize: 76, ReverbMix: 77,
   // Per-hit life
-  AccentAmount: 69, Humanize: 70, HitChance: 71, Ratchet: 72, ChokeGroup: 73,
+  AccentAmount: 78, Humanize: 79, HitChance: 80, Ratchet: 81, ChokeGroup: 82,
   // Output
-  Volume: 74, Pan: 75,
+  Volume: 83, Pan: 84,
 };
+
+// Envelope-contour shapes for the pitch sweep + the Tone/Noise layer decays. The stored
+// param is the INDEX into this list; index 0 (Exp / null) keeps the legacy exponential IIR
+// path, and the rest name a BlendShapeId fed to shapeT() over the envelope's decay window.
+// MUST stay in sync with ENV_SHAPES in src/model/paramSpec.ts (Line=ramp, Triangle=zigzag).
+const ENV_SHAPE_IDS = [null, "ramp", "scurve", "parabola", "sine", "cos", "zigzag", "wobble"];
 
 // LFO destination indices, in sync with LFO_TARGETS in src/model/paramSpec.ts. LFO_NONE
 // disables the LFO (falls through the routing switch); it sits LAST in the list.
@@ -590,6 +600,12 @@ class Voice {
     this.basePitch = s[P.Pitch];
     this.pitchEnvAmount = s[P.PitchEnvAmount];
     this.pitchEnvDecay = Math.max(0.001, s[P.PitchEnvDecay]);
+    // Pitch-sweep contour: null (Exp) keeps the legacy exponential; any other shape is
+    // evaluated over the decay window (pitchEnvDurSamples) via shapeT — see renderAdding.
+    this.pitchEnvShape = ENV_SHAPE_IDS[clamp(Math.round(s[P.PitchEnvShape]) | 0, 0, ENV_SHAPE_IDS.length - 1)];
+    this.pitchEnvCurve = s[P.PitchEnvCurve];
+    this.pitchEnvCycles = s[P.PitchEnvCycles];
+    this.pitchEnvDurSamples = Math.max(1, this.pitchEnvDecay * this.sr);
     this.waveform = Math.round(s[P.Waveform]);
     this.toneLevel = s[P.ToneLevel];
     this.noiseLevel = s[P.NoiseLevel];
@@ -660,6 +676,17 @@ class Voice {
     this.toneEnvCoef = toneDec > 0.004 ? Math.exp(-1 / (toneDec * this.sr)) : 0;
     this.noiseEnvCoef = noiseDec > 0.004 ? Math.exp(-1 / (noiseDec * this.sr)) : 0;
     this.toneEnv = 1; this.noiseEnv = 1;
+    // Layer-decay contours (same family as the pitch sweep). null = the legacy exponential
+    // coefficient above; any other shape rides shapeT over the decay window instead.
+    this.toneEnvShape = ENV_SHAPE_IDS[clamp(Math.round(s[P.ToneEnvShape]) | 0, 0, ENV_SHAPE_IDS.length - 1)];
+    this.toneEnvCurve = s[P.ToneEnvCurve];
+    this.toneEnvCycles = s[P.ToneEnvCycles];
+    this.toneEnvDurSamples = Math.max(1, toneDec * this.sr);
+    this.noiseEnvShape = ENV_SHAPE_IDS[clamp(Math.round(s[P.NoiseEnvShape]) | 0, 0, ENV_SHAPE_IDS.length - 1)];
+    this.noiseEnvCurve = s[P.NoiseEnvCurve];
+    this.noiseEnvCycles = s[P.NoiseEnvCycles];
+    this.noiseEnvDurSamples = Math.max(1, noiseDec * this.sr);
+    this.toneEnvT = 0; this.noiseEnvT = 0;
     this.clickLevel = clamp(s[P.ClickLevel], 0, 1);
     this.clickType = clamp(Math.round(s[P.ClickType]), 0, CLICK_DECAY.length - 1);
     this.clickEnv = this.clickLevel > 0 ? 1 : 0;
@@ -687,7 +714,7 @@ class Voice {
       s[P.AmpDecayShape]
     );
 
-    this.oscPhase = 0; this.pitchEnv = 1;
+    this.oscPhase = 0; this.pitchEnv = 1; this.pitchEnvT = 0;
     this.pitchEnvCoef = Math.exp(-1 / (this.pitchEnvDecay * this.sr));
     this.filter.reset();
     this.samplesPlayed = 0; this.noteOffSent = false;
@@ -778,8 +805,9 @@ class Voice {
         this.ratchetLeft--;
         this.ratchetCountdown = this.ratchetInterval;
         this.adsr.noteOn();
-        this.pitchEnv = 1;
+        this.pitchEnv = 1; this.pitchEnvT = 0;
         this.toneEnv = 1; this.noiseEnv = 1;
+        this.toneEnvT = 0; this.noiseEnvT = 0;
         if (this.clickLevel > 0) { this.clickEnv = 1; this.clickPhase = 0; }
         this.vel *= RATCHET_VEL_DECAY;
         this.samplesPlayed = 0;
@@ -834,9 +862,18 @@ class Voice {
 
       // Bipolar pitch env: positive drops from above; negative starts low/pinned at
       // the 5Hz floor and RISES into the note as the envelope decays (swells/zaps).
+      // The env runs 1→0: Exp (null shape) uses the one-pole IIR coefficient; any other
+      // shape is shapeT sampled over the decay window (1 - shapeT, so it still leaves at 0),
+      // giving straight sloped ramps (Line), s-curves, or rise-then-fall (sine/wobble).
       let freq = this.basePitch * trackMul * (1 + this.pitchEnvAmount * this.pitchEnv) * pitchMul;
       if (freq < 5) freq = 5;
-      this.pitchEnv *= this.pitchEnvCoef;
+      if (this.pitchEnvShape === null) {
+        this.pitchEnv *= this.pitchEnvCoef;
+      } else {
+        this.pitchEnvT++;
+        const u = this.pitchEnvT >= this.pitchEnvDurSamples ? 1 : this.pitchEnvT / this.pitchEnvDurSamples;
+        this.pitchEnv = 1 - shapeT(u, { shape: this.pitchEnvShape, curve: this.pitchEnvCurve, cycles: this.pitchEnvCycles });
+      }
 
       // Second operator: a sine modulator at `freq * ratio`, applied as either
       // phase modulation (FM) or amplitude/ring modulation of the carrier.
@@ -887,8 +924,26 @@ class Voice {
       // Layer envelopes: each source can decay on its own clock (0 = follow the amp
       // ADSR, which still gates the whole voice at the end of the chain).
       let toneAmp = this.toneLevel, noiseAmp = this.noiseLevel;
-      if (this.toneEnvCoef > 0) { toneAmp *= this.toneEnv; this.toneEnv *= this.toneEnvCoef; }
-      if (this.noiseEnvCoef > 0) { noiseAmp *= this.noiseEnv; this.noiseEnv *= this.noiseEnvCoef; }
+      if (this.toneEnvCoef > 0) {
+        toneAmp *= this.toneEnv;
+        if (this.toneEnvShape === null) {
+          this.toneEnv *= this.toneEnvCoef;
+        } else {
+          this.toneEnvT++;
+          const u = this.toneEnvT >= this.toneEnvDurSamples ? 1 : this.toneEnvT / this.toneEnvDurSamples;
+          this.toneEnv = 1 - shapeT(u, { shape: this.toneEnvShape, curve: this.toneEnvCurve, cycles: this.toneEnvCycles });
+        }
+      }
+      if (this.noiseEnvCoef > 0) {
+        noiseAmp *= this.noiseEnv;
+        if (this.noiseEnvShape === null) {
+          this.noiseEnv *= this.noiseEnvCoef;
+        } else {
+          this.noiseEnvT++;
+          const u = this.noiseEnvT >= this.noiseEnvDurSamples ? 1 : this.noiseEnvT / this.noiseEnvDurSamples;
+          this.noiseEnv = 1 - shapeT(u, { shape: this.noiseEnvShape, curve: this.noiseEnvCurve, cycles: this.noiseEnvCycles });
+        }
+      }
       // A NOISE-destination LFO INJECTS noise: it blends the noise level up toward full and
       // ducks the tone, so the wave crest can override the sound with noise (fully at depth 1)
       // even when the noise layer is off — a rhythmic noise burst, not just a tremolo.

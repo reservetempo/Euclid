@@ -53,6 +53,11 @@ export const MODFX_TYPES = ["Off", "Chorus", "Flanger", "Phaser"];
 // the analog Sine/Tri/Square/Saw oscillator; the rest replace the primary oscillator's
 // shape with a scannable digital table (WavePosition = the scan).
 export const WAVETABLES = ["Off", "Formant", "Harmonic", "Vocal", "Digital"];
+// Envelope-contour shapes for the pitch sweep and the Tone/Noise layer decays. The stored
+// value is the INDEX; index 0 = "Exp" keeps the classic e^(−t/D) code path (backward-
+// identical), and the rest reuse the blend-shape family (BlendShapeId in lines.ts): Line =
+// ramp, Triangle = zigzag. The engine mirrors these as ENV_SHAPE_IDS — keep in sync.
+export const ENV_SHAPES = ["Exp", "Line", "S-curve", "Parabola", "Sine", "Cos", "Triangle", "Wobble"];
 
 export interface ParamSpec {
   name: string;
@@ -81,6 +86,12 @@ export function baseSpec(id: ParamId): ParamSpec {
     // (reverse-cymbal swells, zap risers); positive is the classic drop-from-above.
     case ParamId.PitchEnvAmount: return make("Pitch Env", -2, 5, 0, 1, 0.05, "x");
     case ParamId.PitchEnvDecay:  return make("Pitch Dec", 0.005, 0.6, 0.06, 0.35, 0.005, "s");
+    // Pitch-sweep contour: Exp (default) = the classic exponential drop/rise; Line +
+    // Curve = a straight sloped ramp bendable toward exponential; the rest give
+    // s-curve / parabola / oscillating (sine/cos/triangle/wobble) motion over the decay.
+    case ParamId.PitchEnvShape:  return make("Pitch Shape", 0, ENV_SHAPES.length - 1, 0, 1, 1, "", true, ENV_SHAPES);
+    case ParamId.PitchEnvCurve:  return make("Pitch Curve", 0, 1, 0, 1, 0.01, "");
+    case ParamId.PitchEnvCycles: return make("Pitch Cycles", 0.25, 8, 1, 0.5, 0.25, "x");
     case ParamId.Waveform:       return make("Wave", 0, 3, 0, 1, 1, "", true, ["Sine", "Tri", "Square", "Saw"]);
     case ParamId.ToneLevel:      return make("Tone", 0, 1, 0.8, 1, 0.02, "");
     case ParamId.NoiseLevel:     return make("Noise", 0, 1, 0, 1, 0.02, "");
@@ -133,7 +144,15 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.AmpAttackShape: return make("Att Shape", 0, 1, 0.5, 1, 0.01, "");
     case ParamId.AmpDecayShape:  return make("Dec Shape", 0, 1, 0.5, 1, 0.01, "");
     case ParamId.ToneDecay:      return make("Tone Dec", 0, 1.2, 0, 0.35, 0.005, "s");
+    // Layer-decay contours (same family as PitchEnvShape). Exp = the classic exponential
+    // fall; the other shapes bend the slope or oscillate the layer level over its decay.
+    case ParamId.ToneEnvShape:   return make("Tone Shape", 0, ENV_SHAPES.length - 1, 0, 1, 1, "", true, ENV_SHAPES);
+    case ParamId.ToneEnvCurve:   return make("Tone Curve", 0, 1, 0, 1, 0.01, "");
+    case ParamId.ToneEnvCycles:  return make("Tone Cycles", 0.25, 8, 1, 0.5, 0.25, "x");
     case ParamId.NoiseDecay:     return make("Noise Dec", 0, 1.2, 0, 0.35, 0.005, "s");
+    case ParamId.NoiseEnvShape:  return make("Noise Shape", 0, ENV_SHAPES.length - 1, 0, 1, 1, "", true, ENV_SHAPES);
+    case ParamId.NoiseEnvCurve:  return make("Noise Curve", 0, 1, 0, 1, 0.01, "");
+    case ParamId.NoiseEnvCycles: return make("Noise Cycles", 0.25, 8, 1, 0.5, 0.25, "x");
     case ParamId.ClickLevel:     return make("Click", 0, 1, 0, 1, 0.02, "");
     case ParamId.ClickType:      return make("Click Type", 0, 4, 0, 1, 1, "", true, CLICK_TYPES);
     // Modal resonator bank, echo sync/ping-pong, pan, and the per-hit Life params.
