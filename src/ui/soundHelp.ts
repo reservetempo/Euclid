@@ -17,186 +17,188 @@ export interface HelpItem {
 }
 
 // What each parameter does, in the user's language (units and choice names spelled
-// out). LFO 2/3 share LFO 1's text — the three blocks are identical.
+// out). Written to teach, not just label: what the control is, what you'll HEAR as
+// you move it, how it plays with its neighbours, and where to start. LFO 2/3 share
+// LFO 1's text — the three blocks are identical.
 function paramDesc(id: ParamId): string {
   switch (id) {
     // --- Tone ---
     case ParamId.Pitch:
-      return "The oscillator's base frequency in Hz — how high or low the tone of the hit sits. On a melody row each note re-tunes it, so treat it as the home pitch.";
+      return "The oscillator's base frequency — how high or low the tone of the hit sits, from a 30 Hz sub-rumble up to a 2 kHz ping. This is the pitch you hear once any start-of-hit sweep has settled. It sets the kick's fundamental, the tom's tuning, the bass note. On a melody row each note re-tunes it on the fly, so there treat it as the home pitch the melody plays around. Tuned add-ons (the comb string, modal bank, FM modulator) all track this, so moving Pitch moves the whole sound together.";
     case ParamId.PitchEnvAmount:
-      return "A pitch sweep at the start of each hit. Positive starts above and drops down onto the pitch (the classic kick punch); negative starts low and rises into it (reverse swells, zap risers). 0 = no sweep.";
+      return "A pitch sweep at the very start of each hit, on top of the base Pitch. Positive amounts start ABOVE the pitch and drop down onto it — the classic kick/tom 'punch' and the snap in a snare. Negative amounts start BELOW and rise up into it, for reverse-swell and zap/laser risers. The number is how far it starts off (in octaves-ish), so small values are a subtle tightening and large values are a dramatic whoop. 0 = no sweep, a steady pitch. Pair it with Pitch Dec (how long) and Pitch Shape (how it travels).";
     case ParamId.PitchEnvDecay:
-      return "How long the pitch sweep takes to settle onto the base pitch, in seconds. Short = a tight click of punch; long = an audible whoop or riser.";
+      return "How long the pitch sweep takes to travel to the base pitch, in seconds (up to 2s). Short (a few ms) is a tight click of punch you feel more than hear — the tom/kick attack. Longer makes the sweep an audible whoop, siren or riser that glides over the note. It only matters when Pitch Env is non-zero; it's the 'how fast' to Pitch Env's 'how far'. For the oscillating Pitch Shapes this is also the window the whole wobble fits inside.";
     case ParamId.PitchEnvShape:
-      return "The SHAPE of the pitch sweep, not just its speed. Exp is the classic exponential drop/rise. Line is a straight sloped ramp — pair it with Pitch Curve to set the slope angle. S-curve and Parabola bend differently, and Sine/Cos/Triangle/Wobble make the pitch rise AND fall across the sweep (a warble baked into the hit).";
+      return "The SHAPE of the pitch sweep, not just its speed. Exp is the classic exponential drop/rise — fast at first, easing in (what most drum machines do). Line is a straight, even ramp; pair it with Pitch Curve to bend the slope back toward exponential. S-curve eases at both ends; Parabola bows in the middle. Sine/Cos/Triangle/Wobble instead make the pitch rise AND fall across the sweep — a warble or vibrato baked into the hit's start (use Pitch Cycles to set how many wiggles).";
     case ParamId.PitchEnvCurve:
-      return "How much the chosen pitch Shape bends: on Line it tips a straight ramp toward exponential (steeper start), on the wave shapes it warps or deepens them. 0 = the plain shape.";
+      return "How much the chosen Pitch Shape bends, from 0 (the plain shape) upward. On Line it tips a straight ramp toward exponential, so the sweep starts steeper and eases in. On the wave shapes it warps or deepens the curve. It does nothing on its own — it's a modifier for whatever Pitch Shape is selected, so set the Shape first, then use Curve to taste.";
     case ParamId.PitchEnvCycles:
-      return "For the oscillating pitch shapes (Sine/Cos/Triangle/Wobble) only: how many rises-and-falls fit inside the sweep. Ignored by the straight/curved shapes.";
+      return "For the oscillating pitch shapes (Sine/Cos/Triangle/Wobble) ONLY: how many rise-and-fall wiggles fit inside the sweep window (Pitch Dec). 1 is a single up-down; higher values pack in a faster warble. Ignored by the straight/curved shapes (Exp/Line/S-curve/Parabola), where there's nothing to repeat.";
     case ParamId.Waveform:
-      return "The oscillator's waveform: Sine is pure and round, Tri adds a little edge, Square is hollow and buzzy, Saw is the brightest and richest.";
+      return "The oscillator's raw waveform — the basic 'colour' of the tone before anything else touches it. Sine is pure and round with no harmonics (deep kicks, soft sub bass). Tri adds a little glassy edge. Square is hollow and buzzy (woody, clarinet-ish, chiptune). Saw is the brightest and richest, full of harmonics — the go-to for cutting bass and leads. Brighter waves give the filter and drive more to work with.";
     case ParamId.ToneLevel:
-      return "Level of the oscillator — the tonal, pitched body of the hit. Balance it against Noise.";
+      return "Level of the oscillator — the tonal, PITCHED body of the hit (the part that has a note). Turn it up for melodic and bass sounds; balance it against Noise, which is the un-pitched hiss layer. A kick is mostly Tone; a hat is mostly Noise; a snare is a blend of both. At 0 the pitched layer is silent and you're left with just the noise layer (if any).";
     case ParamId.NoiseLevel:
-      return "Level of the noise layer — the hiss/sizzle part of the hit (snares and hats live here). Its character is picked by Noise Col.";
+      return "Level of the noise layer — the un-pitched hiss/sizzle/crackle part of the hit, where snares, hats, claps and cymbals live. Its character is set by Noise Col, and it can have its own decay via Noise Dec so the sizzle outlasts (or undercuts) the tone. Balance it against Tone: all noise = a hat or wash, all tone = a clean pitched hit, a mix = a snare. 0 turns the noise layer off.";
     case ParamId.NoiseType:
-      return "The noise's colour: White is flat hiss, Pink warmer, Brown dark rumble, Blue and Violet increasingly bright sizzle, Crackle sparse pops, Metal a gritty drum-machine clang.";
+      return "The noise's colour — its spectral tilt, which changes how bright or dark the hiss reads. White is flat, full-spectrum hiss. Pink is warmer (less top). Brown is a dark, low rumble. Blue and Violet get progressively brighter and thinner, into airy sizzle. Crackle is sparse random pops (vinyl, fire). Metal is gritty sample-and-hold clang (industrial, hi-hat grit). Only audible when Noise has a level.";
     case ParamId.OscModType:
-      return "Runs a second operator into the main oscillator: FM (frequency modulation) makes bells, clangs and growls; Ring (ring modulation) makes metallic, inharmonic tones. Off disables it.";
+      return "Cross-modulates the main oscillator with a second hidden operator, for tones you can't get from a single wave. FM (frequency modulation) bends the carrier's pitch thousands of times a second, minting bells, clangs, electric pianos and growls. Ring (ring modulation) multiplies the two together for metallic, inharmonic, robotic tones. Off disables it. The character comes from Mod Ratio (which overtones) and Mod Amt (how strong); FM can be pushed further with FM FB.";
     case ParamId.OscModRatio:
-      return "The modulator's frequency as a multiple of the pitch. Simple ratios (1x, 2x, 3x) stay harmonic; in-between values go clangy and bell-like.";
+      return "The modulator's frequency as a multiple of the pitch — this is what decides WHICH overtones FM/Ring adds. Whole-number ratios (1x, 2x, 3x) stay musical and harmonic (fuller tones, organ/EP shades). In-between values (1.5x, 2.7x…) are inharmonic and go clangy, bell-like and metallic. Only matters when Osc Mod is FM or Ring. Try small whole numbers for musical, odd fractions for percussion and bells.";
     case ParamId.OscModAmount:
-      return "How hard the modulator works — the FM index / ring-mod depth. 0 = off; higher = wilder sidebands.";
+      return "How hard the modulator pushes the carrier — the FM index / ring-mod depth. At 0 the modulation is off and you hear the plain oscillator. As you raise it, sidebands pile on: FM goes from a subtle sheen to a bright, gnarly, noisy growl; Ring goes from a light tremble to a full metallic clang. High values with an odd Mod Ratio quickly get aggressive and inharmonic.";
     case ParamId.Osc2Mix:
-      return "Level of a second oscillator layered under the first (0 = off). Use it with Detune for thickness, a sub octave, or an interval clang.";
+      return "Level of a SECOND oscillator layered under the first (0 = off). On its own it just thickens; the magic is with Osc2 Detune, which tunes it apart. Use a tiny detune for a fatter, beating unison; -12 semitones for a sub octave that adds weight; +7 for a fifth (that 808-cowbell clang). It shares the main Waveform. Turn it up to fatten leads and basses.";
     case ParamId.Osc2Detune:
-      return "The second oscillator's tuning offset in semitones. Tiny offsets (±0.2) give a slow beating thickness; -12 adds a sub octave; +7 a fifth (the 808-cowbell clang).";
+      return "How far the second oscillator is tuned from the first, in semitones (-12 to +12). Tiny offsets (±0.1–0.3) make the two drift slowly against each other for a thick, chorused beating. -12 drops an octave (a built-in sub). +7 is a fifth, -5 a fourth — instant power-chord or cowbell intervals. It only does anything when Osc2 has a level. With Sync on, detune instead reshapes the timbre rather than adding a separate pitch.";
     case ParamId.Sync:
-      return "Hard-syncs the second oscillator's cycle to the first. With some detune this gives the classic ripping 'sync' timbre.";
+      return "Hard-syncs the second oscillator to the first: every time oscillator 1 restarts its cycle it snaps oscillator 2 back to the start too. On its own that's subtle, but combined with Osc2 Detune it produces the classic ripping, vowel-y 'sync lead' timbre — and sweeping the detune (or an LFO on it) gives that aggressive tearing sound. Needs Osc2 to have a level to be heard.";
     case ParamId.Fold:
-      return "Wavefolder: folds the waveform back on itself instead of clipping, piling on harmonics. Subtle amounts thicken; high amounts snarl.";
+      return "Wavefolder: instead of clipping the peaks flat like distortion, it folds the waveform back on itself, adding bright, glassy, metallic harmonics that shift as the level changes. Subtle amounts thicken and add shimmer; high amounts snarl and go bell-like or harsh. It reacts to how loud the signal is, so it's liveliest on sustained tones and works well swept by an envelope or LFO. 0 = off.";
     case ParamId.ClickLevel:
-      return "Level of a tiny transient click (a few milliseconds) layered onto the attack for extra snap and definition. 0 = off.";
+      return "Level of a tiny transient click — just a few milliseconds — layered right on the attack for extra snap, point and definition (the 'beater' of a kick, the tick of a hat). It sits on top of the main sound and cuts through a busy mix even when the body is soft. 0 = off. Pick its character with Click Type.";
     case ParamId.ClickType:
-      return "The click's flavour: Tick a sharp spike, Snap a white-noise burst, Knock a low thud, Blip a high sine ping, Clank sample-and-hold metal grit.";
+      return "The click's flavour: Tick is a sharp bright spike (a violet-noise transient), Snap a short white-noise burst, Knock a low sine thud (beatery, woody), Blip a high sine ping, Clank a sample-and-hold metal grit. Only audible when Click has a level. Match it to the sound — Knock for kicks, Tick/Snap for hats and snares, Blip/Clank for blips and percussion.";
 
     // --- Amp envelope ---
     case ParamId.AmpAttack:
-      return "How long the hit takes to reach full level, in seconds. 0 = instant drum snap; longer = a soft fade-in or swell.";
+      return "How long the hit takes to fade up to full level, in seconds (0 to 0.1s). At 0 it's an instant, punchy drum snap — what you want for almost all percussion. Raise it for a soft fade-in or swell, easing pads and reverse-style hits in gently. Even a few milliseconds rounds off a harsh transient. Its curve is set by Att Shape.";
     case ParamId.AmpDecay:
-      return "How long the level takes to fall from the attack peak down to the Sustain level, in seconds — the main 'length of the hit' control for percussive sounds.";
+      return "After the attack peak, how long the level takes to fall to the Sustain level, in seconds — for percussive sounds (Sustain 0) this is the main 'length of the hit'. Short is a tight blip or closed hat; medium a snare or tom; long an open hat or a ringing tail. It's the single most important length control for drums. Its curve is set by Dec Shape.";
     case ParamId.AmpSustain:
-      return "The level held for as long as the note lasts. 0 = a pure percussive hit that dies after the decay; higher values hold on like a synth note.";
+      return "The level the sound HOLDS at, for as long as the note is gated on, after the decay finishes. At 0 you get a pure percussive hit that dies away during the Decay and never holds — the normal drum behaviour. Above 0 the sound sustains like a held synth note or a drone (pair with Gate for how long it's held). Think drums = 0, pads/bass notes/leads = higher.";
     case ParamId.AmpRelease:
-      return "The fade-out time after the held part of the note ends, in seconds.";
+      return "The fade-out time once the note is released (the gate ends), in seconds. Short cuts the sound off cleanly; long lets it ring on after the key/step lets go, for tails and echoes. It only really shows when Sustain is above 0 (otherwise the sound has usually already decayed away). Its curve follows Dec Shape.";
     case ParamId.AmpAttackShape:
-      return "Curvature of the attack: 0 is plucky (jumps up fast), 0.5 a straight line, 1 a slow swell that arrives late.";
+      return "The CURVE of the attack, from 0 to 1. 0 is plucky — it jumps up fast then eases into full (immediate, aggressive). 0.5 is a straight line. 1 is a slow swell that stays quiet then rushes up at the end (soft, delayed, pad-like). It reshapes the same Attack time, changing feel without changing length. Only audible when Attack is above 0.";
     case ParamId.AmpDecayShape:
-      return "Curvature of the decay and release: 0 holds then drops like a gate, 0.5 a straight line, 1 falls fast then trails off — the natural percussive shape.";
+      return "The CURVE of the decay AND release, from 0 to 1. 0 holds near full then drops off a cliff, like a gate (electronic, blocky). 0.5 is a straight line. 1 falls fast at first then trails off — the natural exponential shape of real percussion. This one strongly changes the character of a drum tail; 1 is the safe 'natural' default, low values give that gated, synthetic feel.";
     case ParamId.ToneDecay:
-      return "A separate decay for just the oscillator layer, so the tone can die quicker (or ring longer) than the noise. 0 = follow the main envelope.";
+      return "A SEPARATE decay for just the oscillator (tone) layer, in seconds, independent of the main amp envelope. Use it so the pitched part can die quicker (a short thump under a long sizzle) or ring longer (a tone tail under a snappy noise) than the noise layer. At 0 the tone simply follows the main envelope. When it's above 0 you can also shape it with Tone Shape/Curve/Cycles.";
     case ParamId.ToneEnvShape:
-      return "The contour of the tone layer's own decay (only when Tone Dec > 0). Exp is the classic exponential fall, Line a straight slope, and Sine/Wobble make the tone swell and duck as it fades. Tone Curve/Cycles tune the shape.";
+      return "The contour of the tone layer's own decay — only active when Tone Dec is above 0. Exp is the classic exponential fall. Line is a straight slope. S-curve/Parabola bend differently, and Sine/Cos/Triangle/Wobble make the tone swell and duck as it fades, for tremolo-like movement built into the note. Tone Curve and Tone Cycles fine-tune the chosen shape.";
     case ParamId.ToneEnvCurve:
-      return "How much the tone-decay Shape bends — steepens a Line, or warps/deepens the wave shapes. 0 = the plain shape.";
+      return "How much the tone-decay Shape bends, from 0 (the plain shape). It steepens a Line toward exponential, or warps/deepens the oscillating shapes. A modifier only — it needs Tone Shape set to something and Tone Dec above 0 to do anything.";
     case ParamId.ToneEnvCycles:
-      return "For the oscillating tone-decay shapes (Sine/Cos/Triangle/Wobble): how many swells fit inside the decay. Ignored by the straight/curved shapes.";
+      return "For the oscillating tone-decay shapes (Sine/Cos/Triangle/Wobble): how many swells fit inside the tone decay. 1 is a single swell; higher packs in a faster tremble. Ignored by the straight/curved shapes, and only relevant when Tone Dec is above 0.";
     case ParamId.NoiseDecay:
-      return "A separate decay for just the noise layer — e.g. a short tone with a longer sizzle tail. 0 = follow the main envelope.";
+      return "A SEPARATE decay for just the noise layer, in seconds, independent of the main envelope — e.g. a short tonal thump followed by a longer sizzle tail, or a snappy noise burst over a ringing tone. At 0 the noise simply follows the main envelope. When above 0 you can shape it with Noise Shape/Curve/Cycles.";
     case ParamId.NoiseEnvShape:
-      return "The contour of the noise layer's own decay (only when Noise Dec > 0). Same family as the tone's — Exp fall, Line slope, or Sine/Wobble swelling sizzle. Noise Curve/Cycles tune it.";
+      return "The contour of the noise layer's own decay — only active when Noise Dec is above 0. Same family as the tone's: Exp fall, Line slope, S-curve/Parabola, or Sine/Cos/Triangle/Wobble for sizzle that swells and ducks as it fades (rhythmic, gated-noise textures). Noise Curve and Noise Cycles fine-tune it.";
     case ParamId.NoiseEnvCurve:
-      return "How much the noise-decay Shape bends — steepens a Line, or warps/deepens the wave shapes. 0 = the plain shape.";
+      return "How much the noise-decay Shape bends, from 0 (the plain shape) — steepens a Line, or warps/deepens the wave shapes. A modifier for Noise Shape; needs Noise Dec above 0 to matter.";
     case ParamId.NoiseEnvCycles:
-      return "For the oscillating noise-decay shapes (Sine/Cos/Triangle/Wobble): how many swells fit inside the decay. Ignored by the straight/curved shapes.";
+      return "For the oscillating noise-decay shapes (Sine/Cos/Triangle/Wobble): how many swells fit inside the noise decay. Higher = a faster stutter in the sizzle. Ignored by the straight/curved shapes, and only when Noise Dec is above 0.";
     case ParamId.Gate:
-      return "How long each hit is held 'on' before it releases, in seconds — the note-length control. With Sustain at 0 the hit already dies during its Decay, so gate barely matters; with any Sustain the sound holds for the whole gate and then Release fades it. Short gate = choked/staccato; long (up to 30s) = a drone that rings across bars — and keeps gliding with any transition running over it.";
+      return "How long each hit is held 'on' before it releases, in seconds — the note-length control. With Sustain at 0 the hit already dies away during its Decay, so Gate barely matters. With any Sustain the sound holds at that level for the whole Gate, then Release fades it out. Short gate = choked, staccato stabs; long (up to 30s) = a drone that rings across bars — and keeps gliding under any transition running over it. Not touched by Shuffle (it's a length choice, not part of the timbre).";
 
     // --- Filter & resonators ---
     case ParamId.FilterType:
-      return "The filter's mode: LP cuts highs (darker), HP cuts lows (thinner), BP keeps only a band around the cutoff, Vowel is a formant filter that morphs A–E–I–O–U as the cutoff moves (instant wah when an LFO drives it).";
+      return "The filter's mode — how it carves the sound's brightness. LP (low-pass) keeps lows and cuts highs, for a darker, rounder tone (the workhorse). HP (high-pass) cuts lows for a thin, tinny sound (hats, removing rumble). BP (band-pass) keeps only a narrow band around the cutoff, for telephone/radio and focused percussion. Vowel is a formant filter that morphs through A–E–I–O–U as the Cutoff moves — an instant talking wah, especially with an LFO on Filter.";
     case ParamId.FilterCutoff:
-      return "Where the filter bites, in Hz: the corner frequency for LP/HP/BP, or the position along the vowels for Vowel.";
+      return "Where the filter acts, in Hz (80 Hz to 18 kHz). For LP/HP/BP it's the corner frequency — lower makes LP darker and HP thinner; for Vowel it's the position along the A→U vowel sweep. It's drawn on the same log scale as Pitch. This is the single biggest 'brightness' control, and the natural target for an LFO (wah/wobble) or a per-hit sweep.";
     case ParamId.FilterReso:
-      return "Resonance — a peak of emphasis right at the cutoff. Low = smooth; high = whistling, ringing, on the edge of self-oscillation.";
+      return "Resonance (Q) — a peak of emphasis right AT the cutoff frequency, from 0.5 (smooth, gentle) up to 8 (whistling, ringing, on the edge of self-oscillation). Low values shape broadly; high values make the filter sing and add a sharp vocal or squelchy character, and make a cutoff sweep really zing. High Reso can get piercing near the ear's sensitive range, so use it with intent.";
     case ParamId.CombMix:
-      return "Blends in a plucked-string resonator (a Karplus–Strong comb): hits ring like a plucked or struck string. 0 = off.";
+      return "Blends in a plucked-string resonator (a Karplus–Strong comb): it excites a short tuned delay loop so hits ring like a plucked or struck string, adding a pitched 'ping' or twang on top. 0 = off (dry). Its pitch is set by Comb Tune and its ring length by Comb Decay. Great for adding a tonal, stringy body to clicks and noise bursts.";
     case ParamId.CombTune:
-      return "The string resonator's pitch, as a ratio of the hit's pitch — 1x rings in tune, 2x an octave up, odd ratios go metallic.";
+      return "The string resonator's pitch, as a ratio of the hit's Pitch — 1x rings in tune with the note, 2x an octave up, 0.5x an octave down. Whole and simple ratios stay musical; odd in-between ratios go metallic and bell-like. Only matters when Comb has a mix. Because it tracks Pitch, the ring stays in key as the note changes.";
     case ParamId.CombDecay:
-      return "The string's feedback: low = a short dead pluck, high = a long ringing sustain.";
+      return "The string's feedback — how long the plucked resonator rings. Low is a short, dead, muted pluck; high is a long, sustaining, singing string. It's the 'how alive' control for the comb, and it needs Comb to have a mix to be heard. High values with a bright tuning can get whistly, so the shuffle guards them.";
     case ParamId.ModalMix:
-      return "Blends in a bank of tuned resonators — physical-modelling bells, bars and drumheads ringing at the hit's pitch. 0 = off.";
+      return "Blends in a bank of tuned resonators — physical-modelling bells, bars and drumheads that ring at the hit's pitch with a realistic set of overtones. 0 = off. Pick the overtone set with Material and the ring length with Modal Dec. It turns a plain click or noise burst into a struck metallic/wooden object — cowbells, glocks, tabla, gongs.";
     case ParamId.ModalMaterial:
-      return "What the modal bank is 'made of' — the set of overtones it rings with: Membrane (drumhead), Bell, Bar (glockenspiel-like), Bowl, Plate (dense inharmonic wash).";
+      return "What the modal bank is 'made of' — the set of overtones (mode ratios and decays) it rings with. Membrane is a drumhead (toms, tabla). Bell is inharmonic and metallic. Bar is tuned and glockenspiel/marimba-like. Bowl is rounded and singing. Plate is a dense, inharmonic metallic wash. Only audible when Modal has a mix; it defines the physical character of the resonator.";
     case ParamId.ModalDecay:
-      return "Scales how long every mode rings: 0 a tight thud, 1 a long bell-like ring.";
+      return "Scales how long every mode in the modal bank rings, from 0 (a tight, damped thud) to 1 (a long, bell-like sustain). It stretches or shortens all the overtones together. Needs Modal to have a mix. Short for percussive hits, long for ringing bells and drones.";
 
     // --- LFO (2/3 mirror 1) ---
     case ParamId.LfoTarget:
     case ParamId.Lfo2Target:
     case ParamId.Lfo3Target:
-      return "What this LFO wobbles. Some destinations swing symmetrically around the current value — Pitch (vibrato/sirens), Filter (cutoff wah & wobble), Amp (tremolo), Ring (through-zero AM), Wave (the square's pulse width), WTPos (sweeps a wavetable's scan). Others DRIVE their effect up from wherever it sits, so they bite even from off — Drive (pumps saturation), Reso (into squelchy resonance), Crush (pumps bit-crush grit), and Noise, which INJECTS noise: the crest hands the sound over to noise (fully at full depth), even if the noise layer is silent — a rhythmic noise burst. None switches the LFO off.";
+      return "An LFO is a slow, repeating wobble; this picks WHAT it wobbles (there are three independent LFOs). Some destinations swing symmetrically around the current value — Pitch (vibrato and sirens), Filter (cutoff wah and wobble), Amp (tremolo), Ring (through-zero AM), Wave (the square's pulse width), WTPos (sweeps a wavetable's scan). Others DRIVE their effect upward from wherever it sits, so they bite even when that effect is at zero — Drive (pumps saturation), Reso (into squelchy resonance), Crush (pumps bit-crush grit), and Noise, which INJECTS noise so the crest hands the sound over to hiss (fully at full depth) even if the noise layer is silent — a rhythmic noise burst. None switches this LFO off. Set the speed with Rate (or Sync) and the amount with Amt.";
     case ParamId.Lfo1Shape:
     case ParamId.Lfo2Shape:
     case ParamId.Lfo3Shape:
-      return "The wobble's motion: Sine smooth, Tri even up-down, Saw a rising ramp that snaps back, Square an on/off trill, S&H stepped random values.";
+      return "The wobble's motion — the wave the LFO traces over and over. Sine is smooth and rounded (gentle vibrato/tremolo). Tri is an even up-and-down. Saw is a rising ramp that snaps back (a rhythmic rise, or a fall if depth is negative-feeling). Square is an on/off trill that jumps between two values. S&H (sample-and-hold) jumps to a new random value each cycle, for stepped, random, glitchy movement.";
     case ParamId.LfoRate:
     case ParamId.Lfo2Rate:
     case ParamId.Lfo3Rate:
-      return "The wobble speed in Hz. Only used while Sync is Free — a division overrides it.";
+      return "The wobble speed in Hz (0.1 to 40) — slow values are a gentle drift, fast values a buzzing vibrato or growl. This knob is used only while this LFO's Sync is set to Free; choosing a beat division under Sync overrides it and locks the speed to the tempo instead.";
     case ParamId.Lfo1Sync:
     case ParamId.Lfo2Sync:
     case ParamId.Lfo3Sync:
-      return "Locks one LFO cycle to a beat division at the song tempo (1/8 = two wobbles per beat), phase-locked to the grid at each hit — the beat-synced dubstep wobble. Free uses the Rate knob instead.";
+      return "Locks one LFO cycle to a beat division at the song tempo (e.g. 1/8 = two wobbles per beat), and phase-locks it to the grid at each hit so the movement stays in time — the beat-synced dubstep wobble. Dotted divisions give a swung feel. Free instead ignores the tempo and uses the Rate knob in Hz. Use Sync for rhythmic modulation, Free for free-running texture.";
     case ParamId.LfoDepth:
     case ParamId.Lfo2Depth:
     case ParamId.Lfo3Depth:
-      return "How deep the wobble is. 0 = off; full throws the target across its whole range.";
+      return "How deep this LFO's wobble reaches — its amount. At 0 the LFO does nothing (effectively off, whatever the destination). As you raise it the movement grows, until at full it throws the target across its whole range (full vibrato, full wah, full tremolo). This is the main on/off and intensity control for each LFO.";
 
     // --- Drive & FX ---
     case ParamId.Drive:
-      return "Saturation on the whole voice: a little warms and fattens, a lot distorts and crunches.";
+      return "Saturation on the whole voice — a soft tanh overdrive after the filter. A little warms, thickens and glues the sound, adding harmonics and perceived loudness; a lot distorts, crunches and squares things off. It's gentler and rounder than the Crush/Downsample lo-fi effects. 0 = clean. Great for giving kicks weight and leads bite.";
     case ParamId.EchoTime:
-      return "The gap between echo repeats, in seconds. Only used while Echo Sync is Free.";
+      return "The gap between echo repeats, in seconds — short for slapback and metallic flutter, long for spacious, spread-out repeats. Used only while Echo Sync is Free; choosing a division under Echo Sync overrides this and locks the gap to the tempo. Needs Echo Mix above 0 to be heard.";
     case ParamId.EchoFeedback:
-      return "How much of each echo is fed back in: low = one or two repeats, high = a long trail.";
+      return "How much of each echo is fed back into the delay, setting how many repeats you get: low gives one or two slaps, high gives a long, trailing cascade that can nearly run away. It shapes the length of the echo tail. Needs Echo Mix above 0. High feedback plus a long Echo Time makes big ambient washes.";
     case ParamId.EchoMix:
-      return "The echo's volume against the dry hit. 0 = echo off.";
+      return "The echo's volume against the dry hit — the wet/dry balance and the master on/off for the delay. 0 = echo off. Low adds a subtle sense of space and depth; high makes the repeats as loud as the source, for dub and rhythmic effects. Shape the repeats with Echo Time/Sync, Feedback and Ping-Pong.";
     case ParamId.EchoSync:
-      return "Locks the echo's gap to a beat division at the song tempo (1/8, dotted values…) so repeats land on the grid. Free uses Echo Time instead.";
+      return "Locks the echo's gap to a beat division at the song tempo (1/8, dotted values, etc.) so the repeats land musically on the grid. Dotted divisions give that classic trailing dub delay. Free instead uses the Echo Time knob in seconds, free of the tempo. Needs Echo Mix above 0.";
     case ParamId.EchoPing:
-      return "Ping-pong: successive echoes bounce between the left and right speakers instead of repeating in place.";
+      return "Ping-pong: successive echoes bounce between the left and right speakers instead of repeating in place, for a wide, stereo, bouncing delay. Off keeps the repeats centred where the dry sound sits. Only audible when Echo has a mix; best appreciated on headphones or a stereo system.";
     case ParamId.ReverbSize:
-      return "The size of the reverb space, from a small room to a long wash.";
+      return "The size of the reverb space, from a small tight room to a long cavernous wash. Small adds subtle ambience and depth; large gives long, blurred tails that fill the space between hits. It sets how long the reverb rings; Verb Mix sets how much of it you hear. Needs Verb Mix above 0.";
     case ParamId.ReverbMix:
-      return "The reverb's volume against the dry hit. 0 = reverb off.";
+      return "The reverb's volume against the dry hit — the wet/dry balance and on/off for the reverb. 0 = reverb off. A touch adds air and places the sound in a space; a lot washes it out into an ambient tail. Pair with Verb Size for the room's character.";
     case ParamId.Crush:
-      return "Bitcrusher: reduces bit depth for gritty, fizzy lo-fi crunch — 12-bit is subtle, 3-bit is destroyed.";
+      return "Bitcrusher — reduces the bit depth, quantising the signal into fewer levels for gritty, fizzy, lo-fi digital crunch. 12-bit is a subtle vintage-sampler grit; each step down (10, 8, 6…) is harsher, until 3-bit is fully destroyed and noisy. Off = clean. A staple for lo-fi, industrial and retro-console textures; stack it with Downsample for full lo-fi.";
     case ParamId.Downsample:
-      return "Sample-rate reduction: plays the sound at a cheaper rate (2x–16x less), adding aliased vintage-sampler grit.";
+      return "Sample-rate reduction — replays the sound at a coarser rate (from 2x down to 16x lower) by holding each value for several samples, adding the aliased, ringing grit of a cheap old sampler. Off = full quality. Higher factors dull and dirty the top end and add metallic artefacts. Pairs naturally with Crush for a complete lo-fi treatment.";
 
     // --- Per-hit Life ---
     case ParamId.AccentAmount:
-      return "Accents the first hit of each cycle by playing all the other hits softer. 0 = every hit equal; higher = a stronger pulse on the downbeat.";
+      return "Accents the FIRST hit of each rhythm cycle by ducking all the OTHER hits underneath it — so the downbeat pulses harder without you having to program velocities. 0 = every hit equal (flat, machine-like); higher = a stronger emphasis on the one, giving the pattern a groove and pulse. It changes the balance between hits, not the overall level.";
     case ParamId.Humanize:
-      return "Adds a little random per-hit drift to level, pitch and cutoff, so the pattern feels played rather than programmed.";
+      return "Adds a small random drift to each hit's level, pitch and filter cutoff, so a repeating pattern feels played by a person rather than stamped out by a machine. 0 = dead-identical hits; a little loosens things up nicely; a lot gets wild and unpredictable. It only varies per hit — it doesn't change the underlying sound, just nudges each strike.";
     case ParamId.HitChance:
-      return "The probability each scheduled hit actually plays. Below 1, some hits drop out — and a dropped hit may sneak through as a quiet ghost note.";
+      return "The probability that each scheduled hit actually plays, from 0.25 to 1. At 1 every hit sounds. Below 1, some hits randomly drop out — and a dropped hit may sneak through as a quiet GHOST note instead of pure silence, for busy, evolving, humanised patterns. Lower it for sparse, generative feels; keep it at 1 for a locked, dependable groove.";
     case ParamId.Ratchet:
-      return "The chance a hit becomes a fast 2–4x retrigger burst — rolls, flams and stutters.";
+      return "The chance that a hit becomes a fast 2–4x retrigger burst — a mini roll, flam or stutter packed into the one step. 0 = never; higher makes bursts more frequent, for rolls, fills and glitchy energy. Each sub-hit is slightly quieter than the last. A little adds life to hats and snares; a lot turns a steady pattern into a stuttering machine.";
     case ParamId.ChokeGroup:
-      return "Sounds in the same group cut each other off: when one fires, the others stop ringing (the classic closed hat choking the open hat). Off = never choked.";
+      return "Puts this sound in a choke group (A–D) — sounds in the SAME group cut each other off, so when one fires the others stop ringing. The classic use is a closed hat choking an open hat so they never overlap, exactly like a real hi-hat. Off = never choked. It's a relationship between sounds, so Shuffle leaves it alone.";
 
     // --- Output ---
     case ParamId.Volume:
-      return "This voice's overall loudness in the mix. Shuffle never touches it.";
+      return "This voice's overall loudness in the final mix — the fader for the whole sound. Use it to balance this voice against the others. Shuffle never touches it, so re-rolling the sound won't throw your mix levels off.";
     case ParamId.Pan:
-      return "Where the voice sits in the stereo field, left to right (constant-power, so the middle isn't louder).";
+      return "Where the voice sits in the stereo field, from hard left to hard right, with centre in the middle. It uses constant-power panning, so a sound isn't louder in the middle than at the sides. Spread your voices across the field for width; keep bass and kicks near centre so they stay solid. Very low sounds get pulled toward centre automatically.";
 
     // --- Fatter oscillators / wavetable (Tone) ---
     case ParamId.Unison:
-      return "Stacks several slightly detuned copies of the main oscillator for a thicker, wider sound (supersaw-style). Off = the single classic oscillator.";
+      return "Stacks several slightly detuned copies of the main oscillator (3, 5 or 7 voices) for a much thicker, wider sound — the supersaw behind big trance/EDM leads and pads. Off = the single classic oscillator. The more voices, the bigger and more chorused, but also the more CPU and the softer the transient. Set how far the copies spread with Spread.";
     case ParamId.UnisonDetune:
-      return "How far the unison copies spread apart in pitch — a touch fattens, a lot swirls into a chorused, seasick detune. No effect unless Unison is on.";
+      return "How far the stacked unison copies spread apart in pitch. A touch fattens and adds a gentle shimmer; a lot swirls into a wide, chorused, seasick detune (full supersaw). It does nothing unless Unison is on (more than the single voice). More spread = wider and lusher, but too much can sound out of tune, so dial to taste.";
     case ParamId.FmFeedback:
-      return "Feeds the FM operator back into itself, morphing its modulating sine toward a saw and then noise for grittier, brighter FM. Only bites when Osc Mod is set to FM.";
+      return "Feeds the FM operator back into itself, morphing its modulating sine toward a saw and then toward noise — so the FM tone goes from clean and bell-like to gritty, bright and aggressive. It only bites when Osc Mod is set to FM (it does nothing for Ring or Off). A powerful way to dirty up and add edge to FM sounds without changing the ratio.";
     case ParamId.WaveTable:
-      return "Swaps the analog Sine/Tri/Square/Saw for a scannable digital wavetable — Formant, Harmonic, Vocal or Digital families. Off = the normal oscillator.";
+      return "Swaps the analog Sine/Tri/Square/Saw oscillator for a scannable digital WAVETABLE — a bank of morphing frames — in the Formant, Harmonic, Vocal or Digital families, each with its own evolving character. Off = the normal oscillator. Once a table is chosen, Scan (WavePosition) moves through its frames, and an LFO on 'WTPos' animates it (the Serum-style motion).";
     case ParamId.WavePosition:
-      return "Scans through the wavetable's frames, morphing the timbre. Assign an LFO to 'WTPos' to sweep it automatically (the Serum-style motion). Only active when a Table is chosen.";
+      return "Scans through the chosen wavetable's frames, crossfading between them to morph the timbre — from one tone into a completely different one across the sweep. It only does anything when a Table is selected (it's ignored by the analog oscillator). Assign an LFO to 'WTPos', or sweep it per-hit, to get that continuously-evolving digital motion.";
 
     // --- Modulation FX ---
     case ParamId.ModFxType:
-      return "A modulated stereo effect after the echo/reverb: Chorus (lush width), Flanger (jet-sweep comb), or Phaser (sweeping notches). Off = bypassed.";
+      return "A modulated stereo effect placed after the echo and reverb: Chorus thickens and widens with a lush, detuned shimmer; Flanger adds a swirling, jet-plane comb sweep; Phaser adds sweeping notches for a softer, watery swish. Off = bypassed. It's the finishing 'movement and width' effect; shape it with Rate, Depth, FB and Mix.";
     case ParamId.ModFxRate:
-      return "How fast the modulation sweeps back and forth, in Hz — slow for gentle movement, fast for vibrato-like shimmer.";
+      return "How fast the modulation effect sweeps back and forth, in Hz — slow for a gentle, evolving drift and width, fast for a vibrato-like shimmer or a watery churn. Works together with Depth (how far it sweeps). Only audible when Mod FX is on with some Mix.";
     case ParamId.ModFxDepth:
-      return "How far the sweep travels — subtle at low values, dramatic seasick motion at high ones.";
+      return "How far the modulation sweep travels — subtle widening and movement at low values, dramatic, seasick, obvious motion at high ones. Pairs with Rate (how fast). Only matters when Mod FX is on with some Mix.";
     case ParamId.ModFxFeedback:
-      return "Resonance for Flanger and Phaser: feeds the effect back into itself for a sharper, more metallic ring. Ignored by Chorus.";
+      return "Resonance for the Flanger and Phaser — feeds the effect back into itself for a sharper, more intense, metallic ringing sweep. Chorus ignores it. Higher makes flanger/phaser sweeps more pronounced and whooshy. Only matters when Mod FX is Flanger or Phaser with some Mix.";
     case ParamId.ModFxMix:
-      return "Dry/wet blend for the modulation effect. 0 = off; higher folds more of the swept, widened signal into the voice.";
+      return "Dry/wet blend for the modulation effect — the on/off and intensity for Mod FX. 0 = off (fully dry). Higher folds more of the swept, widened, stereo signal into the voice, up to a fully processed sound. Use a little for width, a lot for obvious effect.";
 
     default:
       return "";
