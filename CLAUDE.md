@@ -95,7 +95,7 @@ src/
     lines.ts            the engine data model: voice LINES of NODES; transitions; sweeps
     track.ts            PROCEDURAL PLACEMENT model: colours -> ordered loops + placement
                         rules; compile() turns a Track into engine lanes
-    project.ts          whole-project save/load (JSON, version 12); serialize/deserialize
+    project.ts          whole-project save/load (JSON, version 13); serialize/deserialize
     melody.ts           nodal melody model (tree of scale contexts + weighted notes)
     melodyScale.ts      keys/scales, degree->semitone/Hz mapping
     melodyGraph.ts      "graph calculator" melody generator (y=f(x) over the note lattice)
@@ -106,13 +106,15 @@ src/
     curveFit.ts         freehand stroke -> clean function; fit against the blend-shape family
     rng.ts              shared seeded RNG (xorshift32, matches engine.js makeRng)
   ui/                   all DOM/rendering
-    app.ts              App shell — owns engine + track + UI state; switches views;
-                        recompile() is the hub (track -> lanes -> engine). BY FAR the largest file.
-    controls.ts         shared UI pieces + the shuffle settings both sound surfaces use
+    app.ts              App shell — owns engine + track + UI state; switches views; hosts the
+                        Sound Graph editor (the only sound-editing surface, drawn from
+                        soundTraces.ts); recompile() is the hub (track -> lanes -> engine).
+                        BY FAR the largest file.
+    controls.ts         shared UI pieces + the shuffle settings the per-loop shuffle menu renders
     euclidView.ts       the 6 nested rings visualization
-    soundView.ts        the deep per-parameter sound editor (tabbed)
     voiceShuffleMenu.ts compact per-loop shuffle menu (audition sounds while playing)
-    soundHelp.ts        plain-words glossary for the sound editor (quotes engine code)
+    soundHelp.ts        the shared "?" help panel + plain-words glossary for Graph mode
+                        (quotes engine code)
     logo.ts             the "Euclid" wordmark drawn as rhythm dots (one colour per letter)
 .github/workflows/
     deploy.yml          build + deploy to GitHub Pages on push to main
@@ -139,8 +141,10 @@ src/
 - **Sound / snapshot:** a sound is a `number[]` of `NUM_PARAMS` values, one per `ParamId`.
   There are **no presets** — every sound is a generic full-range sound; the shuffle draws each
   param from its full base range (`paramSpec.baseRange`). `drumKit.ts` owns shuffle + undo.
-- **Save format:** `project.ts`, JSON `version: 12`. **Only version 12 loads**; any other
-  version loads a blank track (tempo + drum kit are still restored). The format is
+- **Save format:** `project.ts`, JSON `version: 13`. **Only version 13 loads**; any other
+  version loads a blank track and the DEFAULT drum kit — only the tempo is restored. (The
+  kit is version-gated too because v13 shifted the snapshot indices, so an older kit
+  snapshot would land on the wrong params.) The format is
   deliberately NOT back-compatible with earlier generations. Every field is validated on load
   (`read*` helpers) so malformed/partial saves degrade gracefully. `localStorage` key is
   `"msq010.project"` (kept from the working title so old saves keep loading).
@@ -167,9 +171,10 @@ src/
 
 **Adding/changing a synth parameter:** update `ParamId` + `NUM_PARAMS` in `params.ts`, the
 spec in `paramSpec.ts`, the `P` map (and any mirrored choice tables) in
-`public/worklet/engine.js`, wire the DSP in `engine.js`, surface it in `soundView.ts`, and add
-help text in `soundHelp.ts`. Bump the concept only if the snapshot layout changes — snapshots
-are stored in saved projects, so reordering breaks existing saves.
+`public/worklet/engine.js`, wire the DSP in `engine.js`, surface it on a Graph-mode trace in
+`soundTraces.ts` (the formula's `vars`/`types`, and the `code` snippet quoting the engine),
+and add help text in `soundHelp.ts`. If the snapshot layout changes, bump the save `version`
+in `project.ts` — snapshots are stored in saved projects, so reordering breaks existing saves.
 
 **Changing the save format:** bump the `version` in `project.ts`, decide the load policy for
 old versions (current policy: refuse — load blank), and update `serialize`/`deserialize` plus
