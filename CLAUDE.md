@@ -203,7 +203,9 @@ with `npx skills add https://github.com/mattpocock/skills --skill '*' -y`.
 
 ### Issue tracker
 
-Issues live in GitHub Issues for `reservetempo/Euclid`, driven through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live as local Markdown files in `docs/issues/` (one file per issue, frontmatter +
+body), committed with the code — no external tracker, no `gh` dependency. See
+`docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
