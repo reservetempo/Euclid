@@ -117,6 +117,17 @@ const PITCH_DECAY_SHUFFLE_CAP = 0.6;
 // most obviously "still moving at the end" options for the evolution pass to reach for.
 const PERIODIC_ENV_SHAPES = ["Sine", "Triangle", "Wobble"]
   .map((n) => ENV_SHAPES.indexOf(n)).filter((i) => i >= 0);
+// The three params every shaped contour is built from — its decay window, its shape, and its
+// wave count — one row per contour the evolution pass can reach (the pitch sweep also has an
+// Amount, which only it carries). Keeping them in one table means adding a fourth contour is
+// a row here rather than another branch in evolveContour.
+const CONTOUR_PARAMS = {
+  pitch: { decay: ParamId.PitchEnvDecay, shape: ParamId.PitchEnvShape, cycles: ParamId.PitchEnvCycles },
+  tone: { decay: ParamId.ToneDecay, shape: ParamId.ToneEnvShape, cycles: ParamId.ToneEnvCycles },
+  noise: { decay: ParamId.NoiseDecay, shape: ParamId.NoiseEnvShape, cycles: ParamId.NoiseEnvCycles },
+} as const;
+/** Which contour the evolution pass is stretching (a key of CONTOUR_PARAMS). */
+type ContourName = keyof typeof CONTOUR_PARAMS;
 
 // --- Shuffle harshness guard --------------------------------------------------
 // Caps applied AFTER the draw (shuffle-only — manual editing can still go anywhere).
@@ -716,7 +727,7 @@ export class DrumParameters {
     // Only layers you can actually hear are worth animating.
     const toneAudible = this.get(ParamId.ToneLevel) > 0.05;
     const noiseAudible = this.get(ParamId.NoiseLevel) > 0.05;
-    const cands: Array<"pitch" | "tone" | "noise"> = [];
+    const cands: ContourName[] = [];
     if (toneAudible) { cands.push("pitch"); cands.push("tone"); } // pitch env rides the tone
     if (noiseAudible) cands.push("noise");
     if (!cands.length) return;
@@ -732,25 +743,27 @@ export class DrumParameters {
 
   /** Give one contour a window ≈ the note body (jittered), a non-trivial amount, and — half
       the time — an oscillating shape with a low cycle count so it reads as motion, not blur. */
-  private evolveContour(which: "pitch" | "tone" | "noise", body: number): void {
+  private evolveContour(which: ContourName, body: number): void {
+    // All four draws happen up front, unconditionally, whichever contour this is and
+    // whether or not `periodic` wins — the shuffle is seeded, so the number and order of
+    // rand() calls is part of the format: making a draw conditional would re-roll every
+    // later param and break seed reproducibility (and undo).
     const jitter = 0.85 + rand() * 0.35; // ~0.85..1.2 of the body
     const win = body * jitter;
     const periodic = rand() < 0.5;
     const pick = PERIODIC_ENV_SHAPES[Math.floor(rand() * PERIODIC_ENV_SHAPES.length)];
     const cycles = 1 + Math.floor(rand() * 3); // 1..3 waves across the window
     const window = Math.max(0.05, win); // set() clamps the top to each param's own max
+
+    const ids = CONTOUR_PARAMS[which];
+    this.set(ids.decay, window);
+    // The pitch sweep is the one contour with its own depth control, and a stretched window
+    // is inaudible at a token Amount — so give a near-flat sweep something worth hearing.
     if (which === "pitch") {
-      this.set(ParamId.PitchEnvDecay, window);
       const amt = this.get(ParamId.PitchEnvAmount);
       if (Math.abs(amt) < 0.4) this.set(ParamId.PitchEnvAmount, (amt < 0 ? -1 : 1) * (0.5 + rand() * 1.5));
-      if (periodic) { this.set(ParamId.PitchEnvShape, pick); this.set(ParamId.PitchEnvCycles, cycles); }
-    } else if (which === "tone") {
-      this.set(ParamId.ToneDecay, window);
-      if (periodic) { this.set(ParamId.ToneEnvShape, pick); this.set(ParamId.ToneEnvCycles, cycles); }
-    } else {
-      this.set(ParamId.NoiseDecay, window);
-      if (periodic) { this.set(ParamId.NoiseEnvShape, pick); this.set(ParamId.NoiseEnvCycles, cycles); }
     }
+    if (periodic) { this.set(ids.shape, pick); this.set(ids.cycles, cycles); }
   }
 
   /** Two LFOs aimed at the same destination just double up — silence the later
