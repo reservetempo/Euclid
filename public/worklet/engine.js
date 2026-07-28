@@ -307,6 +307,55 @@ function shapeY(t, env) {
   return clamp(y, 0, 1);
 }
 
+// --- Shaped envelopes ---------------------------------------------------------
+// One value type for every 1→0 contour a voice runs on its own clock: the pitch sweep and
+// the Tone/Noise layer decays. Before this existed each one was six loose fields on Voice
+// and its own copy of the advance arithmetic; they now share these three functions.
+//
+// The blend-shape triplet (shape/curve/cycles) sits DIRECTLY on the object so shapeT() can
+// read it without a per-sample object literal — the render loop runs per sample per voice
+// and must not allocate. `shape === null` is "Exp", the legacy one-pole IIR path driven by
+// `coef`; every other shape samples shapeT over the decay window instead. `on === false`
+// means the layer has no envelope of its own and simply follows the amp ADSR.
+function makeShapedEnv() {
+  return { shape: null, curve: 0, cycles: 0, dur: 1, t: 0, coef: 0, value: 1, on: false };
+}
+
+// Re-arm from a snapshot at the start of a hit: resolve the stored shape index, size the
+// decay window, and rewind to t = 0.
+function armShapedEnv(env, shapeVal, curve, cycles, decaySec, sr, on) {
+  env.shape = ENV_SHAPE_IDS[clamp(Math.round(shapeVal) | 0, 0, ENV_SHAPE_IDS.length - 1)];
+  env.curve = curve;
+  env.cycles = cycles;
+  env.dur = Math.max(1, decaySec * sr);
+  env.coef = Math.exp(-1 / (Math.max(0.001, decaySec) * sr));
+  env.on = on;
+  rewindShapedEnv(env);
+}
+
+// Rewind to the start of the window without re-reading the snapshot — the ratchet re-strike.
+// The opening value is the envelope's OWN height at t = 0, not a hardcoded 1: most shapes do
+// start at 1 (1 − shapeT(0) = 1), but Cos starts at 0, and forcing it to 1 for one sample
+// put a step discontinuity — an audible click — at the head of every Cos hit. Reading it off
+// the shape also matches how soundTraces.ts draws the curve, so the graph tells the truth.
+function rewindShapedEnv(env) {
+  env.t = 0;
+  env.value = env.shape === null ? 1 : 1 - shapeT(0, env);
+}
+
+// Advance one sample. Exp rides the IIR coefficient; every other shape samples shapeT over
+// the window as 1 − shapeT(u), so it still leaves at 0 while sine/wobble rise and fall en
+// route. Past the end of the window u pins at 1 and the value holds.
+function tickShapedEnv(env) {
+  if (env.shape === null) {
+    env.value *= env.coef;
+    return;
+  }
+  env.t++;
+  const u = env.t >= env.dur ? 1 : env.t / env.dur;
+  env.value = 1 - shapeT(u, env);
+}
+
 // The ONE parameter each silence-end fade sweeps (see silentVariant / nearVariant and the
 // UI's TRANSITION_SWEEP). The far end may also touch secondary params (crush's Downsample,
 // echo's Feedback, wash's Size) — those stay automatic; only this primary one is From→To
@@ -531,7 +580,8 @@ class Voice {
     this.adsr = new ADSR();
     this.filter = new SVF();
     this.rng = makeRng((Math.random() * 4294967296) >>> 0);
-    this.oscPhase = 0; this.pitchEnv = 0; this.pitchEnvCoef = 0;
+    this.oscPhase = 0;
+    this.pitchEnvelope = makeShapedEnv();
     this.lfoPhase = [0, 0, 0];
     this.lfoTargets = [0, 0, 0];
     this.lfoRates = [0, 0, 0];
@@ -561,8 +611,10 @@ class Voice {
     this.wtFamily = 0; this.wtPos = 0;
     this.combMix = 0; this.combRatio = 1; this.combFb = 0;
     this.comb = new KarplusComb();
-    // Layer envelopes (per-source exponential decays) + click transient state.
-    this.toneEnvCoef = 0; this.noiseEnvCoef = 0; this.toneEnv = 1; this.noiseEnv = 1;
+    // Layer envelopes (per-source decays, `on` = false means "follow the amp ADSR")
+    // + click transient state.
+    this.toneEnvelope = makeShapedEnv();
+    this.noiseEnvelope = makeShapedEnv();
     this.clickLevel = 0; this.clickType = 0; this.clickEnv = 0; this.clickCoef = 0;
     this.clickPhase = 0; this.clickFreq = 0; this.clickPrev = 0;
     this.clickHold = 0; this.clickCtr = 0;
@@ -601,11 +653,10 @@ class Voice {
     this.pitchEnvAmount = s[P.PitchEnvAmount];
     this.pitchEnvDecay = Math.max(0.001, s[P.PitchEnvDecay]);
     // Pitch-sweep contour: null (Exp) keeps the legacy exponential; any other shape is
-    // evaluated over the decay window (pitchEnvDurSamples) via shapeT — see renderAdding.
-    this.pitchEnvShape = ENV_SHAPE_IDS[clamp(Math.round(s[P.PitchEnvShape]) | 0, 0, ENV_SHAPE_IDS.length - 1)];
-    this.pitchEnvCurve = s[P.PitchEnvCurve];
-    this.pitchEnvCycles = s[P.PitchEnvCycles];
-    this.pitchEnvDurSamples = Math.max(1, this.pitchEnvDecay * this.sr);
+    // evaluated over the decay window via shapeT — see tickShapedEnv. Always on: unlike the
+    // layer decays, a zero Amount (not a zero window) is what silences the sweep.
+    armShapedEnv(this.pitchEnvelope, s[P.PitchEnvShape], s[P.PitchEnvCurve], s[P.PitchEnvCycles],
+      this.pitchEnvDecay, this.sr, true);
     this.waveform = Math.round(s[P.Waveform]);
     this.toneLevel = s[P.ToneLevel];
     this.noiseLevel = s[P.NoiseLevel];
@@ -671,22 +722,15 @@ class Voice {
 
     // Layering: per-source exponential decays (0 = follow the amp envelope) and the
     // click transient.
+    // Layer-decay contours (same family as the pitch sweep). null = the legacy exponential
+    // coefficient; any other shape rides shapeT over the decay window instead. A window at
+    // or below 0.004s means "no envelope of my own" — the layer follows the amp ADSR.
     const toneDec = s[P.ToneDecay];
     const noiseDec = s[P.NoiseDecay];
-    this.toneEnvCoef = toneDec > 0.004 ? Math.exp(-1 / (toneDec * this.sr)) : 0;
-    this.noiseEnvCoef = noiseDec > 0.004 ? Math.exp(-1 / (noiseDec * this.sr)) : 0;
-    this.toneEnv = 1; this.noiseEnv = 1;
-    // Layer-decay contours (same family as the pitch sweep). null = the legacy exponential
-    // coefficient above; any other shape rides shapeT over the decay window instead.
-    this.toneEnvShape = ENV_SHAPE_IDS[clamp(Math.round(s[P.ToneEnvShape]) | 0, 0, ENV_SHAPE_IDS.length - 1)];
-    this.toneEnvCurve = s[P.ToneEnvCurve];
-    this.toneEnvCycles = s[P.ToneEnvCycles];
-    this.toneEnvDurSamples = Math.max(1, toneDec * this.sr);
-    this.noiseEnvShape = ENV_SHAPE_IDS[clamp(Math.round(s[P.NoiseEnvShape]) | 0, 0, ENV_SHAPE_IDS.length - 1)];
-    this.noiseEnvCurve = s[P.NoiseEnvCurve];
-    this.noiseEnvCycles = s[P.NoiseEnvCycles];
-    this.noiseEnvDurSamples = Math.max(1, noiseDec * this.sr);
-    this.toneEnvT = 0; this.noiseEnvT = 0;
+    armShapedEnv(this.toneEnvelope, s[P.ToneEnvShape], s[P.ToneEnvCurve], s[P.ToneEnvCycles],
+      toneDec, this.sr, toneDec > 0.004);
+    armShapedEnv(this.noiseEnvelope, s[P.NoiseEnvShape], s[P.NoiseEnvCurve], s[P.NoiseEnvCycles],
+      noiseDec, this.sr, noiseDec > 0.004);
     this.clickLevel = clamp(s[P.ClickLevel], 0, 1);
     this.clickType = clamp(Math.round(s[P.ClickType]), 0, CLICK_DECAY.length - 1);
     this.clickEnv = this.clickLevel > 0 ? 1 : 0;
@@ -714,8 +758,7 @@ class Voice {
       s[P.AmpDecayShape]
     );
 
-    this.oscPhase = 0; this.pitchEnv = 1; this.pitchEnvT = 0;
-    this.pitchEnvCoef = Math.exp(-1 / (this.pitchEnvDecay * this.sr));
+    this.oscPhase = 0;
     this.filter.reset();
     this.samplesPlayed = 0; this.noteOffSent = false;
     // A per-sound Gate (seconds) sets the note-hold; an absent/zero param (old
@@ -805,9 +848,9 @@ class Voice {
         this.ratchetLeft--;
         this.ratchetCountdown = this.ratchetInterval;
         this.adsr.noteOn();
-        this.pitchEnv = 1; this.pitchEnvT = 0;
-        this.toneEnv = 1; this.noiseEnv = 1;
-        this.toneEnvT = 0; this.noiseEnvT = 0;
+        rewindShapedEnv(this.pitchEnvelope);
+        rewindShapedEnv(this.toneEnvelope);
+        rewindShapedEnv(this.noiseEnvelope);
         if (this.clickLevel > 0) { this.clickEnv = 1; this.clickPhase = 0; }
         this.vel *= RATCHET_VEL_DECAY;
         this.samplesPlayed = 0;
@@ -862,18 +905,10 @@ class Voice {
 
       // Bipolar pitch env: positive drops from above; negative starts low/pinned at
       // the 5Hz floor and RISES into the note as the envelope decays (swells/zaps).
-      // The env runs 1→0: Exp (null shape) uses the one-pole IIR coefficient; any other
-      // shape is shapeT sampled over the decay window (1 - shapeT, so it still leaves at 0),
-      // giving straight sloped ramps (Line), s-curves, or rise-then-fall (sine/wobble).
-      let freq = this.basePitch * trackMul * (1 + this.pitchEnvAmount * this.pitchEnv) * pitchMul;
+      // The env runs 1→0 — see tickShapedEnv for how each contour shape gets there.
+      let freq = this.basePitch * trackMul * (1 + this.pitchEnvAmount * this.pitchEnvelope.value) * pitchMul;
       if (freq < 5) freq = 5;
-      if (this.pitchEnvShape === null) {
-        this.pitchEnv *= this.pitchEnvCoef;
-      } else {
-        this.pitchEnvT++;
-        const u = this.pitchEnvT >= this.pitchEnvDurSamples ? 1 : this.pitchEnvT / this.pitchEnvDurSamples;
-        this.pitchEnv = 1 - shapeT(u, { shape: this.pitchEnvShape, curve: this.pitchEnvCurve, cycles: this.pitchEnvCycles });
-      }
+      tickShapedEnv(this.pitchEnvelope);
 
       // Second operator: a sine modulator at `freq * ratio`, applied as either
       // phase modulation (FM) or amplitude/ring modulation of the carrier.
@@ -924,25 +959,13 @@ class Voice {
       // Layer envelopes: each source can decay on its own clock (0 = follow the amp
       // ADSR, which still gates the whole voice at the end of the chain).
       let toneAmp = this.toneLevel, noiseAmp = this.noiseLevel;
-      if (this.toneEnvCoef > 0) {
-        toneAmp *= this.toneEnv;
-        if (this.toneEnvShape === null) {
-          this.toneEnv *= this.toneEnvCoef;
-        } else {
-          this.toneEnvT++;
-          const u = this.toneEnvT >= this.toneEnvDurSamples ? 1 : this.toneEnvT / this.toneEnvDurSamples;
-          this.toneEnv = 1 - shapeT(u, { shape: this.toneEnvShape, curve: this.toneEnvCurve, cycles: this.toneEnvCycles });
-        }
+      if (this.toneEnvelope.on) {
+        toneAmp *= this.toneEnvelope.value;
+        tickShapedEnv(this.toneEnvelope);
       }
-      if (this.noiseEnvCoef > 0) {
-        noiseAmp *= this.noiseEnv;
-        if (this.noiseEnvShape === null) {
-          this.noiseEnv *= this.noiseEnvCoef;
-        } else {
-          this.noiseEnvT++;
-          const u = this.noiseEnvT >= this.noiseEnvDurSamples ? 1 : this.noiseEnvT / this.noiseEnvDurSamples;
-          this.noiseEnv = 1 - shapeT(u, { shape: this.noiseEnvShape, curve: this.noiseEnvCurve, cycles: this.noiseEnvCycles });
-        }
+      if (this.noiseEnvelope.on) {
+        noiseAmp *= this.noiseEnvelope.value;
+        tickShapedEnv(this.noiseEnvelope);
       }
       // A NOISE-destination LFO INJECTS noise: it blends the noise level up toward full and
       // ducks the tone, so the wave crest can override the sound with noise (fully at depth 1)

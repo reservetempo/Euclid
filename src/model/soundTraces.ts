@@ -147,19 +147,26 @@ function shapedDecay(shape: BlendShapeId | null, curve: number, cycles: number, 
   return shape === null ? Math.exp(-t / d) : 1 - blendShape({ shape, curve, cycles }, Math.min(1, t / d));
 }
 
+/** Where a shaped envelope's decay/curve/cycles knobs sit in its trace's own `vars` array —
+    the formula text interleaves these indices, so they must match that array's order. */
+interface ShapeVarIdx {
+  decay: number;
+  curve: number;
+  cycles: number;
+}
+
 /** The formula-text pieces for a shaped envelope (used by pitch + the layer decays): the
     exponential form for Exp, else "<shape>(t/D)" with the shape's curve knob and (for the
-    periodic shapes) its wave count. `dIdx`/`curveIdx`/`cyclesIdx` are the var indices. */
+    periodic shapes) its wave count. */
 function shapeParts(
-  shapeVal: number, lead: (string | number)[], tail: string,
-  dIdx: number, curveIdx: number, cyclesIdx: number,
+  shapeVal: number, lead: (string | number)[], tail: string, at: ShapeVarIdx,
 ): (string | number)[] {
   const shape = envShapeId(shapeVal);
-  if (shape === null) return [...lead, "e^(−t/", dIdx, ")", tail];
+  if (shape === null) return [...lead, "e^(−t/", at.decay, ")", tail];
   const nm = ENV_SHAPES[envShapeIdx(shapeVal)].toLowerCase();
   const spec = blendShapeSpec(shape);
-  const out = [...lead, `${nm}(t/`, dIdx, ")", tail, `  ·  ${spec.curveLabel} `, curveIdx];
-  return spec.usesCycles ? [...out, ", waves ", cyclesIdx] : out;
+  const out = [...lead, `${nm}(t/`, at.decay, ")", tail, `  ·  ${spec.curveLabel} `, at.curve];
+  return spec.usesCycles ? [...out, ", waves ", at.cycles] : out;
 }
 
 /** The modal ring envelope: the material's real mode sum Σ gₖ·e^(−t/τₖ), τₖ scaled by
@@ -232,7 +239,8 @@ switch (target) {
 export const SOUND_TRACES: TraceSpec[] = [
   {
     id: "pitch", label: "Pitch", color: "#ff6b6b",
-    parts: (g) => shapeParts(g(ParamId.PitchEnvShape), ["f(t) = ", 0, " · (1 + ", 1, " · "], ") Hz", 2, 3, 4),
+    parts: (g) => shapeParts(g(ParamId.PitchEnvShape), ["f(t) = ", 0, " · (1 + ", 1, " · "], ") Hz",
+      { decay: 2, curve: 3, cycles: 4 }),
     vars: [
       { sym: "P", param: ParamId.Pitch, step: 5, fmt: hzFmt },
       { sym: "A", param: ParamId.PitchEnvAmount, step: 0.1, fmt: (v) => String(r2(v)) },
@@ -299,7 +307,8 @@ if (samplesPlayed >= gateSeconds * sampleRate) adsr.noteOff();`,
   },
   {
     id: "tone", label: "Tone", color: "#ffd43b",
-    parts: (g) => shapeParts(g(ParamId.ToneEnvShape), ["y(t) = ", 0, " · "], "", 1, 2, 3),
+    parts: (g) => shapeParts(g(ParamId.ToneEnvShape), ["y(t) = ", 0, " · "], "",
+      { decay: 1, curve: 2, cycles: 3 }),
     vars: [
       { sym: "L", param: ParamId.ToneLevel, step: 2, scale: 100, fmt: pctFmt },
       { sym: "D", param: ParamId.ToneDecay, step: 0.01, fmt: secFmt },
@@ -326,7 +335,8 @@ mixed = toneAmp * osc + noiseAmp * noise;`,
   },
   {
     id: "noise", label: "Noise", color: "#a9e34b",
-    parts: (g) => shapeParts(g(ParamId.NoiseEnvShape), ["y(t) = ", 0, " · "], "", 1, 2, 3),
+    parts: (g) => shapeParts(g(ParamId.NoiseEnvShape), ["y(t) = ", 0, " · "], "",
+      { decay: 1, curve: 2, cycles: 3 }),
     vars: [
       { sym: "L", param: ParamId.NoiseLevel, step: 2, scale: 100, fmt: pctFmt },
       { sym: "D", param: ParamId.NoiseDecay, step: 0.01, fmt: secFmt },
