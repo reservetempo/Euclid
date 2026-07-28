@@ -187,4 +187,23 @@ avoid a startup race).
 - **The service worker** (`public/sw.js`) makes HTML navigations and the worklet network-first
   (the worklet has a fixed, non-hashed filename) so a new deploy shows up on the next online
   reload instead of being pinned to a stale cache. Keep that behaviour if you edit `sw.js`.
-- **`.claude/` is gitignored**, along with `node_modules/`, `dist/`, `*.local`, `.DS_Store`.
+- **`.claude/` is gitignored**, along with `node_modules/`, `dist/`, `*.local`, `.DS_Store`,
+  and the agent-skill tooling (`.agents/`, `skills-lock.json`).
+
+## Agent skills
+
+Per-repo configuration for the [mattpocock/skills](https://github.com/mattpocock/skills)
+engineering skills. The skills themselves are local tooling and are gitignored — reinstall
+with `npx skills add https://github.com/mattpocock/skills --skill '*' -y`.
+
+### Issue tracker
+
+Issues live in GitHub Issues for `reservetempo/Euclid`, driven through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: a root `CONTEXT.md` plus `docs/adr/`, both created lazily when they're actually needed. See `docs/agents/domain.md`.
