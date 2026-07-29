@@ -217,25 +217,11 @@ avoid a startup race).
   `/worklet/` network-first (both worklet files have fixed, non-hashed filenames) so a new
   deploy shows up on the next online reload instead of being pinned to a stale cache. Keep
   that behaviour if you edit `sw.js`.
-- **`.claude/` is gitignored**, along with `node_modules/`, `dist/`, `*.local`, `.DS_Store`,
-  and the agent-skill tooling (`.agents/`, `skills-lock.json`).
+- **`.claude/` is gitignored**, along with `node_modules/`, `dist/`, `*.local`, `.DS_Store`.
 
-## Agent skills
+## Docs
 
-Per-repo configuration for the [mattpocock/skills](https://github.com/mattpocock/skills)
-engineering skills. The skills themselves are local tooling and are gitignored — reinstall
-with `npx skills add https://github.com/mattpocock/skills --skill '*' -y`.
-
-### Issue tracker
-
-Issues live as local Markdown files in `docs/issues/` (one file per issue, frontmatter +
-body), committed with the code — no external tracker, no `gh` dependency. See
-`docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-The five canonical roles, each label string equal to its name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: a root `CONTEXT.md` plus `docs/adr/`, both created lazily when they're actually needed. See `docs/agents/domain.md`.
+- **`docs/issues/`** — issues as local Markdown files (one per issue, frontmatter + body),
+  committed with the code. No external tracker, no `gh` dependency.
+- **`docs/adr/`** — architecture decision records, written when a decision needs explaining
+  beyond what the code shows.
