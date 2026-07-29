@@ -45,22 +45,30 @@ groupings). It computes rhythms, compiles the track into engine "lanes", and sen
 worklet plain messages: a **sound table**, **voice lines**, tempo, transport commands.
 
 ### 2. AudioWorklet (`public/worklet/engine.js`, plain JS, served verbatim)
-The DSP. It is a **hand-maintained plain-JavaScript file** — NOT bundled or transformed by
-Vite. It runs in `AudioWorkletGlobalScope`, so it must be self-contained with **no imports**.
-It is a port of a C++ engine (see its header). `vite.config.ts` uses `base: "./"` and the
-worklet is loaded by URL at runtime (`src/audio/engineHost.ts`) so its path survives being
-hosted from a subfolder.
+The DSP. It is a **hand-written plain-JavaScript file** — NOT bundled or transformed by
+Vite, and no tool ever edits it. It runs in `AudioWorkletGlobalScope`, so it must be
+self-contained with **no imports**. It is a port of a C++ engine (see its header).
+`vite.config.ts` uses `base: "./"` and the worklet is loaded by URL at runtime
+(`src/audio/engineHost.ts`) so its path survives being hosted from a subfolder.
 
-**Critical invariant — parameter indices must stay in sync.** The main thread sends each
-sound as a fixed-length flat `number[]` snapshot. The array index of each parameter is
-defined by `ParamId` in `src/model/params.ts`, and the worklet reads those same indices from
-its `P = {...}` map at the top of `public/worklet/engine.js`. **If you add, remove, or
-reorder a parameter, you MUST update both `src/model/params.ts` (the `ParamId` enum) and the
-`P` map in `public/worklet/engine.js` identically**, plus `NUM_PARAMS`, the param spec in
-`src/model/paramSpec.ts`, and any expansion lookup tables the worklet mirrors from
-`paramSpec.ts` (choice lists like `CRUSH_BITS`, `NOISE_TYPES`, `LFO_TARGETS`, etc.). The
-source comments describe a "check script" that asserts the match — treat this as an invariant
-you verify by hand; there is currently no such script in the repo.
+**The snapshot contract is generated, not mirrored.** The main thread sends each sound as a
+fixed-length flat `number[]` snapshot; the array index of each parameter is its `ParamId`.
+`src/model/params.ts` is the single owner of that contract — the enum, one `PARAMS` row per
+parameter (name/range/default/step plus each discrete choice's DSP meaning), and the derived
+`ENGINE_TABLES`. The Vite plugin in `build/euclidParams.ts` emits those tables as
+`worklet/engine-params.js`, which `EngineHost` adds to the worklet **before** `engine.js`.
+Both scripts share one `AudioWorkletGlobalScope`, so the tables cross without an `import` —
+which AudioWorklets on iOS Safari do not support. The generated file is **virtual**:
+middleware in dev, `emitFile` at build, nothing on disk.
+
+`engine.js` reads each table with `need("NAME")`, which is both the read and the declaration
+of a dependency. Two checks guard the seam:
+- **at build** — the plugin scans `engine.js` for every `need("X")` and fails if the registry
+  doesn't emit it (this is the "check script" the old comments only promised);
+- **at runtime** — `EngineHost` passes the params stamp compiled into the bundle in
+  `processorOptions`, and the processor reports skew if the worklet loaded a different one
+  (both files are network-first but cached on separate fetches, so an offline client could
+  otherwise pair a stale params file with a fresh engine).
 
 `EngineHost` (`src/audio/engineHost.ts`) is the ONLY bridge to the worklet. All DSP messaging
 goes through it (`setSounds`, `setLines`, `setTempo`, `setSection`, `play`, `stop`,
@@ -72,11 +80,16 @@ background (`ensureRunning()` rebuilds it and signals the caller to re-push all 
 
 ```
 index.html              PWA entry; loads /src/main.ts
-vite.config.ts          base:"./"; worklet served verbatim
+vite.config.ts          base:"./"; worklet served verbatim; euclidParams() plugin
+build/
+  euclidParams.ts       Vite plugin: generates the worklet's half of the snapshot contract
+                        from src/model/params.ts (virtual file; also runs the build check)
 public/
-  worklet/engine.js     THE DSP — plain JS AudioWorklet, no imports, C++ port
-  sw.js                 service worker: HTML + worklet are network-first (fixed filename),
-                        hashed assets cache-first, so new deploys aren't masked by stale cache
+  worklet/engine.js     THE DSP — plain JS AudioWorklet, no imports, C++ port.
+                        Reads its param tables from the GENERATED worklet/engine-params.js
+  sw.js                 service worker: HTML + everything under /worklet/ are network-first
+                        (fixed filenames), hashed assets cache-first, so new deploys aren't
+                        masked by stale cache
   manifest.webmanifest  PWA manifest
   icon.svg
 src/
@@ -88,8 +101,11 @@ src/
     wav.ts              encode an AudioBuffer to a 16-bit PCM WAV Blob (offline export)
   model/                pure data + logic, no DOM
     euclid.ts           Euclidean pattern generation (even spread, rotation, custom splits)
-    params.ts           ParamId enum + NUM_PARAMS — the snapshot index contract
-    paramSpec.ts        per-param name/range/default/step/choices; base ranges for shuffle
+    params.ts           THE SNAPSHOT CONTRACT: ParamId + NUM_PARAMS + the PARAMS registry
+                        (spec per param, and what each choice index MEANS to the DSP) +
+                        ENGINE_TABLES, which build/euclidParams.ts emits to the worklet.
+                        Import-free on purpose: vite.config.ts loads it.
+    paramSpec.ts        reading helpers over that registry (specs, ranges, formatting)
     drums.ts            DrumType enum + the shipped drum palette
     drumKit.ts          editable/stateful sound params, seeded shuffle + undo, snap modes
     lines.ts            the engine data model: voice LINES of NODES; transitions; sweeps
@@ -169,19 +185,23 @@ src/
 
 ## When you change things — checklists
 
-**Adding/changing a synth parameter:** update `ParamId` + `NUM_PARAMS` in `params.ts`, the
-spec in `paramSpec.ts`, the `P` map (and any mirrored choice tables) in
-`public/worklet/engine.js`, wire the DSP in `engine.js`, surface it on a Graph-mode trace in
-`soundTraces.ts` (the formula's `vars`/`types`, and the `code` snippet quoting the engine),
-and add help text in `soundHelp.ts`. If the snapshot layout changes, bump the save `version`
-in `project.ts` — snapshots are stored in saved projects, so reordering breaks existing saves.
+**Adding/changing a synth parameter:** add the `ParamId` member and its `PARAMS` row in
+`params.ts` — that one row carries the spec AND, for a discrete param, what each choice index
+means to the DSP. The `Record` is exhaustive, so a missing row is a compile error, and the
+worklet's tables regenerate themselves. Then wire the DSP in `engine.js` (reading any new
+table with `need("NAME")`), and surface it on a Graph-mode trace in `soundTraces.ts` — the
+formula's `vars`/`types`, the `code` snippet quoting the engine, and the `about` text, which
+is where the help copy lives (`soundHelp.ts` is only the renderer). If the snapshot layout
+changes, bump the save `version` in `project.ts` — snapshots are stored in saved projects, so
+reordering breaks existing saves.
 
 **Changing the save format:** bump the `version` in `project.ts`, decide the load policy for
 old versions (current policy: refuse — load blank), and update `serialize`/`deserialize` plus
 the `read*` validators together.
 
-**Touching the DSP:** remember `engine.js` is plain JS, no imports, served verbatim, and mirrors
-main-thread param indices. It is also used offline for WAV export via
+**Touching the DSP:** remember `engine.js` is plain JS, no imports, served verbatim, and never
+edited by tooling; its param tables arrive from the generated `engine-params.js`, which is
+added to the worklet first. It is also used offline for WAV export via
 `EngineHost.renderToBuffer` (config passed through `processorOptions`, not port messages, to
 avoid a startup race).
 
@@ -189,9 +209,10 @@ avoid a startup race).
 
 - **Deployment is automatic:** pushing to `main` runs `.github/workflows/deploy.yml`
   (`npm ci` → `npm run build` → deploy `dist/` to GitHub Pages).
-- **The service worker** (`public/sw.js`) makes HTML navigations and the worklet network-first
-  (the worklet has a fixed, non-hashed filename) so a new deploy shows up on the next online
-  reload instead of being pinned to a stale cache. Keep that behaviour if you edit `sw.js`.
+- **The service worker** (`public/sw.js`) makes HTML navigations and everything under
+  `/worklet/` network-first (both worklet files have fixed, non-hashed filenames) so a new
+  deploy shows up on the next online reload instead of being pinned to a stale cache. Keep
+  that behaviour if you edit `sw.js`.
 - **`.claude/` is gitignored**, along with `node_modules/`, `dist/`, `*.local`, `.DS_Store`,
   and the agent-skill tooling (`.agents/`, `skills-lock.json`).
 

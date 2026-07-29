@@ -14,8 +14,8 @@
 // genuinely ends states its DOMAIN next to the formula ("t < 220ms"). A zero-level
 // setting is INACTIVE (not drawn); giving its level a value brings it to life.
 
-import { ParamId } from "./params";
-import { LFO_NONE, ENV_SHAPES } from "./paramSpec";
+import { ParamId, ENGINE_TABLES, choiceLabels } from "./params";
+import { LFO_NONE, ENV_SHAPES, MODFX_TYPES, WAVETABLES } from "./paramSpec";
 import { BlendShapeId, blendShape, blendShapeSpec } from "./lines";
 
 /** One editable variable of a trace's formula, bound to a snapshot param. */
@@ -75,32 +75,22 @@ const pctFmt = (v: number) => String(Math.round(v * 100));
 /** Log-normalise a frequency for display (20 Hz → 0, ~12 kHz → 1). */
 const hzNorm = (hz: number) => clamp01(Math.log2(Math.max(20, hz) / 20) / Math.log2(12000 / 20));
 
-// Click transient decay seconds per ClickType — mirrors CLICK_DECAY in engine.js.
-const CLICK_DECAY = [0.0015, 0.006, 0.012, 0.004, 0.008];
-// Bit depth per Crush index / sample-rate divisor per Downsample index — mirror
-// CRUSH_BITS / DOWNSAMPLE_FACTOR in engine.js (index 0 = off).
-const CRUSH_BITS = [0, 12, 10, 8, 6, 5, 4, 3];
-const DOWNSAMPLE_FACTOR = [1, 2, 3, 4, 6, 8, 12, 16];
-// Tempo-sync divisions in BEATS — mirror LFO_SYNC_BEATS / ECHO_SYNC_BEATS in engine.js.
-const LFO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2, 4];
-const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
-const LFO_SYNC_NAMES = ["Free", "1/32", "1/16", "1/16·", "1/8", "1/8·", "1/4", "1/4·", "1/2", "1 bar"];
-// Modal mode decay weights + gains per material — mirror MODAL_TABLES in engine.js.
-const MODAL_D = [
-  [1, 0.70, 0.55, 0.45, 0.40, 0.35],
-  [1.4, 1, 0.90, 0.80, 0.70, 0.50],
-  [1, 0.45, 0.25, 0.15],
-  [1.6, 1.6, 1.1, 1.1, 0.70, 0.40],
-  [0.8, 0.70, 0.65, 0.55, 0.50, 0.40],
-];
-const MODAL_G = [
-  [1, 0.62, 0.40, 0.35, 0.25, 0.20],
-  [0.5, 1, 0.70, 0.60, 0.50, 0.35],
-  [1, 0.55, 0.30, 0.15],
-  [0.8, 0.8, 0.60, 0.55, 0.30, 0.15],
-  [1, 0.75, 0.65, 0.55, 0.45, 0.35],
-];
-const MODAL_NAMES = ["Membrane", "Bell", "Bar", "Bowl", "Plate"];
+// The engine's own tables, read from the parameter registry rather than copied: the graph
+// is only honest if it draws from the numbers the DSP actually uses (see params.ts).
+const CLICK_DECAY = ENGINE_TABLES.CLICK_DECAY;
+const CRUSH_BITS = ENGINE_TABLES.CRUSH_BITS;
+const DOWNSAMPLE_FACTOR = ENGINE_TABLES.DOWNSAMPLE_FACTOR;
+const LFO_SYNC_BEATS = ENGINE_TABLES.LFO_SYNC_BEATS;
+const ECHO_SYNC_BEATS = ENGINE_TABLES.ECHO_SYNC_BEATS;
+const MODAL_TABLES = ENGINE_TABLES.MODAL_TABLES;
+const MODAL_NAMES = choiceLabels(ParamId.ModalMaterial);
+// Unison voice COUNT per index (the label for index 0 is "Off"; the count is 1).
+const UNISON_VOICES = ENGINE_TABLES.UNISON_VOICES;
+// Display spellings of the sync divisions: the registry's labels with typographic dots,
+// and "1 bar" for the longest LFO division — prettier than "1/16." and "1/1" in a formula.
+const LFO_SYNC_NAMES = choiceLabels(ParamId.Lfo1Sync)
+  .map((s) => s.replace(".", "·"))
+  .map((s) => (s === "1/1" ? "1 bar" : s));
 
 /** The LFO's EFFECTIVE cycle rate in Hz: the synced division at the live tempo when
     Sync is on (the engine ignores the Rate knob then), else the Rate knob. */
@@ -132,10 +122,10 @@ function lfoWave(shape: number, p: number): number {
   }
 }
 
-// Envelope-contour shapes for the pitch sweep + the layer decays. Stored index → BlendShapeId
-// (null = "Exp", the legacy exponential). MUST mirror ENV_SHAPE_IDS in engine.js and the
-// ENV_SHAPES choice list in paramSpec.ts (Line = ramp, Triangle = zigzag).
-const ENV_SHAPE_IDS: (BlendShapeId | null)[] = [null, "ramp", "scurve", "parabola", "sine", "cos", "zigzag", "wobble"];
+// Envelope-contour shapes for the pitch sweep + the layer decays. Stored index →
+// BlendShapeId (null = "Exp", the legacy exponential) — the registry's own mapping, the
+// same one the engine is handed.
+const ENV_SHAPE_IDS = ENGINE_TABLES.ENV_SHAPE_IDS as (BlendShapeId | null)[];
 const envShapeIdx = (v: number) => Math.max(0, Math.min(ENV_SHAPE_IDS.length - 1, Math.round(v)));
 const envShapeId = (v: number): BlendShapeId | null => ENV_SHAPE_IDS[envShapeIdx(v)];
 
@@ -169,12 +159,16 @@ function shapeParts(
   return spec.usesCycles ? [...out, ", waves ", at.cycles] : out;
 }
 
+/** The chosen material's index into the mode tables, clamped. */
+const modalIndex = (get: ParamGet) =>
+  Math.max(0, Math.min(MODAL_TABLES.length - 1, Math.round(get(ParamId.ModalMaterial))));
+
 /** The modal ring envelope: the material's real mode sum Σ gₖ·e^(−t/τₖ), τₖ scaled by
     the decay knob (0.45s base · 4^(2(D−½)) · the material's per-mode weight). */
 function modalCurve(get: ParamGet, t: number): number {
-  const mat = Math.max(0, Math.min(MODAL_D.length - 1, Math.round(get(ParamId.ModalMaterial))));
-  const scale = 0.45 * Math.pow(4, (clamp01(get(ParamId.ModalDecay)) - 0.5) * 2);
-  const ds = MODAL_D[mat], gs = MODAL_G[mat];
+  const mat = modalIndex(get);
+  const scale = ENGINE_TABLES.MODAL_BASE_DECAY * Math.pow(4, (clamp01(get(ParamId.ModalDecay)) - 0.5) * 2);
+  const ds = MODAL_TABLES[mat].d, gs = MODAL_TABLES[mat].g;
   let sum = 0, norm = 0;
   for (let k = 0; k < ds.length; k++) {
     sum += gs[k] * Math.exp(-t / Math.max(0.01, scale * ds[k]));
@@ -400,7 +394,7 @@ const k = 1 / clamp(reso * resoMul, 0.3, 20);                // Q
 filtered = svf.process(mixed, gCoef, k, type);               // LP / HP / BP
 // Vowel type instead morphs three formant bandpasses A-E-I-O-U along Cutoff.`,
   },
-  lfoTrace(1, ParamId.LfoTarget, ParamId.LfoRate, ParamId.LfoDepth, ParamId.Lfo1Shape, ParamId.Lfo1Sync, "#b197fc"),
+  lfoTrace(1, ParamId.Lfo1Target, ParamId.Lfo1Rate, ParamId.Lfo1Depth, ParamId.Lfo1Shape, ParamId.Lfo1Sync, "#b197fc"),
   lfoTrace(2, ParamId.Lfo2Target, ParamId.Lfo2Rate, ParamId.Lfo2Depth, ParamId.Lfo2Shape, ParamId.Lfo2Sync, "#e599f7"),
   lfoTrace(3, ParamId.Lfo3Target, ParamId.Lfo3Rate, ParamId.Lfo3Depth, ParamId.Lfo3Shape, ParamId.Lfo3Sync, "#f783ac"),
   {
@@ -458,7 +452,7 @@ buf[i] = out * wet + buf[i] * dry;   // M sets wet/dry`,
   {
     id: "modfx", label: "Mod FX", color: "#ff922b",
     parts: (g) => {
-      const ty = ["Off", "Chorus", "Flanger", "Phaser"][Math.max(0, Math.min(3, Math.round(g(ParamId.ModFxType))))];
+      const ty = MODFX_TYPES[Math.max(0, Math.min(3, Math.round(g(ParamId.ModFxType))))];
       return ["y(t) = ", 0, ` wet · ${ty} @ `, 1, "Hz  (steady)"];
     },
     vars: [
@@ -471,7 +465,7 @@ buf[i] = out * wet + buf[i] * dry;   // M sets wet/dry`,
     active: (g) => Math.round(g(ParamId.ModFxType)) !== 0 && g(ParamId.ModFxMix) > 0.001,
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.ModFxMix)),
-    fromTo: (g) => `${Math.round(g(ParamId.ModFxMix) * 100)}% ${["Off", "Chorus", "Flanger", "Phaser"][Math.max(0, Math.min(3, Math.round(g(ParamId.ModFxType))))]} at ${r2(g(ParamId.ModFxRate))} Hz`,
+    fromTo: (g) => `${Math.round(g(ParamId.ModFxMix) * 100)}% ${MODFX_TYPES[Math.max(0, Math.min(3, Math.round(g(ParamId.ModFxType))))]} at ${r2(g(ParamId.ModFxRate))} Hz`,
     about: "A modulated stereo effect placed after the echo and reverb — Chorus (lush detuned width), Flanger (a swirling jet-plane comb sweep) or Phaser (softer sweeping notches). It sweeps back and forth at Rate, as far as Depth, with feedback (fb) adding resonance for a sharper flanger/phaser (chorus ignores fb). The wet level holds constant across the note, so it draws as a flat line at the mix amount. Mix 0 or Type Off = inactive. It's the finishing 'movement and width' effect — a little for stereo width, a lot for obvious motion.",
     code: `// engine.js — Channel.renderInto: the stereo modulation FX (after reverb)
 this.modfx.setup(modType, rate, depth, feedback);
@@ -587,7 +581,7 @@ modPhase += (freq * ratio) / sampleRate;    // a sine at freq × r
   {
     id: "unison", label: "Unison", color: "#3bc9db",
     parts: (g) => {
-      const n = ["1", "3", "5", "7"][Math.max(0, Math.min(3, Math.round(g(ParamId.Unison))))];
+      const n = UNISON_VOICES[Math.max(0, Math.min(3, Math.round(g(ParamId.Unison))))];
       return ["y(t) = ", 0, ` spread · ${n} voices  (steady)`];
     },
     vars: [{ sym: "spread", param: ParamId.UnisonDetune, step: 2, scale: 100, fmt: pctFmt }],
@@ -595,7 +589,7 @@ modPhase += (freq * ratio) / sampleRate;    // a sine at freq × r
     active: (g) => Math.round(g(ParamId.Unison)) > 0,
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.UnisonDetune)),
-    fromTo: (g) => `${["1", "3", "5", "7"][Math.max(0, Math.min(3, Math.round(g(ParamId.Unison))))]} voices, ${Math.round(g(ParamId.UnisonDetune) * 100)}% spread`,
+    fromTo: (g) => `${UNISON_VOICES[Math.max(0, Math.min(3, Math.round(g(ParamId.Unison))))]} voices, ${Math.round(g(ParamId.UnisonDetune) * 100)}% spread`,
     about: "Stacks several slightly detuned copies of the main oscillator — 3, 5 or 7 voices — for a much thicker, wider supersaw-style sound, drawn as a steady line at the detune spread. More voices are bigger and more chorused (and cost more, with a softer transient). Spread sets how far the copies drift apart in pitch: a touch fattens, a lot swirls into a wide, seasick detune — too much starts to sound out of tune. Voices Off = the single classic oscillator.",
     code: `// engine.js — Voice.renderAdding: the unison stack (primary osc)
 for (let u = 0; u < unisonCount; u++) {
@@ -607,7 +601,7 @@ osc = sum * unisonNorm; // normalise by 1/√count`,
   {
     id: "wavetable", label: "Wavetable", color: "#da77f2",
     parts: (g) => {
-      const fam = ["Off", "Formant", "Harmonic", "Vocal", "Digital"][Math.max(0, Math.min(4, Math.round(g(ParamId.WaveTable))))];
+      const fam = WAVETABLES[Math.max(0, Math.min(4, Math.round(g(ParamId.WaveTable))))];
       return ["y(t) = scan ", 0, `  — ${fam} table  (steady)`];
     },
     vars: [{ sym: "scan", param: ParamId.WavePosition, step: 2, scale: 100, fmt: pctFmt }],
@@ -615,7 +609,7 @@ osc = sum * unisonNorm; // normalise by 1/√count`,
     active: (g) => Math.round(g(ParamId.WaveTable)) > 0,
     duration: () => Infinity,
     curve: (g) => clamp01(g(ParamId.WavePosition)),
-    fromTo: (g) => `${["Off", "Formant", "Harmonic", "Vocal", "Digital"][Math.max(0, Math.min(4, Math.round(g(ParamId.WaveTable))))]} table at ${Math.round(g(ParamId.WavePosition) * 100)}% scan`,
+    fromTo: (g) => `${WAVETABLES[Math.max(0, Math.min(4, Math.round(g(ParamId.WaveTable))))]} table at ${Math.round(g(ParamId.WavePosition) * 100)}% scan`,
     about: "Replaces the analog Sine/Tri/Square/Saw with a scannable digital wavetable — a bank of morphing frames. The Table picks the family (Formant, Harmonic, Vocal or Digital), each with its own evolving character, and Scan crossfades through the frames to morph the timbre, from one tone into a very different one across the sweep. Point an LFO at WTPos (or sweep Scan per hit) for that continuously-evolving, Serum-style digital motion. Table Off = the normal analog oscillator.",
     code: `// engine.js — Voice.renderAdding: the wavetable oscillator (wtFamily > 0)
 osc = this.wtFamily > 0
@@ -647,8 +641,8 @@ out = dry * (1 - mix) + delayed * mix;`,
     // The material's REAL mode sum: switching material changes the τₖ set (and the
     // curve) — the formula names it.
     parts: (g) => {
-      const mat = Math.max(0, Math.min(MODAL_NAMES.length - 1, Math.round(g(ParamId.ModalMaterial))));
-      return ["y(t) = ", 0, ` · Σ gₖ·e^(−t/τₖ)  — ${MODAL_D[mat].length} ${MODAL_NAMES[mat]} modes, τ scaled by `, 1];
+      const mat = modalIndex(g);
+      return ["y(t) = ", 0, ` · Σ gₖ·e^(−t/τₖ)  — ${MODAL_TABLES[mat].d.length} ${MODAL_NAMES[mat]} modes, τ scaled by `, 1];
     },
     vars: [
       { sym: "M", param: ParamId.ModalMix, step: 2, scale: 100, fmt: pctFmt },
@@ -657,15 +651,12 @@ out = dry * (1 - mix) + delayed * mix;`,
     types: [{ label: "Material", param: ParamId.ModalMaterial }],
     active: (g) => g(ParamId.ModalMix) > 0.001,
     duration: (g) => {
-      const mat = Math.max(0, Math.min(MODAL_D.length - 1, Math.round(g(ParamId.ModalMaterial))));
-      const scale = 0.45 * Math.pow(4, (clamp01(g(ParamId.ModalDecay)) - 0.5) * 2);
-      return Math.min(8, scale * Math.max(...MODAL_D[mat]) * 3);
+      const mat = modalIndex(g);
+      const scale = ENGINE_TABLES.MODAL_BASE_DECAY * Math.pow(4, (clamp01(g(ParamId.ModalDecay)) - 0.5) * 2);
+      return Math.min(8, scale * Math.max(...MODAL_TABLES[mat].d) * 3);
     },
     curve: (g, t) => modalCurve(g, t),
-    fromTo: (g) => {
-      const mat = Math.max(0, Math.min(MODAL_NAMES.length - 1, Math.round(g(ParamId.ModalMaterial))));
-      return `${Math.round(g(ParamId.ModalMix) * 100)}% ringing as ${MODAL_NAMES[mat]}`;
-    },
+    fromTo: (g) => `${Math.round(g(ParamId.ModalMix) * 100)}% ringing as ${MODAL_NAMES[modalIndex(g)]}`,
     about: "The resonator bank ringing at the note's modes — a SUM of decaying partials whose frequencies, gains (gₖ) and ring times (τₖ) come from the material's measured table, turning a plain hit into a struck metallic or wooden object (bells, glocks, tabla, gongs). Membrane is a drumhead, Bell inharmonic metal, Bar tuned like a marimba, Bowl rounded and singing, Plate a dense inharmonic wash. Switching material swaps the whole τₖ/gₖ set, so the formula and the drawn curve change with it. D scales every mode's ring time together — short for a damped thud, long for a bell-like sustain. M = 0 turns it off.",
     code: `// engine.js — ModalBank.setup: the material's measured mode table
 const t = MODAL_TABLES[material]; // { r: freq ratios, g: gains, d: decay weights }

@@ -3,7 +3,7 @@
 // draws each param from its full base range (see paramSpec baseRange).
 
 import { DrumType } from "./drums";
-import { ParamId, NUM_PARAMS } from "./params";
+import { ParamId, NUM_PARAMS, ENGINE_TABLES } from "./params";
 import {
   getParamSpec, baseSpec, baseRange, isDiscrete, LFO_TARGETS, LFO_NONE, OSC_MOD_TYPES, NOISE_TYPES,
   CLICK_TYPES, MODAL_MATERIALS, MODFX_TYPES, WAVETABLES, ECHO_SYNC_BEATS, ENV_SHAPES,
@@ -132,7 +132,7 @@ type ContourName = keyof typeof CONTOUR_PARAMS;
 // --- Shuffle harshness guard --------------------------------------------------
 // Caps applied AFTER the draw (shuffle-only — manual editing can still go anywhere).
 // Each targets a stacked-extremes screech the independent draws can land on.
-const FM_INDEX = 4;            // mirror of FM_INDEX in public/worklet/engine.js
+const FM_INDEX = ENGINE_TABLES.FM_INDEX; // the engine's own FM depth, via the registry
 const FM_BW_LIMIT = 9000;      // Hz, Carson-rule cap on FM/ring sideband spread
 const TILT_KNEE = 400;         // Hz, equal-loudness tilt starts above this pitch
 const TILT_POW = 0.3;          // strength of the (knee/pitch)^pow tone attenuation
@@ -180,10 +180,11 @@ const ECHO_EPS = 0.03; // echo repeat quieter than this is inaudible
 const VERB_EPS = 0.05; // reverb mix below this adds no usable tail
 const RV_BASE = 0.3;   // shortest reverb tail (size 0), seconds
 const RV_SPAN = 2.2;   // extra tail at size 1, seconds
-// Modal ring-time model, mirroring MODAL_BASE_DECAY and the longest per-material
-// decay weight in engine.js MODAL_TABLES; ModalDecay scales it by 4^(2(v-0.5)).
-const MODAL_RING_BASE = 0.45;
-const MODAL_RING_MAX_D = [1, 1.4, 1, 1.6, 0.8]; // Membrane/Bell/Bar/Bowl/Plate
+// Modal ring-time model: the registry's base decay and, per material, its longest mode
+// weight — derived from the very mode tables the engine rings, so a retuned material
+// changes this estimate with it. ModalDecay scales the result by 4^(2(v-0.5)).
+const MODAL_RING_BASE = ENGINE_TABLES.MODAL_BASE_DECAY;
+const MODAL_RING_MAX_D = ENGINE_TABLES.MODAL_TABLES.map((m) => Math.max(...m.d));
 
 // Ring time of the modal bank for a snapshot (0 when the bank is off/silent).
 function modalTail(snap: number[]): number {
@@ -552,7 +553,7 @@ export class DrumParameters {
       off: () => this.set(t, NONE),
     });
     return [
-      lfo(ParamId.LfoTarget, ParamId.LfoDepth),
+      lfo(ParamId.Lfo1Target, ParamId.Lfo1Depth),
       lfo(ParamId.Lfo2Target, ParamId.Lfo2Depth),
       lfo(ParamId.Lfo3Target, ParamId.Lfo3Depth),
       { name: round(ParamId.Sync) >= 1 ? "Sync" : "Osc2",
@@ -770,7 +771,7 @@ export class DrumParameters {
       duplicate(s) by switching them to "None". Duplicate "None"s are fine. */
   private dedupeLfoTargets(): void {
     const NONE = LFO_NONE;
-    const slots = [ParamId.LfoTarget, ParamId.Lfo2Target, ParamId.Lfo3Target];
+    const slots = [ParamId.Lfo1Target, ParamId.Lfo2Target, ParamId.Lfo3Target];
     const seen = new Set<number>();
     for (const id of slots) {
       const t = Math.round(this.get(id));

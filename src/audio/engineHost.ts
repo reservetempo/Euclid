@@ -2,6 +2,24 @@
 // the worklet node, and exposes a small message API. The DSP itself lives in
 // public/worklet/engine.js (served verbatim — see that file's header).
 
+/** The parameter-table stamp compiled into this bundle, injected by the euclidParams
+    plugin (build/euclidParams.ts). The processor compares it against the one the worklet
+    actually loaded, so a stale cached engine-params.js is reported rather than silently
+    shifting every parameter onto the wrong index. */
+const PARAMS_STAMP = __EUCLID_PARAMS_STAMP__;
+
+/** Add the worklet's two modules, in order. engine-params.js is GENERATED from the
+    parameter registry (src/model/params.ts) and must run FIRST: it publishes the snapshot
+    contract onto globalThis, which engine.js reads back. They are separate files because
+    an AudioWorklet module cannot `import` on iOS Safari, but every script added to a
+    context shares one AudioWorkletGlobalScope. Loaded by URL so the worklet is served
+    verbatim; BASE_URL respects the app's deploy base (see vite.config.ts). */
+async function loadEngineModules(worklet: Worklet): Promise<void> {
+  const base = import.meta.env.BASE_URL;
+  await worklet.addModule(`${base}worklet/engine-params.js`);
+  await worklet.addModule(`${base}worklet/engine.js`);
+}
+
 // Per-line transport state, posted once per 16th step: the active node index in
 // the line's chain and the step within that node's pattern cycle (each line has
 // its own phase — long-form polymeter). `lines` is null when stopped.
@@ -37,18 +55,17 @@ export class EngineHost {
   async start(): Promise<void> {
     if (this.node) return;
     this.ctx = new AudioContext();
-    // Loaded by URL so the worklet is served verbatim; BASE_URL respects the
-    // app's deploy base (see vite.config.ts).
-    const url = `${import.meta.env.BASE_URL}worklet/engine.js`;
-    await this.ctx.audioWorklet.addModule(url);
+    await loadEngineModules(this.ctx.audioWorklet);
     this.node = new AudioWorkletNode(this.ctx, "engine-processor", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [2],
+      processorOptions: { paramsStamp: PARAMS_STAMP },
     });
     this.node.port.onmessage = (e) => {
       const m = e.data;
       if (m.type === "playhead") this.onPlayhead?.({ lines: m.lines ?? null, fired: m.fired ?? [], pos: m.pos ?? 0 });
+      else if (m.type === "error") console.error(`[engine] ${m.message}`);
     };
     this.node.connect(this.ctx.destination);
     await this.ctx.resume();
@@ -178,8 +195,7 @@ export class EngineHost {
     const samplesPerStep = (sr * 60) / Math.max(1, opts.tempo) / 4;
     const length = Math.max(1, Math.ceil(opts.maxSteps * samplesPerStep + Math.max(0, opts.tailSec) * sr));
     const ctx = new OfflineAudioContext(2, length, sr);
-    const url = `${import.meta.env.BASE_URL}worklet/engine.js`;
-    await ctx.audioWorklet.addModule(url);
+    await loadEngineModules(ctx.audioWorklet);
     // The whole render config goes in processorOptions (applied in the processor
     // constructor), not port messages — offline rendering starts immediately and would
     // race messages posted just before startRendering.
@@ -188,6 +204,7 @@ export class EngineHost {
       numberOfOutputs: 1,
       outputChannelCount: [2],
       processorOptions: {
+        paramsStamp: PARAMS_STAMP,
         render: true,
         sounds: opts.sounds,
         lines: opts.lines,

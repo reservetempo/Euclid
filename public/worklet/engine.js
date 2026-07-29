@@ -9,72 +9,61 @@
     - Reverb           <- juce::Reverb (freeverb: 8 combs + 4 allpass, mono)
 
   The main thread owns parameter ranges/defaults; it sends plain fixed-length
-  float snapshots in. Parameter indices below MUST match src/model/params.ts (ParamId).
+  float snapshots in. Parameter indices come from worklet/engine-params.js (below).
 */
 
-// --- Parameter indices: mirror ParamId in src/model/params.ts EXACTLY (grouped
-// Tone / Amp / Filter / LFO / Fx / Life / Output). A check script asserts they match. ---
-const P = {
-  // Tone
-  Pitch: 0, PitchEnvAmount: 1, PitchEnvDecay: 2,
-  PitchEnvShape: 3, PitchEnvCurve: 4, PitchEnvCycles: 5,
-  Waveform: 6, ToneLevel: 7, NoiseLevel: 8,
-  NoiseType: 9, OscModType: 10, OscModRatio: 11, OscModAmount: 12,
-  Osc2Mix: 13, Osc2Detune: 14, Sync: 15, Fold: 16,
-  Unison: 17, UnisonDetune: 18, FmFeedback: 19, WaveTable: 20, WavePosition: 21,
-  ClickLevel: 22, ClickType: 23,
-  // Amp envelope + per-layer decays (each layer decay carries its own contour shape)
-  AmpAttack: 24, AmpDecay: 25, AmpSustain: 26, AmpRelease: 27,
-  AmpAttackShape: 28, AmpDecayShape: 29,
-  ToneDecay: 30, ToneEnvShape: 31, ToneEnvCurve: 32, ToneEnvCycles: 33,
-  NoiseDecay: 34, NoiseEnvShape: 35, NoiseEnvCurve: 36, NoiseEnvCycles: 37, Gate: 38,
-  // Filter + physical-model resonators
-  FilterType: 39, FilterCutoff: 40, FilterReso: 41,
-  CombMix: 42, CombTune: 43, CombDecay: 44,
-  ModalMix: 45, ModalMaterial: 46, ModalDecay: 47,
-  // LFOs (three blocks: dest / rate / depth / shape / sync)
-  LfoTarget: 48, LfoRate: 49, LfoDepth: 50, Lfo1Shape: 51, Lfo1Sync: 52,
-  Lfo2Target: 53, Lfo2Rate: 54, Lfo2Depth: 55, Lfo2Shape: 56, Lfo2Sync: 57,
-  Lfo3Target: 58, Lfo3Rate: 59, Lfo3Depth: 60, Lfo3Shape: 61, Lfo3Sync: 62,
-  // Drive & FX
-  Drive: 63, Crush: 64, Downsample: 65,
-  ModFxType: 66, ModFxRate: 67, ModFxDepth: 68, ModFxFeedback: 69, ModFxMix: 70,
-  EchoTime: 71, EchoFeedback: 72, EchoMix: 73, EchoSync: 74, EchoPing: 75,
-  ReverbSize: 76, ReverbMix: 77,
-  // Per-hit life
-  AccentAmount: 78, Humanize: 79, HitChance: 80, Ratchet: 81, ChokeGroup: 82,
-  // Output
-  Volume: 83, Pan: 84,
-};
+// --- The snapshot contract, handed over from the main thread --------------------
+// worklet/engine-params.js is GENERATED from the parameter registry in src/model/params.ts
+// and added to this AudioWorklet FIRST (see EngineHost.start), so its tables are already on
+// globalThis by the time this file runs. Every script passed to addModule shares one
+// AudioWorkletGlobalScope — which is how these cross without an `import`, unavailable to
+// AudioWorklets on iOS Safari.
+//
+// Nothing below is a hand-maintained mirror any more: param indices, the choice-index
+// lookup tables, and the two constants the shuffle's guards predict from all come from the
+// one registry. need() is both the read and the declaration of a dependency — the build
+// fails if the registry does not emit something asked for here (see build/euclidParams.ts).
+const EUCLID_PARAMS = globalThis.EUCLID_PARAMS;
+if (!EUCLID_PARAMS) {
+  throw new Error("engine.js: worklet/engine-params.js must be addModule'd before engine.js");
+}
+function need(key) {
+  const v = EUCLID_PARAMS[key];
+  if (v === undefined) throw new Error(`engine.js: engine-params.js is missing ${key}`);
+  return v;
+}
+
+// Snapshot index per parameter (Tone / Amp / Filter / LFO / Fx / Life / Output).
+const P = need("P");
 
 // Envelope-contour shapes for the pitch sweep + the Tone/Noise layer decays. The stored
 // param is the INDEX into this list; index 0 (Exp / null) keeps the legacy exponential IIR
 // path, and the rest name a BlendShapeId fed to shapeT() over the envelope's decay window.
-// MUST stay in sync with ENV_SHAPES in src/model/paramSpec.ts (Line=ramp, Triangle=zigzag).
-const ENV_SHAPE_IDS = [null, "ramp", "scurve", "parabola", "sine", "cos", "zigzag", "wobble"];
+const ENV_SHAPE_IDS = need("ENV_SHAPE_IDS");
 
-// LFO destination indices, in sync with LFO_TARGETS in src/model/paramSpec.ts. LFO_NONE
-// disables the LFO (falls through the routing switch); it sits LAST in the list.
-const LFO_PITCH = 0, LFO_FILTER = 1, LFO_AMP = 2, LFO_DRIVE = 3, LFO_RESO = 4, LFO_WAVE = 5;
-const LFO_NOISE = 6, LFO_CRUSH = 7, LFO_RING = 8, LFO_WTPOS = 9, LFO_NONE = 10; // WTPos = wavetable scan sweep
+// LFO destination indices. LFO_NONE disables the LFO (falls through the routing switch);
+// it sits LAST in the list. WTPos = wavetable scan sweep.
+const LFO_DEST = need("LFO");
+const LFO_PITCH = LFO_DEST.PITCH, LFO_FILTER = LFO_DEST.FILTER, LFO_AMP = LFO_DEST.AMP;
+const LFO_DRIVE = LFO_DEST.DRIVE, LFO_RESO = LFO_DEST.RESO, LFO_WAVE = LFO_DEST.WAVE;
+const LFO_NOISE = LFO_DEST.NOISE, LFO_CRUSH = LFO_DEST.CRUSH, LFO_RING = LFO_DEST.RING;
+const LFO_WTPOS = LFO_DEST.WTPOS, LFO_NONE = LFO_DEST.NONE;
 
 // Primary-oscillator unison voice count per Unison index (0 = Off = single voice).
-const UNISON_VOICES = [1, 3, 5, 7];
+const UNISON_VOICES = need("UNISON_VOICES");
 const UNISON_MAX = 7;                 // sized for the phase/detune scratch arrays
 
-// Sound-verse expansion lookup tables — keep in sync with the choice lists in
-// src/model/paramSpec.ts (the stored param is the index into these).
 // Bit-depth per Crush index (0 = off); sample-rate divisor per Downsample index.
-const CRUSH_BITS = [0, 12, 10, 8, 6, 5, 4, 3];
-const DOWNSAMPLE_FACTOR = [1, 2, 3, 4, 6, 8, 12, 16];
-const FM_INDEX = 4;          // max phase-mod depth (carrier cycles) at OscModAmount = 1
+const CRUSH_BITS = need("CRUSH_BITS");
+const DOWNSAMPLE_FACTOR = need("DOWNSAMPLE_FACTOR");
+const FM_INDEX = need("FM_INDEX"); // max phase-mod depth (carrier cycles) at OscModAmount = 1
 const CRACKLE_DENSITY = 0.03; // probability of a crackle/dust impulse per sample
 const METAL_HOLD = 9;        // sample-and-hold period (samples) for "Metal" noise
 const FOLD_GAIN = 4;         // extra pre-fold gain at Fold = 1 (more gain = more folds)
 const COMB_MAXLEN = 8192;    // resonator delay buffer (≈5Hz lowest tuned pitch at 44.1k)
-// Click transient layer: exponential decay (seconds) per ClickType index — keep in
-// sync with CLICK_TYPES in src/model/paramSpec.ts (Tick/Snap/Knock/Blip/Clank).
-const CLICK_DECAY = [0.0015, 0.006, 0.012, 0.004, 0.008];
+// Click transient layer: exponential decay (seconds) per ClickType index
+// (Tick/Snap/Knock/Blip/Clank).
+const CLICK_DECAY = need("CLICK_DECAY");
 const CLICK_GAIN = 1.2;      // click peak level at ClickLevel = 1
 const BLIP_HZ = 1100;        // fixed pitch of the "Blip" click sine
 // Master soft-clip knee: linear (transparent) below, tanh-rounded above, so stacked
@@ -82,18 +71,13 @@ const BLIP_HZ = 1100;        // fixed pitch of the "Blip" click sine
 const CLIP_KNEE = 0.9;
 
 // --- Modal resonator bank -----------------------------------------------------
-// Mode frequency ratios / gains / decay weights per material — indices match
-// MODAL_MATERIALS in src/model/paramSpec.ts. Classic measured sets: circular
-// membrane, minor-third church bell, free bar (marimba), singing bowl (detuned
-// pairs beat against each other), thick metal plate (inharmonic spread).
-const MODAL_TABLES = [
-  { r: [1, 1.59, 2.14, 2.30, 2.65, 2.92], g: [1, 0.62, 0.40, 0.35, 0.25, 0.20], d: [1, 0.70, 0.55, 0.45, 0.40, 0.35] },
-  { r: [0.5, 1, 1.2, 1.5, 2.0, 2.67],     g: [0.5, 1, 0.70, 0.60, 0.50, 0.35],  d: [1.4, 1, 0.90, 0.80, 0.70, 0.50] },
-  { r: [1, 2.76, 5.40, 8.93],             g: [1, 0.55, 0.30, 0.15],             d: [1, 0.45, 0.25, 0.15] },
-  { r: [1, 1.004, 2.78, 2.79, 5.18, 8.16], g: [0.8, 0.8, 0.60, 0.55, 0.30, 0.15], d: [1.6, 1.6, 1.1, 1.1, 0.70, 0.40] },
-  { r: [1, 1.32, 1.72, 2.19, 2.71, 3.49], g: [1, 0.75, 0.65, 0.55, 0.45, 0.35], d: [0.8, 0.70, 0.65, 0.55, 0.50, 0.40] },
-];
-const MODAL_BASE_DECAY = 0.45; // seconds of ring for mode 0 at ModalDecay = 0.5
+// Mode frequency ratios (r) / gains (g) / decay weights (d) per material, indexed by
+// ModalMaterial. Classic measured sets: circular membrane, minor-third church bell, free
+// bar (marimba), singing bowl (detuned pairs beat against each other), thick metal plate
+// (inharmonic spread). The Sound Graph draws its modal curve from these same numbers,
+// which is why they live in the registry rather than here.
+const MODAL_TABLES = need("MODAL_TABLES");
+const MODAL_BASE_DECAY = need("MODAL_BASE_DECAY"); // seconds of ring for mode 0 at ModalDecay = 0.5
 const MODAL_MAX_MODES = 6;
 
 // --- Vowel formant filter (FilterType 3) ----------------------------------------
@@ -185,11 +169,11 @@ function wtSample(fam, pos, ph, dt) {
 }
 
 // Echo tempo-sync divisions in BEATS (quarter notes) per EchoSync index; 0 = Free
-// (use EchoTime seconds). Mirrors ECHO_SYNC_BEATS in src/model/paramSpec.ts.
-const ECHO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2];
+// (use EchoTime seconds).
+const ECHO_SYNC_BEATS = need("ECHO_SYNC_BEATS");
 // LFO tempo-sync: BEATS spanned by ONE LFO cycle per Lfo*Sync index; 0 = Free (use
-// LfoRate Hz). Mirrors LFO_SYNC_BEATS in src/model/paramSpec.ts.
-const LFO_SYNC_BEATS = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2, 4];
+// the Lfo*Rate knob in Hz).
+const LFO_SYNC_BEATS = need("LFO_SYNC_BEATS");
 const ECHO_BUF_SEC = 1.3; // echo buffer length (covers a 1/2-note at >=93 BPM)
 
 // --- Per-hit Life ---------------------------------------------------------------
@@ -1411,6 +1395,19 @@ class EngineProcessor extends AudioWorkletProcessor {
     // and can be missed. Instead the whole render config is passed in processorOptions and
     // applied synchronously here, so playback is fully set up before the first quantum.
     const o = options && options.processorOptions;
+
+    // Skew check: the main thread passes the params stamp compiled into its bundle. Both
+    // worklet files are network-first (see public/sw.js), but they are cached on separate
+    // fetches, so an offline client could in principle hold one from each deploy — which
+    // would land every parameter on the wrong index, silently. Report instead.
+    if (o && o.paramsStamp && o.paramsStamp !== globalThis.EUCLID_PARAMS_STAMP) {
+      this.port.postMessage({
+        type: "error",
+        message: `param table skew: app expects ${o.paramsStamp}, worklet loaded ` +
+          `${globalThis.EUCLID_PARAMS_STAMP}. Reload while online to refresh the engine.`,
+      });
+    }
+
     if (o && o.render) {
       if (Array.isArray(o.sounds)) {
         for (const s of o.sounds) this.sounds.set(s.id, { snap: s.snap, lo: s.lo, hi: s.hi, tail: s.tail });
