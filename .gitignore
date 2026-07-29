@@ -7,3 +7,5 @@ dist/
 # Restore with: npx skills add https://github.com/mattpocock/skills --skill '*' -y
 .agents/
 skills-lock.json
+# Generated knowledge graph (/graphify) — rebuildable from the source tree.
+graphify-out/
