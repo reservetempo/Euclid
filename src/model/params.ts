@@ -25,8 +25,16 @@ export enum ParamId {
   PitchEnvCycles,  // wave count for the periodic shapes (Sine/Cos/Triangle/Wobble)
   Waveform,
   ToneLevel,
+  ToneDecay,       // independent exponential decay for the oscillator layer (0 = follow amp)
+  ToneEnvShape,    // oscillator-layer decay contour (Exp legacy / Line / S-curve / ... — see PitchEnvShape)
+  ToneEnvCurve,    // the tone-decay shape's curve knob (0..1)
+  ToneEnvCycles,   // wave count for the tone-decay periodic shapes
   NoiseLevel,
   NoiseType,       // White / Pink / Brown / Blue / Violet / Crackle / Metal
+  NoiseDecay,      // independent exponential decay for the noise layer (0 = follow amp)
+  NoiseEnvShape,   // noise-layer decay contour (Exp legacy / Line / S-curve / ...)
+  NoiseEnvCurve,   // the noise-decay shape's curve knob (0..1)
+  NoiseEnvCycles,  // wave count for the noise-decay periodic shapes
   OscModType,      // Off / FM / Ring (second-operator cross-modulation)
   OscModRatio,     // modulator frequency as a ratio of the carrier
   OscModAmount,    // FM index / ring-mod depth
@@ -41,26 +49,19 @@ export enum ParamId {
   WavePosition,    // scan/morph position through the table (0..1)
   ClickLevel,      // transient click layer level (0 = off)
   ClickType,       // Tick / Snap / Knock / Blip / Clank
-  // --- Amp envelope + per-layer decays ---
+  // --- Amp envelope (the master loudness shape; each LAYER's own decay lives with the
+  // layer above, since it is that layer's clock rather than the note's) ---
   AmpAttack,
   AmpDecay,
   AmpSustain,
   AmpRelease,
   AmpAttackShape,  // attack curve: 0 plucky .. 0.5 linear .. 1 slow swell
   AmpDecayShape,   // decay+release curve: 0 gated hold .. 0.5 linear .. 1 percussive
-  ToneDecay,       // independent exponential decay for the oscillator layer (0 = follow amp)
-  ToneEnvShape,    // oscillator-layer decay contour (Exp legacy / Line / S-curve / ... — see PitchEnvShape)
-  ToneEnvCurve,    // the tone-decay shape's curve knob (0..1)
-  ToneEnvCycles,   // wave count for the tone-decay periodic shapes
-  NoiseDecay,      // independent exponential decay for the noise layer (0 = follow amp)
-  NoiseEnvShape,   // noise-layer decay contour (Exp legacy / Line / S-curve / ...)
-  NoiseEnvCurve,   // the noise-decay shape's curve knob (0..1)
-  NoiseEnvCycles,  // wave count for the noise-decay periodic shapes
-  Gate,            // note-hold in seconds before note-off (with Sustain = note length)
-  // --- Filter + physical-model resonators ---
+  // --- Filter ---
   FilterType,
   FilterCutoff,
   FilterReso,
+  // --- Physical-model resonators (struck/plucked objects, not filters) ---
   CombMix,         // Karplus-Strong/comb resonator dry/wet (0 = off)
   CombTune,        // resonator pitch as a ratio of the note
   CombDecay,       // resonator feedback: short pluck .. long ringing string
@@ -100,6 +101,7 @@ export enum ParamId {
   ReverbSize,
   ReverbMix,
   // --- Per-hit life (varies each HIT, not the sound) ---
+  Gate,            // note-hold in seconds before note-off (with Sustain = note length)
   AccentAmount,    // how much NON-accent hits duck (accent = first hit of the cycle)
   Humanize,        // per-hit random level/pitch/cutoff jitter
   HitChance,       // probability a scheduled hit plays (misses may become ghosts)
@@ -216,9 +218,24 @@ export const PARAMS: Record<RealParamId, ParamEntry> = {
   [ParamId.PitchEnvCycles]: p("Pitch Cycles", 0.25, 8, 1, 0.5, 0.25, "x"),
   [ParamId.Waveform]: p("Wave", 0, 3, 0, 1, 1, "", true, labels("Sine", "Tri", "Square", "Saw")),
   [ParamId.ToneLevel]: p("Tone", 0, 1, 0.8, 1, 0.02, ""),
+  // The oscillator layer's OWN decay clock, separate from the amp envelope — it belongs
+  // beside the level it fades, not with the note's master envelope. 0 = follow the amp.
+  // Its contour family is PitchEnvShape's: Exp = the classic exponential fall, the rest
+  // bend the slope or oscillate the layer level over its decay.
+  [ParamId.ToneDecay]: p("Tone Dec", 0, 1.2, 0, 0.35, 0.005, "s"),
+  // Layer-decay contours (same family as PitchEnvShape). Exp = the classic exponential
+  // fall; the other shapes bend the slope or oscillate the layer level over its decay.
+  [ParamId.ToneEnvShape]: p("Tone Shape", 0, ENV_SHAPE_CHOICES.length - 1, 0, 1, 1, "", true, ENV_SHAPE_CHOICES),
+  [ParamId.ToneEnvCurve]: p("Tone Curve", 0, 1, 0, 1, 0.01, ""),
+  [ParamId.ToneEnvCycles]: p("Tone Cycles", 0.25, 8, 1, 0.5, 0.25, "x"),
   [ParamId.NoiseLevel]: p("Noise", 0, 1, 0, 1, 0.02, ""),
   [ParamId.NoiseType]: p("Noise Col", 0, 6, 0, 1, 1, "", true,
     labels("White", "Pink", "Brown", "Blue", "Violet", "Crackle", "Metal")),
+  // The noise layer's own decay clock and contour, same as the tone layer's above.
+  [ParamId.NoiseDecay]: p("Noise Dec", 0, 1.2, 0, 0.35, 0.005, "s"),
+  [ParamId.NoiseEnvShape]: p("Noise Shape", 0, ENV_SHAPE_CHOICES.length - 1, 0, 1, 1, "", true, ENV_SHAPE_CHOICES),
+  [ParamId.NoiseEnvCurve]: p("Noise Curve", 0, 1, 0, 1, 0.01, ""),
+  [ParamId.NoiseEnvCycles]: p("Noise Cycles", 0.25, 8, 1, 0.5, 0.25, "x"),
   [ParamId.OscModType]: p("Mod", 0, 2, 0, 1, 1, "", true, labels("Off", "FM", "Ring")),
   [ParamId.OscModRatio]: p("Mod Ratio", 0.5, 12, 1, 0.5, 0.01, "x"),
   [ParamId.OscModAmount]: p("Mod Amt", 0, 1, 0, 1, 0.02, ""),
@@ -245,36 +262,21 @@ export const PARAMS: Record<RealParamId, ParamEntry> = {
   [ParamId.ClickType]: p("Click Type", 0, 4, 0, 1, 1, "", true,
     meanings(["Tick", "Snap", "Knock", "Blip", "Clank"], [0.0015, 0.006, 0.012, 0.004, 0.008])),
 
-  // --- Amp envelope + per-layer decays ---
+  // --- Amp envelope ---
   [ParamId.AmpAttack]: p("Attack", 0, 0.1, 0.001, 0.4, 0.001, "s"),
   [ParamId.AmpDecay]: p("Decay", 0.01, 1.5, 0.2, 0.35, 0.005, "s"),
   [ParamId.AmpSustain]: p("Sustain", 0, 1, 0, 1, 0.02, ""),
   [ParamId.AmpRelease]: p("Release", 0.005, 1.2, 0.08, 0.35, 0.005, "s"),
-  // Envelope curvature. Shape 0.5 = linear; the layer decays default to 0 = follow the
-  // amp envelope, and the click layer defaults to off.
+  // Envelope curvature: shape 0.5 = linear.
   [ParamId.AmpAttackShape]: p("Att Shape", 0, 1, 0.5, 1, 0.01, ""),
   [ParamId.AmpDecayShape]: p("Dec Shape", 0, 1, 0.5, 1, 0.01, ""),
-  [ParamId.ToneDecay]: p("Tone Dec", 0, 1.2, 0, 0.35, 0.005, "s"),
-  // Layer-decay contours (same family as PitchEnvShape). Exp = the classic exponential
-  // fall; the other shapes bend the slope or oscillate the layer level over its decay.
-  [ParamId.ToneEnvShape]: p("Tone Shape", 0, ENV_SHAPE_CHOICES.length - 1, 0, 1, 1, "", true, ENV_SHAPE_CHOICES),
-  [ParamId.ToneEnvCurve]: p("Tone Curve", 0, 1, 0, 1, 0.01, ""),
-  [ParamId.ToneEnvCycles]: p("Tone Cycles", 0.25, 8, 1, 0.5, 0.25, "x"),
-  [ParamId.NoiseDecay]: p("Noise Dec", 0, 1.2, 0, 0.35, 0.005, "s"),
-  [ParamId.NoiseEnvShape]: p("Noise Shape", 0, ENV_SHAPE_CHOICES.length - 1, 0, 1, 1, "", true, ENV_SHAPE_CHOICES),
-  [ParamId.NoiseEnvCurve]: p("Noise Curve", 0, 1, 0, 1, 0.01, ""),
-  [ParamId.NoiseEnvCycles]: p("Noise Cycles", 0.25, 8, 1, 0.5, 0.25, "x"),
-  // Note-hold in seconds; default 0.4 matches the sequencer's default step gate.
-  // Max 60s for drone-length holds (pair with Sustain > 0 so the note actually rings);
-  // the low skew keeps most of the slider's travel on the ordinary short gates.
-  // Not randomizable — it's a length choice, not part of the sound's character.
-  [ParamId.Gate]: p("Gate", 0.02, 60, 0.4, 0.2, 0.005, "s", false),
 
-  // --- Filter + physical-model resonators ---
+  // --- Filter ---
   // "Vowel" = 3 parallel formant bandpasses; Cutoff morphs A→E→I→O→U (LFO-able wah).
   [ParamId.FilterType]: p("Filter", 0, 3, 0, 1, 1, "", true, labels("LP", "HP", "BP", "Vowel")),
   [ParamId.FilterCutoff]: p("Cutoff", 80, 18000, 12000, 0.3, 10, "Hz"),
   [ParamId.FilterReso]: p("Reso", 0.5, 8, 0.7, 0.5, 0.05, "Q"),
+  // --- Physical-model resonators ---
   [ParamId.CombMix]: p("Comb", 0, 1, 0, 1, 0.02, ""),
   [ParamId.CombTune]: p("Comb Tune", 0.25, 4, 1, 0.5, 0.01, "x"),
   [ParamId.CombDecay]: p("Comb Decay", 0, 1, 0.5, 1, 0.02, ""),
@@ -345,6 +347,11 @@ export const PARAMS: Record<RealParamId, ParamEntry> = {
   [ParamId.ReverbMix]: p("Verb Mix", 0, 1, 0, 1, 0.02, ""),
 
   // --- Per-hit life ---
+  // Note-hold in seconds; default 0.4 matches the sequencer's default step gate.
+  // Max 60s for drone-length holds (pair with Sustain > 0 so the note actually rings);
+  // the low skew keeps most of the slider's travel on the ordinary short gates.
+  // Not randomizable — it's a length choice, not part of the sound's character.
+  [ParamId.Gate]: p("Gate", 0.02, 60, 0.4, 0.2, 0.005, "s", false),
   [ParamId.AccentAmount]: p("Accent", 0, 1, 0, 1, 0.02, ""),
   [ParamId.Humanize]: p("Humanize", 0, 1, 0, 1, 0.02, ""),
   [ParamId.HitChance]: p("Hit Chance", 0.25, 1, 1, 1, 0.01, ""),
@@ -411,6 +418,7 @@ export enum ParamGroup {
   Tone,
   Amp,
   Filter,
+  Resonator,
   Lfo,
   Fx,
   Life,
@@ -421,8 +429,9 @@ export enum ParamGroup {
 // falls under (each check names the LAST id of its group). Keep these in enum order.
 export function getParamGroup(id: ParamId): ParamGroup {
   if (id <= ParamId.ClickType) return ParamGroup.Tone;
-  if (id <= ParamId.Gate) return ParamGroup.Amp;
-  if (id <= ParamId.ModalDecay) return ParamGroup.Filter;
+  if (id <= ParamId.AmpDecayShape) return ParamGroup.Amp;
+  if (id <= ParamId.FilterReso) return ParamGroup.Filter;
+  if (id <= ParamId.ModalDecay) return ParamGroup.Resonator;
   if (id <= ParamId.Lfo3Sync) return ParamGroup.Lfo;
   if (id <= ParamId.ReverbMix) return ParamGroup.Fx;
   if (id <= ParamId.ChokeGroup) return ParamGroup.Life;
@@ -434,6 +443,7 @@ export function getParamGroupName(g: ParamGroup): string {
     case ParamGroup.Tone: return "Tone";
     case ParamGroup.Amp: return "Amp Envelope";
     case ParamGroup.Filter: return "Filter";
+    case ParamGroup.Resonator: return "Resonators";
     case ParamGroup.Lfo: return "LFO";
     case ParamGroup.Fx: return "Drive & FX";
     case ParamGroup.Life: return "Per-Hit Life";

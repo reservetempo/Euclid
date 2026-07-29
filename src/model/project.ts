@@ -2,15 +2,17 @@
 // every drum's sound, and tempo. Plain JSON, used for both localStorage autosave and
 // files.
 //
-// The project is serialized as version 13: a procedural placement model (see track.ts)
+// The project is serialized as version 14: a procedural placement model (see track.ts)
 // where each colour is an ordered list of loops carrying a placement rule. Only version
-// 13 loads; any other version loads with a BLANK track (tempo is still restored). The
+// 14 loads; any other version loads with a BLANK track (tempo is still restored). The
 // format is not back-compatible with earlier generations of the app.
 //
-// v13 (from v12) inserted the pitch/tone/noise envelope-SHAPE params mid-snapshot, so the
-// stored parameter indices shifted — an old snapshot no longer lines up. The drum kit is
-// therefore only restored for v13; older files fall back to the default kit (their sound
-// snapshots would otherwise be scrambled by the index shift).
+// v14 (from v13) regrouped the parameter table in params.ts — each layer's own decay moved
+// up beside the level it fades, Gate joined the per-hit Life block, and the physical-model
+// resonators split out of the Filter group. Parameter INDICES moved with them, so a v13
+// snapshot no longer lines up. The drum kit is therefore only restored for v14; older files
+// fall back to the default kit (their sound snapshots would otherwise be scrambled by the
+// index shift). v13 had done the same for the envelope-SHAPE params it inserted.
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
@@ -95,7 +97,7 @@ export interface ColorJSON {
 }
 
 export interface ProjectJSON {
-  version: number; // 13 = current format; anything else loads blank
+  version: number; // 14 = current format; anything else loads blank
   tempo: number;
   barLimit?: number;
   root?: number;
@@ -174,7 +176,7 @@ export function serialize(
     drumSnaps[d] = kit.get(d).capture();
   }
   return {
-    version: 13,
+    version: 14,
     tempo,
     barLimit: track.barLimit,
     root: track.root,
@@ -474,7 +476,7 @@ export function deserialize(
   track.melodies = [];
 
   const v = json && json.version;
-  if (json && typeof v === "number" && v === 13) {
+  if (json && typeof v === "number" && v === 14) {
     track.melodies = readMelodies(json);
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
@@ -492,10 +494,10 @@ export function deserialize(
   }
   // (Any other version: track left blank on purpose — only the tempo below is restored.)
 
-  // The drum kit is only restored for the current version: v13 shifted the snapshot
-  // indices (envelope-shape params), so an older kit snapshot would map onto the wrong
+  // The drum kit is only restored for the current version: v14 shifted the snapshot
+  // indices (the parameter regrouping), so an older kit snapshot would map onto the wrong
   // params. Older files keep the default kit rather than a scrambled one.
-  if (v === 13) {
+  if (v === 14) {
     for (const d of drums) {
       const snap = json.drums?.[d];
       if (snap) kit.get(d).restore(snap);

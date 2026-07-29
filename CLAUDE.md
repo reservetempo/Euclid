@@ -111,7 +111,7 @@ src/
     lines.ts            the engine data model: voice LINES of NODES; transitions; sweeps
     track.ts            PROCEDURAL PLACEMENT model: colours -> ordered loops + placement
                         rules; compile() turns a Track into engine lanes
-    project.ts          whole-project save/load (JSON, version 13); serialize/deserialize
+    project.ts          whole-project save/load (JSON, version 14); serialize/deserialize
     melody.ts           nodal melody model (tree of scale contexts + weighted notes)
     melodyScale.ts      keys/scales, degree->semitone/Hz mapping
     melodyGraph.ts      "graph calculator" melody generator (y=f(x) over the note lattice)
@@ -157,9 +157,9 @@ src/
 - **Sound / snapshot:** a sound is a `number[]` of `NUM_PARAMS` values, one per `ParamId`.
   There are **no presets** — every sound is a generic full-range sound; the shuffle draws each
   param from its full base range (`paramSpec.baseRange`). `drumKit.ts` owns shuffle + undo.
-- **Save format:** `project.ts`, JSON `version: 13`. **Only version 13 loads**; any other
+- **Save format:** `project.ts`, JSON `version: 14`. **Only version 14 loads**; any other
   version loads a blank track and the DEFAULT drum kit — only the tempo is restored. (The
-  kit is version-gated too because v13 shifted the snapshot indices, so an older kit
+  kit is version-gated too because v14 shifted the snapshot indices, so an older kit
   snapshot would land on the wrong params.) The format is
   deliberately NOT back-compatible with earlier generations. Every field is validated on load
   (`read*` helpers) so malformed/partial saves degrade gracefully. `localStorage` key is
