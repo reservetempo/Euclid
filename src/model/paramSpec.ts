@@ -77,7 +77,12 @@ export const CLICK_TYPES = choiceLabels(ParamId.ClickType);
 export const MODAL_MATERIALS = choiceLabels(ParamId.ModalMaterial);
 export const MODFX_TYPES = choiceLabels(ParamId.ModFxType);
 export const WAVETABLES = choiceLabels(ParamId.WaveTable);
-export const ENV_SHAPES = choiceLabels(ParamId.PitchEnvShape);
+/** Tone/Noise layer-decay contour labels. */
+export const ENV_SHAPES = choiceLabels(ParamId.ToneEnvShape);
+/** The pitch sweep's contour labels — ENV_SHAPES plus "Drawn" at the end. */
+export const PITCH_SHAPES = choiceLabels(ParamId.PitchEnvShape);
+/** The index of the freehand contour in PITCH_SHAPES; the shuffle stops short of it. */
+export const PITCH_SHAPE_DRAWN = PITCH_SHAPES.indexOf("Drawn");
 
 /** Each Echo Sync division's length in BEATS (index 0 = "Free"). */
 export const ECHO_SYNC_BEATS = ENGINE_TABLES.ECHO_SYNC_BEATS;

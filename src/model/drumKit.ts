@@ -347,7 +347,11 @@ export class DrumParameters {
         const r = baseRange(id);
         if (isDiscrete(s)) {
           const lo = Math.round(r.min);
-          const hi = Math.round(r.max);
+          // "Drawn" sits last in the pitch contour list and is AUTHOR-ONLY: its curve lives
+          // in 32 PitchDraw slots that the shuffle leaves alone (they aren't randomizable),
+          // so rolling it here would land every ninth sound on a flat, defaulted contour.
+          // Stopping one index short keeps the shuffle to the eight formula shapes.
+          const hi = Math.round(r.max) - (id === ParamId.PitchEnvShape ? 1 : 0);
           if (hi > lo && rand() < randomness) {
             this.set(id, lo + Math.floor(rand() * (hi - lo + 1)));
           }

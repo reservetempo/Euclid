@@ -14,8 +14,8 @@
 // genuinely ends states its DOMAIN next to the formula ("t < 220ms"). A zero-level
 // setting is INACTIVE (not drawn); giving its level a value brings it to life.
 
-import { ParamId, ENGINE_TABLES, choiceLabels } from "./params";
-import { LFO_NONE, ENV_SHAPES, MODFX_TYPES, WAVETABLES } from "./paramSpec";
+import { ParamId, ENGINE_TABLES, choiceLabels, PITCH_DRAW_BASE, PITCH_DRAW_SLOTS } from "./params";
+import { LFO_NONE, ENV_SHAPES, PITCH_SHAPES, MODFX_TYPES, WAVETABLES } from "./paramSpec";
 import { BlendShapeId, blendShape, blendShapeSpec } from "./lines";
 
 /** One editable variable of a trace's formula, bound to a snapshot param. */
@@ -75,6 +75,15 @@ const pctFmt = (v: number) => String(Math.round(v * 100));
 /** Log-normalise a frequency for display (20 Hz → 0, ~12 kHz → 1). */
 const hzNorm = (hz: number) => clamp01(Math.log2(Math.max(20, hz) / 20) / Math.log2(12000 / 20));
 
+/** Span of the frequency axis, in octaves — what the full height of the graph is worth. */
+const HZ_AXIS_OCTAVES = Math.log2(12000 / 20);
+
+/** The frequency axis, both ways. Exported because the draw overlay has to read a canvas y
+    back as a real frequency: a drawn contour is only honest if the height you drew at means
+    the same Hz the graph would have drawn it at. */
+export const hzToNorm = hzNorm;
+export const normToHz = (y: number) => 20 * Math.pow(2, clamp01(y) * HZ_AXIS_OCTAVES);
+
 // The engine's own tables, read from the parameter registry rather than copied: the graph
 // is only honest if it draws from the numbers the DSP actually uses (see params.ts).
 const CLICK_DECAY = ENGINE_TABLES.CLICK_DECAY;
@@ -128,6 +137,37 @@ function lfoWave(shape: number, p: number): number {
 const ENV_SHAPE_IDS = ENGINE_TABLES.ENV_SHAPE_IDS as (BlendShapeId | null)[];
 const envShapeIdx = (v: number) => Math.max(0, Math.min(ENV_SHAPE_IDS.length - 1, Math.round(v)));
 const envShapeId = (v: number): BlendShapeId | null => ENV_SHAPE_IDS[envShapeIdx(v)];
+
+// The PITCH sweep's own contour list: the eight above at the same indices, plus "drawn". It
+// needs its own lookup because clamping a Drawn index against the 8-entry table would land
+// on Wobble and the graph would draw a curve the engine isn't playing.
+const PITCH_SHAPE_IDS = ENGINE_TABLES.PITCH_SHAPE_IDS as (BlendShapeId | null)[];
+const pitchShapeIdx = (v: number) => Math.max(0, Math.min(PITCH_SHAPE_IDS.length - 1, Math.round(v)));
+const isPitchDrawn = (v: number): boolean => PITCH_SHAPE_IDS[pitchShapeIdx(v)] === "drawn";
+
+/** The drawn pitch contour's octave offset at u ∈ [0,1] across the graph's width — the
+    main-thread twin of drawnOctaves in engine.js. Linear interpolation over the PitchDraw
+    slots, unclamped because an octave offset is signed. */
+function drawnOctaves(get: ParamGet, u: number): number {
+  const n = PITCH_DRAW_SLOTS;
+  const x = Math.max(0, Math.min(1, u)) * (n - 1);
+  const i = Math.min(n - 2, Math.floor(x));
+  const a = get((PITCH_DRAW_BASE + i) as ParamId);
+  const b = get((PITCH_DRAW_BASE + i + 1) as ParamId);
+  return a + (b - a) * (x - i);
+}
+
+/** The Hz the drawn contour reaches at its lowest and highest sample, for the recap line. */
+function drawnRange(get: ParamGet): { lo: number; hi: number } {
+  const p = get(ParamId.Pitch);
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < PITCH_DRAW_SLOTS; i++) {
+    const v = get((PITCH_DRAW_BASE + i) as ParamId);
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  return { lo: p * Math.pow(2, lo), hi: p * Math.pow(2, hi) };
+}
 
 /** A shaped decay envelope value (1 → 0/…) at time t over a window of D seconds — mirrors
     the engine: null shape = the legacy e^(−t/D); otherwise 1 − blendShape(t/D), so it starts
@@ -233,8 +273,13 @@ switch (target) {
 export const SOUND_TRACES: TraceSpec[] = [
   {
     id: "pitch", label: "Pitch", color: "#ff6b6b",
-    parts: (g) => shapeParts(g(ParamId.PitchEnvShape), ["f(t) = ", 0, " · (1 + ", 1, " · "], ") Hz",
-      { decay: 2, curve: 3, cycles: 4 }),
+    // Drawn has no formula to print — the drawing IS the formula — so it states the one
+    // thing the graph can't show on its own: that t is normalised by the axis width, and
+    // that A/D/curve/waves are out of the picture.
+    parts: (g, ctx) => isPitchDrawn(g(ParamId.PitchEnvShape))
+      ? ["f(t) = ", 0, " · 2^draw(t / ", `${r2(traceAxisSeconds(g, ctx))}s`, ") Hz"]
+      : shapeParts(g(ParamId.PitchEnvShape), ["f(t) = ", 0, " · (1 + ", 1, " · "], ") Hz",
+        { decay: 2, curve: 3, cycles: 4 }),
     vars: [
       { sym: "P", param: ParamId.Pitch, step: 5, fmt: hzFmt },
       { sym: "A", param: ParamId.PitchEnvAmount, step: 0.1, fmt: (v) => String(r2(v)) },
@@ -244,19 +289,37 @@ export const SOUND_TRACES: TraceSpec[] = [
     ],
     types: [{ label: "Shape", param: ParamId.PitchEnvShape }],
     active: (g) => g(ParamId.ToneLevel) > 0.001,
+    // Infinity even in Drawn mode, and that is load-bearing: the drawn contour is stretched
+    // over traceAxisSeconds, so reporting a finite duration here would feed the very span
+    // that sets its own length.
     duration: () => Infinity, // the tone holds its base pitch for the whole note
-    curve: (g, t) => hzNorm(g(ParamId.Pitch) * (1 + g(ParamId.PitchEnvAmount)
-      * shapedDecay(envShapeId(g(ParamId.PitchEnvShape)), g(ParamId.PitchEnvCurve), g(ParamId.PitchEnvCycles), t, g(ParamId.PitchEnvDecay)))),
+    // Drawn: the freehand contour, read as octave offsets across the graph's full width.
+    // Everything else: the classic sweep over the D window.
+    curve: (g, t, ctx) => {
+      if (isPitchDrawn(g(ParamId.PitchEnvShape))) {
+        const span = traceAxisSeconds(g, ctx);
+        return hzNorm(g(ParamId.Pitch) * Math.pow(2, drawnOctaves(g, span > 0 ? t / span : 0)));
+      }
+      return hzNorm(g(ParamId.Pitch) * (1 + g(ParamId.PitchEnvAmount)
+        * shapedDecay(envShapeId(g(ParamId.PitchEnvShape)), g(ParamId.PitchEnvCurve), g(ParamId.PitchEnvCycles), t, g(ParamId.PitchEnvDecay))));
+    },
     fromTo: (g) => {
       const p = g(ParamId.Pitch);
-      const nm = ENV_SHAPES[envShapeIdx(g(ParamId.PitchEnvShape))];
+      const nm = PITCH_SHAPES[pitchShapeIdx(g(ParamId.PitchEnvShape))];
+      if (isPitchDrawn(g(ParamId.PitchEnvShape))) {
+        const r = drawnRange(g);
+        return `${Math.round(r.lo)} Hz … ${Math.round(r.hi)} Hz  (${nm})`;
+      }
       return `${Math.round(p * (1 + g(ParamId.PitchEnvAmount)))} Hz → ${Math.round(p)} Hz  (${nm})`;
     },
-    about: "The tone's frequency for the note's whole life. It starts at P·(1+A) and moves toward the base pitch P over the D window (negative A rises up into the note instead). SHAPE picks HOW it travels: Exp is the classic exponential drop; Line is a straight sloped ramp whose angle the curve bends toward exponential; S-curve/Parabola bend differently; and Sine/Cos/Triangle/Wobble make the pitch rise AND fall across the sweep (waves = how many times). For a continuous wobble over the whole note instead, point an LFO at Pitch.",
+    about: "The tone's frequency for the note's whole life. It starts at P·(1+A) and moves toward the base pitch P over the D window (negative A rises up into the note instead). SHAPE picks HOW it travels: Exp is the classic exponential drop; Line is a straight sloped ramp whose angle the curve bends toward exponential; S-curve/Parabola bend differently; and Sine/Cos/Triangle/Wobble make the pitch rise AND fall across the sweep (waves = how many times). DRAWN is the odd one out: instead of a formula it plays a curve you sketch by hand, stretched across the WHOLE width of this graph rather than over D — so shaping the sound longer (a longer tail, a bigger reverb) stretches the contour with it. Because it carries its own full excursion, Drawn ignores A, D, curve and waves entirely; its samples are octave offsets from P, so the contour still transposes with the base pitch and still follows the key. For a continuous wobble over the whole note instead, point an LFO at Pitch.",
     code: `// engine.js — Voice.renderAdding: the per-sample pitch (env runs 1→0)
 let freq = basePitch * (1 + pitchEnvAmount * pitchEnv) * pitchMul;
 if (pitchEnvShape === null) pitchEnv *= pitchEnvCoef;      // Exp: exp(−t/D)
-else pitchEnv = 1 - shapeT(min(1, t/D), {shape, curve, cycles}); // shaped contour`,
+else pitchEnv = 1 - shapeT(min(1, t/D), {shape, curve, cycles}); // shaped contour
+// "Drawn": Amount is forced to 0, so the sweep above is exactly 1 and the hand-drawn
+// contour (octave offsets, stretched over the graph's width) just multiplies on top.
+if (pitchDrawn) freq *= 2 ** drawnOctaves(pitchDraw, pitchDrawT++, pitchDrawDur);`,
   },
   {
     id: "amp", label: "Amp", color: "#ffa94d",
@@ -732,6 +795,12 @@ export function traceDomain(tr: TraceSpec, get: ParamGet, ctx: TraceCtx): string
 /** A trace's formula pieces for the CURRENT values (static or live-computed). */
 export function traceParts(tr: TraceSpec, get: ParamGet, ctx: TraceCtx): (string | number)[] {
   return typeof tr.parts === "function" ? tr.parts(get, ctx) : tr.parts;
+}
+
+/** {@link traceAxisSeconds} straight off a snapshot — the form the engine bridge wants, since
+    a drawn pitch contour is stretched over exactly this width (EngineSound.span). */
+export function snapshotAxisSeconds(snap: number[], bpm: number): number {
+  return traceAxisSeconds((id) => snap[id] ?? 0, { bpm });
 }
 
 /** The seconds the graph's x axis should span: the longest ACTIVE finite trace

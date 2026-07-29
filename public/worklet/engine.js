@@ -36,10 +36,18 @@ function need(key) {
 // Snapshot index per parameter (Tone / Amp / Filter / LFO / Fx / Life / Output).
 const P = need("P");
 
-// Envelope-contour shapes for the pitch sweep + the Tone/Noise layer decays. The stored
-// param is the INDEX into this list; index 0 (Exp / null) keeps the legacy exponential IIR
-// path, and the rest name a BlendShapeId fed to shapeT() over the envelope's decay window.
+// Envelope-contour shapes for the Tone/Noise layer decays. The stored param is the INDEX
+// into this list; index 0 (Exp / null) keeps the legacy exponential IIR path, and the rest
+// name a BlendShapeId fed to shapeT() over the envelope's decay window.
 const ENV_SHAPE_IDS = need("ENV_SHAPE_IDS");
+
+// The PITCH sweep's contours: ENV_SHAPE_IDS at the same indices, plus "drawn" at the end —
+// a freehand curve of octave offsets held in the PitchDraw* slots. Drawn is NOT an envelope:
+// it ignores Amount/Decay/Curve/Cycles and spans the sound's whole graph width, so it
+// bypasses the shapedEnv machinery entirely (see Voice.start / pitchDrawMul).
+const PITCH_SHAPE_IDS = need("PITCH_SHAPE_IDS");
+const PITCH_DRAW_BASE = need("PITCH_DRAW_BASE");
+const PITCH_DRAW_SLOTS = need("PITCH_DRAW_SLOTS");
 
 // LFO destination indices. LFO_NONE disables the LFO (falls through the routing switch);
 // it sits LAST in the list. WTPos = wavetable scan sweep.
@@ -229,6 +237,17 @@ function drawnY(points, t) {
   const x = clamp(t, 0, 1) * (n - 1);
   const i = Math.min(n - 2, Math.floor(x));
   return clamp(points[i] + (points[i + 1] - points[i]) * (x - i), 0, 1);
+}
+
+// The drawn PITCH contour at sample `t` of a `dur`-sample window: linear interpolation over
+// PITCH_DRAW_SLOTS octave offsets. Deliberately not drawnY: that one serves transitions and
+// clamps to [0,1], whereas an octave offset is signed and ranges ±4. Past the end of the
+// window the last sample holds, so a note outlasting the graph's width doesn't jump.
+function drawnOctaves(points, t, dur) {
+  const u = t >= dur ? 1 : t / dur;
+  const x = u * (PITCH_DRAW_SLOTS - 1);
+  const i = Math.min(PITCH_DRAW_SLOTS - 2, x | 0);
+  return points[i] + (points[i + 1] - points[i]) * (x - i);
 }
 
 function shapeT(t, env) {
@@ -566,6 +585,12 @@ class Voice {
     this.rng = makeRng((Math.random() * 4294967296) >>> 0);
     this.oscPhase = 0;
     this.pitchEnvelope = makeShapedEnv();
+    // The freehand pitch contour (PitchEnvShape = "Drawn"): octave offsets from the base
+    // pitch, allocated once per voice because the render loop must not allocate.
+    this.pitchDraw = new Float32Array(PITCH_DRAW_SLOTS);
+    this.pitchDrawn = false;
+    this.pitchDrawDur = 1; // samples the contour is stretched over (the graph's width)
+    this.pitchDrawT = 0;
     this.lfoPhase = [0, 0, 0];
     this.lfoTargets = [0, 0, 0];
     this.lfoRates = [0, 0, 0];
@@ -624,7 +649,7 @@ class Voice {
   // the note off for a fraction of a step (speed-transition sub-step timing).
   // `pitchTrack` ({ mults, durSamples }) keeps the note's pitch following a transition's
   // blend function across its hold — see morphPitchTrack.
-  start(s, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack) {
+  start(s, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack, spanSec) {
     this.vel = vel === undefined ? 1 : vel;
     this.startDelay = Math.max(0, startDelay | 0);
     this.pitchTrack = pitchTrack && pitchTrack.mults && pitchTrack.mults.length > 1 && pitchTrack.durSamples > 0
@@ -636,11 +661,24 @@ class Voice {
     this.basePitch = s[P.Pitch];
     this.pitchEnvAmount = s[P.PitchEnvAmount];
     this.pitchEnvDecay = Math.max(0.001, s[P.PitchEnvDecay]);
+    // "Drawn" is not an envelope at all: the pitch follows a freehand curve of OCTAVE
+    // offsets across the sound's whole graph width (spanSec, sent per sound — see
+    // traceAxisSeconds in soundTraces.ts), so Amount, Decay, Curve and Cycles have no say.
+    // Zeroing Amount and arming the Exp path leaves the legacy factor at exactly 1, which is
+    // why the render loop can just multiply the drawn factor on rather than branch.
+    const pitchShape = PITCH_SHAPE_IDS[clamp(Math.round(s[P.PitchEnvShape]) | 0, 0, PITCH_SHAPE_IDS.length - 1)];
+    this.pitchDrawn = pitchShape === "drawn";
+    if (this.pitchDrawn) {
+      for (let i = 0; i < PITCH_DRAW_SLOTS; i++) this.pitchDraw[i] = s[PITCH_DRAW_BASE + i] || 0;
+      this.pitchDrawDur = Math.max(1, (spanSec > 0 ? spanSec : 1) * this.sr);
+      this.pitchDrawT = 0;
+      this.pitchEnvAmount = 0;
+    }
     // Pitch-sweep contour: null (Exp) keeps the legacy exponential; any other shape is
     // evaluated over the decay window via shapeT — see tickShapedEnv. Always on: unlike the
     // layer decays, a zero Amount (not a zero window) is what silences the sweep.
-    armShapedEnv(this.pitchEnvelope, s[P.PitchEnvShape], s[P.PitchEnvCurve], s[P.PitchEnvCycles],
-      this.pitchEnvDecay, this.sr, true);
+    armShapedEnv(this.pitchEnvelope, this.pitchDrawn ? 0 : s[P.PitchEnvShape],
+      s[P.PitchEnvCurve], s[P.PitchEnvCycles], this.pitchEnvDecay, this.sr, true);
     this.waveform = Math.round(s[P.Waveform]);
     this.toneLevel = s[P.ToneLevel];
     this.noiseLevel = s[P.NoiseLevel];
@@ -832,6 +870,9 @@ class Voice {
         this.ratchetLeft--;
         this.ratchetCountdown = this.ratchetInterval;
         this.adsr.noteOn();
+        // The DRAWN pitch contour deliberately does NOT rewind here: it is a curve across
+        // the sound's whole graph width, not a per-strike envelope, so a ratchet burst reads
+        // as several hits sampling one contour rather than the same gesture three times.
         rewindShapedEnv(this.pitchEnvelope);
         rewindShapedEnv(this.toneEnvelope);
         rewindShapedEnv(this.noiseEnvelope);
@@ -891,6 +932,13 @@ class Voice {
       // the 5Hz floor and RISES into the note as the envelope decays (swells/zaps).
       // The env runs 1→0 — see tickShapedEnv for how each contour shape gets there.
       let freq = this.basePitch * trackMul * (1 + this.pitchEnvAmount * this.pitchEnvelope.value) * pitchMul;
+      // The drawn contour multiplies on top: its samples are octave offsets from the base
+      // pitch, so it stays musical under transposition, pitch-snap and pitchTrack. Amount is
+      // zeroed when it's active, so the legacy factor above is exactly 1.
+      if (this.pitchDrawn) {
+        freq *= Math.pow(2, drawnOctaves(this.pitchDraw, this.pitchDrawT, this.pitchDrawDur));
+        this.pitchDrawT++;
+      }
       if (freq < 5) freq = 5;
       tickShapedEnv(this.pitchEnvelope);
 
@@ -1252,11 +1300,11 @@ class Channel {
   }
   killVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].active = false; }
   chokeVoices() { for (let i = 0; i < NUM_VOICES; i++) this.voices[i].choke(); }
-  trigger(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack) {
+  trigger(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack, spanSec) {
     for (let i = 0; i < NUM_VOICES; i++) {
-      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack); return; }
+      if (!this.voices[i].active) { this.voices[i].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack, spanSec); return; }
     }
-    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack);
+    this.voices[this.next].start(snap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack, spanSec);
     this.next = (this.next + 1) % NUM_VOICES;
   }
   // Render `n` samples and ADD into the STEREO master at `offset`. `scratch` is
@@ -1356,6 +1404,9 @@ class EngineProcessor extends AudioWorkletProcessor {
     // Sound table: id -> { snap (base FX/pitch), lo, hi (pitch range), tail (ring secs) }.
     // Grid cells reference these ids; the engine binds each to a pool channel on demand.
     this.sounds = new Map();
+    // Width of the audition preview's graph, for the drawn pitch contour (auditions bypass
+    // the sound table, so they can't look their own span up there).
+    this.auditionSpan = 0;
     this.soundToChannel = new Map(); // id -> channel index currently bound to it
     this.clock = 0; // running sample counter, for busyUntil/steal decisions
 
@@ -1410,7 +1461,7 @@ class EngineProcessor extends AudioWorkletProcessor {
 
     if (o && o.render) {
       if (Array.isArray(o.sounds)) {
-        for (const s of o.sounds) this.sounds.set(s.id, { snap: s.snap, lo: s.lo, hi: s.hi, tail: s.tail });
+        for (const s of o.sounds) this.sounds.set(s.id, { snap: s.snap, lo: s.lo, hi: s.hi, tail: s.tail, span: s.span });
       }
       this.lines = o.lines || null;
       this.tempo = o.tempo || 120;
@@ -1427,7 +1478,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       case "setSounds": {
         // Replace the sound table with the painted lanes (id + base snapshot + range + tail).
         this.sounds.clear();
-        for (const s of m.sounds) this.sounds.set(s.id, { snap: s.snap, lo: s.lo, hi: s.hi, tail: s.tail });
+        for (const s of m.sounds) this.sounds.set(s.id, { snap: s.snap, lo: s.lo, hi: s.hi, tail: s.tail, span: s.span });
         break;
       }
       case "audition": {
@@ -1438,6 +1489,7 @@ class EngineProcessor extends AudioWorkletProcessor {
         // doesn't bleed into the new one — safe because AUDITION owns its own channel.
         const prev = this.soundToChannel.get(AUDITION);
         if (prev !== undefined) { this.channels[prev].chokeVoices(); this.channels[prev].resetFx(); }
+        this.auditionSpan = m.span || 0;
         this.triggerSound(AUDITION, m.snapshot, m.snapshot, m.gate | 0, m.tail);
         break;
       }
@@ -1557,7 +1609,13 @@ class EngineProcessor extends AudioWorkletProcessor {
     const gateSec = baseSnap[P.Gate];
     const holdSamples = gateSec > 0 ? (gateSec * this.sr) | 0 : gate;
     ch.busyUntil = this.clock + holdSamples + Math.max(0, tailSec || 0) * this.sr;
-    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack);
+    // The drawn pitch contour's width. Looked up here rather than threaded through every
+    // triggerSound call site: it belongs to the SOUND (it's the width of that sound's graph),
+    // so the sound table is where it lives. Auditions aren't in that table and carry their
+    // own — see the "audition" message.
+    const rec = this.sounds.get(id);
+    const spanSec = id === AUDITION ? this.auditionSpan : (rec ? rec.span : 0);
+    ch.trigger(voiceSnap, gate, vel, ratchetCount, ratchetInterval, beatPos, startDelay, pitchTrack, spanSec);
   }
 
   // Per-hit Life: given a sound's snapshot and the hit CONTEXT, roll velocity/

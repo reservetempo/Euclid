@@ -17,11 +17,13 @@ import { EngineHost, EngineSound, Playhead } from "../audio/engineHost";
 import { measureLoudness, makeupGain } from "../audio/loudness";
 import { encodeWavFromBuffer } from "../audio/wav";
 import { DRUMS, DrumType } from "../model/drums";
-import { ParamId, NUM_PARAMS } from "../model/params";
-import { baseSpec, getParamSpec } from "../model/paramSpec";
+import { ParamId, NUM_PARAMS, PITCH_DRAW_BASE, PITCH_DRAW_SLOTS } from "../model/params";
+import { baseSpec, getParamSpec, PITCH_SHAPE_DRAWN } from "../model/paramSpec";
 import {
-  SOUND_TRACES, TraceSpec, TraceCtx, ParamGet, traceAxisSeconds, traceDomain, traceParts,
+  SOUND_TRACES, TraceSpec, TraceCtx, ParamGet, traceAxisSeconds, snapshotAxisSeconds,
+  traceDomain, traceParts, hzToNorm, normToHz,
 } from "../model/soundTraces";
+import { openDrawOverlay } from "./drawOverlay";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { reportCount, exportReports, clearReports } from "../model/soundReports";
@@ -29,7 +31,7 @@ import {
   LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
   BLEND_SHAPES, blendShapeSpec, blendShape, blendShapeY, SweepWindow,
 } from "../model/lines";
-import { smoothStroke, fitBlendShape, DRAWN_POINTS } from "../model/curveFit";
+import { fitBlendShape, DRAWN_POINTS } from "../model/curveFit";
 import {
   Track, Loop, EveryRule, LoopTransition, emptyLoop, cloneLoop, loopToNode,
   randomSeed as newSeed, ruleLengths, defaultLoopTransition,
@@ -318,7 +320,11 @@ export class App {
         const snap = l.snapshot.slice();
         if (!audible) snap[ParamId.Volume] = 0;
         else if (l.gain && l.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * l.gain;
-        sounds.push({ id: l.soundId, snap, lo: l.pitch[0], hi: l.pitch[1], tail: estimateLength(snap, this.tempo) });
+        sounds.push({
+          id: l.soundId, snap, lo: l.pitch[0], hi: l.pitch[1],
+          tail: estimateLength(snap, this.tempo),
+          span: snapshotAxisSeconds(snap, this.tempo),
+        });
       }
     });
     return sounds;
@@ -2261,6 +2267,9 @@ export class App {
       const seg = document.createElement("div");
       seg.className = "placement-seg fade-modes";
       ps.choices.forEach((c, i) => {
+        // "Drawn" is not pickable as a label: choosing it without a drawing would just pin
+        // the pitch flat. The ✏ Draw button below is its only door.
+        if (ty.param === ParamId.PitchEnvShape && i === PITCH_SHAPE_DRAWN) return;
         const b = document.createElement("button");
         b.className = "seg-btn" + (Math.round(get(ty.param)) === i ? " on" : "");
         b.textContent = c;
@@ -2272,6 +2281,16 @@ export class App {
         };
         seg.append(b);
       });
+      // The pitch contour's ninth choice can't be picked from a list — "Drawn" only means
+      // something once there IS a drawing — so its row carries the way in as well.
+      if (ty.param === ParamId.PitchEnvShape) {
+        const drawBtn = document.createElement("button");
+        drawBtn.className = "seg-btn" + (Math.round(get(ty.param)) === PITCH_SHAPE_DRAWN ? " on" : "");
+        drawBtn.textContent = "✏ Draw";
+        drawBtn.title = "Sketch the pitch by hand across the whole graph";
+        drawBtn.onclick = () => this.openPitchDraw(host, rerender);
+        seg.append(drawBtn);
+      }
       card.append(this.labeledRow(ty.label, seg));
     }
     return card;
@@ -2795,228 +2814,116 @@ export class App {
     return `y = ${a}${core}${b}`;
   }
 
-  /** The freehand DRAW screen for a transition's blend function: sketch y(x) with a
-      finger/mouse, the stroke is de-shaken into a clean function (smoothStroke), and
-      it's matched against the shape family (fitBlendShape) — keep the exact drawing,
-      or snap to the matched formula. */
+  /** The transition's blend function, on the shared draw screen (see ui/drawOverlay.ts).
+      The axis is a plain 0..1 "how far transformed", so canvas space IS storage space here
+      and no conversion is needed — the pitch caller is the one that has to convert. */
   private openDrawOverlay(loop: Loop, tr: LoopTransition, rerender: () => void): void {
-    document.querySelector(".draw-overlay")?.remove();
-    const overlay = document.createElement("div");
-    overlay.className = "draw-overlay";
-    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-    const card = document.createElement("div");
-    card.className = "draw-card";
-    card.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
-
-    const head = document.createElement("div");
-    head.className = "draw-head";
-    const title = document.createElement("h3");
-    title.className = "tr-title";
-    title.textContent = "Draw the function";
-    const close = document.createElement("button");
-    close.className = "seg-btn";
-    close.textContent = "✕";
-    close.onclick = () => overlay.remove();
-    head.append(title, close);
-    card.append(head);
-
-    const hint = document.createElement("p");
-    hint.className = "sing-hint";
-    hint.textContent = "Sketch how far the sound transforms across the window — bottom = the sound as it is, top = the Effects values. The line is cleaned up as you lift your finger, and matched to a formula.";
-    card.append(hint);
-
-    const canvas = document.createElement("canvas");
-    canvas.className = "draw-canvas";
-    card.append(canvas);
-
-    // The verdict line + the two ways out: keep the exact drawing, or take the formula.
-    const verdict = document.createElement("p");
-    verdict.className = "sing-hint draw-verdict";
-    const actions = document.createElement("div");
-    actions.className = "placement-seg draw-actions";
-    const clearBtn = document.createElement("button");
-    clearBtn.className = "seg-btn";
-    clearBtn.textContent = "Clear";
-    const useDraw = document.createElement("button");
-    useDraw.className = "seg-btn";
-    useDraw.textContent = "Use drawing";
-    useDraw.title = "Keep the cleaned-up curve exactly as drawn";
-    const useFit = document.createElement("button");
-    useFit.className = "seg-btn";
-    useFit.textContent = "Use formula";
-    useFit.title = "Replace the drawing with the matched formula";
-    actions.append(clearBtn, useDraw, useFit);
-    card.append(verdict, actions);
-    overlay.append(card);
-    document.body.append(overlay);
-
-    // --- state: the raw stroke while dragging, the cleaned curve, and its fit ---
-    let raw: { x: number; y: number }[] = [];
-    let drawing = false;
-    let points: number[] | null = tr.shape === "drawn" && tr.points ? tr.points.slice() : null;
-    let fit = points ? fitBlendShape(points) : null;
-    // A good fit IS the formula (≲4 y-units off); highlight the button to take.
-    const fitGood = () => !!fit && fit.rmse <= 0.04;
-
-    const refreshFooter = () => {
-      if (!points || !fit) {
-        verdict.textContent = "Draw left to right — redrawing replaces the line.";
-        useDraw.disabled = useFit.disabled = true;
-        useFit.classList.remove("on");
-        useDraw.classList.remove("on");
-      } else {
-        const match = Math.max(0, Math.min(100, Math.round(100 * (1 - fit.rmse * 2.5))));
-        verdict.textContent = `Matched: ${fit.label} (${match}%) — ${this.fitFormulaText(fit)}`;
-        useDraw.disabled = useFit.disabled = false;
-        useFit.classList.toggle("on", fitGood());
-        useDraw.classList.toggle("on", !fitGood());
-      }
-    };
-
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
-    const redraw = () => {
-      const rect = canvas.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
-      if (canvas.width !== Math.round(rect.width * dpr)) {
-        canvas.width = Math.round(rect.width * dpr);
-        canvas.height = Math.round(rect.height * dpr);
-      }
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      const W = canvas.width, H = canvas.height;
-      ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = "#0d1019";
-      ctx.fillRect(0, 0, W, H);
-      // Quarter grid, edges brighter (mirroring the Graph tab's viz).
-      for (let q = 0; q <= 4; q++) {
-        ctx.strokeStyle = q === 0 || q === 4 ? "rgba(154,168,204,0.28)" : "rgba(154,168,204,0.12)";
-        ctx.lineWidth = 1 * dpr;
-        ctx.beginPath();
-        ctx.moveTo((q / 4) * W, 0); ctx.lineTo((q / 4) * W, H);
-        ctx.moveTo(0, (q / 4) * H); ctx.lineTo(W, (q / 4) * H);
-        ctx.stroke();
-      }
-      ctx.fillStyle = "#97a0b6";
-      ctx.font = `600 ${11 * dpr}px system-ui, sans-serif`;
-      ctx.fillText("transformed", 6 * dpr, 14 * dpr);
-      ctx.fillText("sound", 6 * dpr, H - 6 * dpr);
-      const strokePath = (fn: (x01: number) => number) => {
-        ctx.beginPath();
-        const N = 128;
-        for (let i = 0; i <= N; i++) {
-          const x = i / N;
-          const y = Math.max(0, Math.min(1, fn(x)));
-          const px = x * W, py = (1 - y) * H;
-          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-        }
-        ctx.stroke();
-      };
-      // The matched formula, dashed behind the drawing.
-      if (fit && points) {
-        const f = fit;
-        ctx.strokeStyle = "rgba(154,168,204,0.5)";
-        ctx.lineWidth = 1.5 * dpr;
-        ctx.setLineDash([5 * dpr, 4 * dpr]);
-        strokePath((x) => f.yGain * blendShape(f, x) + f.yBias);
-        ctx.setLineDash([]);
-      }
-      // The cleaned curve (or the raw stroke while the finger is still down).
-      if (drawing && raw.length > 1) {
-        ctx.strokeStyle = "rgba(255,214,10,0.55)";
-        ctx.lineWidth = 2 * dpr;
-        ctx.beginPath();
-        raw.forEach((p, i) => {
-          const px = p.x * W, py = (1 - p.y) * H;
-          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-        });
-        ctx.stroke();
-      } else if (points) {
-        const pts = points;
-        ctx.strokeStyle = "#ffd60a";
-        ctx.lineWidth = 2.5 * dpr;
-        strokePath((x) => {
-          const xi = x * (pts.length - 1);
-          const i0 = Math.min(pts.length - 2, Math.floor(xi));
-          return pts[i0] + (pts[i0 + 1] - pts[i0]) * (xi - i0);
-        });
-      }
-    };
-
-    const norm = (e: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-        y: Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height)),
-      };
-    };
-    canvas.onpointerdown = (e) => {
-      e.preventDefault();
-      canvas.setPointerCapture(e.pointerId);
-      drawing = true;
-      raw = [norm(e)];
-      redraw();
-    };
-    canvas.onpointermove = (e) => {
-      if (!drawing) return;
-      raw.push(norm(e));
-      redraw();
-    };
-    const finish = () => {
-      if (!drawing) return;
-      drawing = false;
-      if (raw.length > 3) {
-        points = smoothStroke(raw);
-        fit = fitBlendShape(points);
-      }
-      raw = [];
-      refreshFooter();
-      redraw();
-    };
-    canvas.onpointerup = finish;
-    canvas.onpointercancel = finish;
-
-    clearBtn.onclick = () => {
-      points = null;
-      fit = null;
-      refreshFooter();
-      redraw();
-    };
     const done = () => {
-      overlay.remove();
       this.recompile();
       this.schedulePreview(loop, tr);
       rerender();
     };
-    useDraw.onclick = () => {
-      if (!points) return;
+    // Whatever the way out, the drawing carries its own height/offset, so the shape's
+    // transform resets to identity.
+    const takeCurve = (points: number[]) => {
       tr.shape = "drawn";
       tr.points = points.slice(0, DRAWN_POINTS);
-      // The drawing carries its own height/offset — the transform resets to identity.
       tr.curve = undefined; tr.dir = undefined; tr.cycles = undefined;
       tr.yGain = undefined; tr.yBias = undefined; tr.yMin = undefined; tr.yMax = undefined;
-      this.toast("Drawn function kept" + (fit ? ` — closest formula: ${fit.label}` : ""));
-      done();
     };
-    useFit.onclick = () => {
-      if (!fit) return;
-      // Taking the formula STAYS in the ✏ Draw category: the matched formula is baked
-      // into the drawn curve (sampled like a drawing), so the Graph tab doesn't hop to
-      // Sine/Steps/… where a stray tap on the shape row would reset it — the drawn
-      // function remains its own open category either way.
-      const f = fit;
-      tr.shape = "drawn";
-      tr.points = Array.from({ length: DRAWN_POINTS }, (_, i) => {
-        const y = f.yGain * blendShape(f, i / (DRAWN_POINTS - 1)) + f.yBias;
-        return Math.round(Math.max(0, Math.min(1, y)) * 1000) / 1000;
-      });
-      tr.curve = undefined; tr.dir = undefined; tr.cycles = undefined;
-      tr.yGain = undefined; tr.yBias = undefined; tr.yMin = undefined; tr.yMax = undefined;
-      this.toast(`Formula applied: ${this.fitFormulaText(f)}`);
-      done();
-    };
+    // A good fit IS the formula (≲4 y-units off).
+    const fitGood = (ys: number[]) => fitBlendShape(ys).rmse <= 0.04;
+    openDrawOverlay({
+      axis: {
+        title: "Draw the function",
+        hint: "Sketch how far the sound transforms across the window — bottom = the sound as it is, top = the Effects values. The line is cleaned up as you lift your finger, and matched to a formula. Points thins it out.",
+        color: loop.soundId >= 0 ? loop.color : "#4a5064",
+        topLabel: "transformed",
+        bottomLabel: "sound",
+        xLabel: "",
+        slots: DRAWN_POINTS,
+      },
+      initial: tr.shape === "drawn" && tr.points ? tr.points.slice() : null,
+      verdict: (ys) => {
+        if (!ys) return "Draw left to right — redrawing replaces the line.";
+        const fit = fitBlendShape(ys);
+        const match = Math.max(0, Math.min(100, Math.round(100 * (1 - fit.rmse * 2.5))));
+        return `Matched: ${fit.label} (${match}%) — ${this.fitFormulaText(fit)}`;
+      },
+      ghost: (ys) => {
+        const fit = fitBlendShape(ys);
+        return (x) => fit.yGain * blendShape(fit, x) + fit.yBias;
+      },
+      actions: [{
+        label: "Use formula",
+        title: "Replace the drawing with the matched formula",
+        highlight: fitGood,
+        run: (ys) => {
+          // Taking the formula STAYS in the ✏ Draw category: the matched formula is baked
+          // into the drawn curve (sampled like a drawing), so the Graph tab doesn't hop to
+          // Sine/Steps/… where a stray tap on the shape row would reset it — the drawn
+          // function remains its own open category either way.
+          const f = fitBlendShape(ys);
+          takeCurve(Array.from({ length: DRAWN_POINTS }, (_, i) => {
+            const y = f.yGain * blendShape(f, i / (DRAWN_POINTS - 1)) + f.yBias;
+            return Math.round(Math.max(0, Math.min(1, y)) * 1000) / 1000;
+          }));
+          this.toast(`Formula applied: ${this.fitFormulaText(f)}`);
+          done();
+        },
+      }],
+      commit: (ys) => {
+        const fit = fitBlendShape(ys);
+        takeCurve(ys);
+        this.toast(`Drawn function kept — closest formula: ${fit.label}`);
+        done();
+      },
+    });
+  }
 
-    refreshFooter();
-    requestAnimationFrame(redraw);
+  /** The PITCH contour's draw screen. Unlike the transition's, canvas space is not storage
+      space: the y axis is the graph's own log-frequency axis (20 Hz .. 12 kHz), and what gets
+      stored is the OCTAVE OFFSET from the base pitch at each sample — so the curve renders
+      exactly where it was drawn, yet still transposes with Pitch, follows the key, and rides
+      pitchTrack. The contour spans traceAxisSeconds, which is why the x caption names it. */
+  private openPitchDraw(host: SoundGraphHost, rerender: () => void): void {
+    const p = host.ed.kit.get(REF_DRUM);
+    const get: ParamGet = (id) => p.get(id);
+    const ctx: TraceCtx = { bpm: this.tempo };
+    const span = traceAxisSeconds(get, ctx);
+    const base = Math.max(1, get(ParamId.Pitch));
+    const yToOct = (y: number) => Math.log2(normToHz(y) / base);
+    const octToY = (oct: number) => hzToNorm(base * Math.pow(2, oct));
+    const drawn = Math.round(get(ParamId.PitchEnvShape)) === PITCH_SHAPE_DRAWN;
+    openDrawOverlay({
+      axis: {
+        title: "Draw the pitch",
+        hint: `Sketch the tone's frequency across the whole graph — the height is the pitch itself, on the same 20 Hz–12 kHz scale the graph draws. Points thins the curve out; the drawing replaces the sweep's Env, Dec, curve and waves entirely.`,
+        color: "#ff6b6b",
+        topLabel: "12 kHz",
+        bottomLabel: "20 Hz",
+        xLabel: `${Math.round(span * 100) / 100}s`,
+        slots: PITCH_DRAW_SLOTS,
+      },
+      initial: drawn
+        ? Array.from({ length: PITCH_DRAW_SLOTS }, (_, i) => octToY(get((PITCH_DRAW_BASE + i) as ParamId)))
+        : null,
+      verdict: (ys) => {
+        if (!ys) return "Draw left to right — redrawing replaces the line.";
+        const hz = ys.map((y) => normToHz(y));
+        return `${Math.round(Math.min(...hz))} Hz … ${Math.round(Math.max(...hz))} Hz over ${Math.round(span * 100) / 100}s`;
+      },
+      commit: (ys) => {
+        for (let i = 0; i < PITCH_DRAW_SLOTS; i++) {
+          p.set((PITCH_DRAW_BASE + i) as ParamId, Math.round(yToOct(ys[i]) * 1000) / 1000);
+        }
+        p.set(ParamId.PitchEnvShape, PITCH_SHAPE_DRAWN);
+        host.write();
+        host.commitAudition();
+        this.toast("Drawn pitch contour kept");
+        rerender();
+      },
+    });
   }
 
   /** The Sound tab of a transition: the SAME sound graph the voice's Sound panel uses,
@@ -3175,7 +3082,7 @@ export class App {
     const target = tr.snapshot.length ? tr.snapshot : loop.snapshot;
     // In result-only mode the node's own sound (id 0) IS the transformed sound.
     const sounds: EngineSound[] = [
-      { id: 0, snap: withGain(resultOnly ? target : loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(resultOnly ? target : loop.snapshot, this.tempo) },
+      { id: 0, snap: withGain(resultOnly ? target : loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(resultOnly ? target : loop.snapshot, this.tempo), span: snapshotAxisSeconds(resultOnly ? target : loop.snapshot, this.tempo) },
     ];
     // The morph window spans the whole preview loop, carrying the transition's blend
     // function verbatim (mirroring loopTransitionWindows — Volume as a ratio of the
@@ -3703,7 +3610,7 @@ export class App {
       const p = this.voiceEditorFor(loop).kit.get(REF_DRUM);
       const snap = p.capture();
       if (loop.gain && loop.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * loop.gain;
-      this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+      this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo), snapshotAxisSeconds(snap, this.tempo));
     });
   }
 
@@ -3712,7 +3619,7 @@ export class App {
   private auditionEditor(ed: VoiceEditor): void {
     this.withAudio(() => {
       const snap = ed.kit.get(REF_DRUM).capture();
-      this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo));
+      this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo), snapshotAxisSeconds(snap, this.tempo));
     });
   }
 
@@ -3730,7 +3637,7 @@ export class App {
       const tail = Math.min(1.6, Math.max(0.4, estimateLength(meas, this.tempo)));
       const buffer = await this.engine.renderToBuffer({
         lines: [{ nodes: [{ soundId: 0, steps: 1, lenSteps: STEPS_PER_BAR, waitSteps: 0, pattern: [1] }] }],
-        sounds: [{ id: 0, snap: meas, lo: loop.pitch[0], hi: loop.pitch[1], tail: 0 }],
+        sounds: [{ id: 0, snap: meas, lo: loop.pitch[0], hi: loop.pitch[1], tail: 0, span: snapshotAxisSeconds(meas, this.tempo) }],
         tempo: this.tempo,
         maxSteps: 1,
         tailSec: tail,

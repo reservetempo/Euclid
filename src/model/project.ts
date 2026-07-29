@@ -13,14 +13,41 @@
 // snapshot no longer lines up. The drum kit is therefore only restored for v14; older files
 // fall back to the default kit (their sound snapshots would otherwise be scrambled by the
 // index shift). v13 had done the same for the envelope-SHAPE params it inserted.
+//
+// Params APPENDED to the end of ParamId are the one kind of contract change that does NOT
+// need a bump, because they shift no existing index — a older file is simply short, and
+// padSnapshot below fills the tail with defaults. The drawn pitch contour's 32 slots were
+// added that way on purpose, which is why this is still version 14.
 
 import { DrumType } from "./drums";
 import { DrumKit } from "./drumKit";
 import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
+import { NUM_PARAMS, PARAMS, RealParamId } from "./params";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, LoopTransition,
   DEFAULT_BAR_LIMIT, randomSeed,
 } from "./track";
+
+/** Bring a stored snapshot up to the current length, filling anything missing or malformed
+    with the param's default.
+
+    Snapshots grow whenever a param is APPENDED to the end of ParamId — as the PitchDraw*
+    block was (see params.ts). Appending shifts no existing index, so a file written before
+    that block landed is merely SHORT, not scrambled, and refusing it would throw away a
+    perfectly good project for no reason. That is why adding the drawn pitch contour did not
+    bump the save version. Padding is also a plain robustness win: without it the new indices
+    reach the DSP as `undefined`, i.e. NaN, which is far worse than a default.
+
+    Note this is only safe for APPENDED params. Reordering or inserting still breaks the
+    format and still needs a version bump (see the header). */
+function padSnapshot(snap: number[]): number[] {
+  const out = snap.slice(0, NUM_PARAMS);
+  for (let i = 0; i < NUM_PARAMS; i++) {
+    const v = out[i];
+    if (typeof v !== "number" || !isFinite(v)) out[i] = PARAMS[i as RealParamId].def;
+  }
+  return out;
+}
 
 export interface RuleJSON {
   every: EveryRule;
@@ -336,8 +363,9 @@ function readTransition(tv: unknown): LoopTransition | undefined {
   const bars = Array.isArray(t.bars)
     ? (t.bars as unknown[]).map((x) => Math.round(Number(x) || 0)).filter((n) => n >= 1)
     : [];
-  const snapshot = Array.isArray(t.snapshot) ? (t.snapshot as number[]).slice() : [];
-  if (!snapshot.length) return undefined;
+  const stored = Array.isArray(t.snapshot) ? (t.snapshot as number[]).slice() : [];
+  if (!stored.length) return undefined;
+  const snapshot = padSnapshot(stored);
   const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : undefined);
   const clampNum = (v: unknown, lo: number, hi: number) => {
     const n = num(v);
@@ -376,7 +404,7 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
   const s = (lv && typeof lv === "object" ? lv : {}) as Partial<LoopJSON>;
   return {
     soundId: typeof s.soundId === "number" ? s.soundId : -1,
-    snapshot: Array.isArray(s.snapshot) ? s.snapshot.slice() : [],
+    snapshot: Array.isArray(s.snapshot) && s.snapshot.length ? padSnapshot(s.snapshot) : [],
     color: typeof s.color === "string" ? s.color : VOICE_COLORS[colorIndex % VOICE_COLORS.length],
     name: String(s.name ?? ""),
     label: typeof s.label === "string" && s.label ? s.label : undefined,

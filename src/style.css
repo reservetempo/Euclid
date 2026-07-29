@@ -849,6 +849,12 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   background: var(--field); border: 1px solid var(--line-soft); border-radius: 9px;
   touch-action: none; cursor: crosshair;
 }
+/* The Simplify stage: how many ranked control points the curve keeps. Transient — the count
+   is never stored, so it reads as a tool on the drawing rather than a value of the sound. */
+.draw-simplify { display: flex; align-items: center; gap: 10px; margin: 10px 0 2px; }
+.draw-simplify-lbl { font-size: 0.82rem; color: #97a0b6; font-weight: 600; min-width: 5.5em; }
+.draw-simplify input[type="range"] { flex: 1 1 0; --slider: var(--vc); }
+.draw-simplify input[type="range"]:disabled { opacity: 0.4; }
 .draw-verdict { min-height: 2.4em; }
 .draw-actions { display: flex; gap: 8px; }
 .draw-actions .seg-btn { flex: 1 1 0; padding: 11px 8px; }

@@ -118,6 +118,10 @@ src/
     soundTraces.ts      "Graph mode": render a sound's params as editable time-function curves
     soundReports.ts     swipe-to-report feedback logs (too high/low) for tuning shuffle guards
     curveFit.ts         freehand stroke -> clean function; fit against the blend-shape family
+    simplify.ts         Visvalingam-Whyatt point ranking: rank once, then the point slider
+                        just takes the top N (ported from the waveDraw sketch app)
+    spline.ts           PCHIP (Fritsch-Carlson) fit through those points + resampleUniform,
+                        the step that turns a drawing into a fixed-length storable block
     rng.ts              shared seeded RNG (xorshift32, matches engine.js makeRng)
   ui/                   all DOM/rendering
     app.ts              App shell — owns engine + track + UI state; switches views; hosts the
@@ -125,6 +129,11 @@ src/
                         soundTraces.ts); recompile() is the hub (track -> lanes -> engine).
                         BY FAR the largest file.
     controls.ts         shared UI pieces + the shuffle settings every sound editor renders
+    drawOverlay.ts      THE freehand draw screen, shared by both things you can sketch: a
+                        transition's blend function and the pitch contour. Works purely in
+                        canvas space (y 0..1) and hands the caller N uniform samples, so the
+                        axis MEANING (plain 0..1 vs log-Hz) stays with the caller. Owns the
+                        Simplify stage (the point slider, via simplify.ts + spline.ts)
     euclidView.ts       the 6 nested rings visualization
     soundHelp.ts        the shared "?" help panel + plain-words glossary for Graph mode
                         (quotes engine code)
@@ -156,6 +165,19 @@ src/
 - **Sound / snapshot:** a sound is a `number[]` of `NUM_PARAMS` values, one per `ParamId`.
   There are **no presets** — every sound is a generic full-range sound; the shuffle draws each
   param from its full base range (`paramSpec.baseRange`). `drumKit.ts` owns shuffle + undo.
+- **Drawn pitch contour:** `PitchEnvShape` has a ninth choice, `Drawn`, which is not an
+  envelope — it plays a hand-sketched curve held in the 32 `PitchDraw*` slots and ignores
+  Amount/Decay/Curve/Cycles. Each slot is an **octave offset** from the base `Pitch`
+  (`freq = P · 2^slot(t)`), so the drawing renders exactly where it was drawn on the graph's
+  log-Hz axis yet still transposes, pitch-snaps and follows `pitchTrack`. Its length is
+  DERIVED, not a knob: the contour is stretched over `traceAxisSeconds()` — the width of that
+  sound's graph — sent per sound as `EngineSound.span` beside the existing `tail`. Two
+  consequences worth knowing: the pitch trace must stay `duration: () => Infinity` (a finite
+  duration would feed the span that sets its own length), and `Drawn` is author-only, so
+  `PitchEnvShape`'s shuffle stops one index short of it. Because `Drawn` needs 32 slots and
+  32 slots per envelope is affordable only once, the contour table SPLIT in two:
+  `PITCH_SHAPE_CHOICES` (the 8 + `Drawn`) and `ENV_SHAPE_CHOICES` (the 8, for Tone/Noise
+  decay), identical in their first eight indices so stored values kept their meaning.
 - **Save format:** `project.ts`, JSON `version: 14`. **Only version 14 loads**; any other
   version loads a blank track and the DEFAULT drum kit — only the tempo is restored. (The
   kit is version-gated too because v14 shifted the snapshot indices, so an older kit
@@ -196,6 +218,14 @@ is where the help copy lives (`soundHelp.ts` is only the renderer). If the snaps
 changes, bump the save `version` in `project.ts` — snapshots are stored in saved projects, so
 reordering breaks existing saves.
 
+**The one contract change that does NOT need a version bump** is APPENDING a param to the very
+end of `ParamId`: no existing index moves, so an older save is merely short and `padSnapshot`
+in `project.ts` fills the tail with defaults. That is how the 32 `PitchDraw*` slots landed
+while the format stayed at v14 — worth preferring when a new block would otherwise wipe every
+saved project. It costs you the enum's logical grouping (the block sits past `Pan`, away from
+the pitch params it serves, and `getParamGroup` carries an explicit case for it), which is a
+cheaper price than a wiped autosave. Inserting or reordering still breaks the format.
+
 **Changing the save format:** bump the `version` in `project.ts`, decide the load policy for
 old versions (current policy: refuse — load blank), and update `serialize`/`deserialize` plus
 the `read*` validators together.
@@ -225,3 +255,13 @@ avoid a startup race).
   committed with the code. No external tracker, no `gh` dependency.
 - **`docs/adr/`** — architecture decision records, written when a decision needs explaining
   beyond what the code shows.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

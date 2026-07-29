@@ -110,8 +110,23 @@ export enum ParamId {
   // --- Output ---
   Volume,
   Pan,             // -1 (L) .. +1 (R), constant-power
+  // --- Drawn pitch contour (PitchEnvShape = "Drawn") ---
+  // 32 uniform samples of a freehand pitch curve, each an OCTAVE OFFSET from the base
+  // Pitch: freq(t) = Pitch · 2^slot(t), read back by linear interpolation (drawnY in
+  // engine.js) across the graph's own width. Appended at the END of the enum, away from
+  // the pitch params they belong to, on purpose: every index before them keeps its
+  // meaning, so saved projects written against the old layout still load (project.ts
+  // pads short snapshots rather than refusing them, and the save version stays 14).
+  PitchDraw1, PitchDraw2, PitchDraw3, PitchDraw4, PitchDraw5, PitchDraw6, PitchDraw7, PitchDraw8,
+  PitchDraw9, PitchDraw10, PitchDraw11, PitchDraw12, PitchDraw13, PitchDraw14, PitchDraw15, PitchDraw16,
+  PitchDraw17, PitchDraw18, PitchDraw19, PitchDraw20, PitchDraw21, PitchDraw22, PitchDraw23, PitchDraw24,
+  PitchDraw25, PitchDraw26, PitchDraw27, PitchDraw28, PitchDraw29, PitchDraw30, PitchDraw31, PitchDraw32,
   NumParams,
 }
+
+/** How many uniform samples a drawn pitch contour keeps — the PitchDraw* slot count.
+    The drawing UI caps its point slider here, since a 33rd point could not be stored. */
+export const PITCH_DRAW_SLOTS = 32;
 
 export const NUM_PARAMS = ParamId.NumParams;
 
@@ -180,13 +195,23 @@ const LFO_SYNC_CHOICES = meanings(
   [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2, 4],
 );
 
-// Envelope-contour shapes for the pitch sweep and the Tone/Noise layer decays. `engine` is
-// the BlendShapeId fed to shapeT() over the decay window (see lines.ts); index 0 = "Exp"
-// keeps the classic e^(−t/D) code path, which is why its meaning is null.
+// Envelope-contour shapes for the Tone/Noise layer decays. `engine` is the BlendShapeId fed
+// to shapeT() over the decay window (see lines.ts); index 0 = "Exp" keeps the classic
+// e^(−t/D) code path, which is why its meaning is null.
 const ENV_SHAPE_CHOICES = meanings(
   ["Exp", "Line", "S-curve", "Parabola", "Sine", "Cos", "Triangle", "Wobble"],
   [null, "ramp", "scurve", "parabola", "sine", "cos", "zigzag", "wobble"],
 );
+
+// The PITCH sweep's contours: the eight above, at the SAME indices, plus "Drawn" — a
+// freehand curve held in the PitchDraw* slots. Two tables rather than one because Drawn
+// needs 32 param slots to live in, and 32 slots per envelope is a budget only the pitch
+// sweep can afford; keeping the first eight indices identical means an existing stored
+// PitchEnvShape value still means what it always meant.
+const PITCH_SHAPE_CHOICES = [
+  ...ENV_SHAPE_CHOICES,
+  { label: "Drawn", engine: "drawn" as EngineMeaning },
+];
 
 const ON_OFF_CHOICES = labels("Off", "On");
 
@@ -198,6 +223,11 @@ function p(
 ): ParamEntry {
   return { name, min, max, def, skew, step, unit, randomizable, choices };
 }
+
+/** One sample of the drawn pitch contour, in octaves relative to the base Pitch. Never
+    randomizable: 32 independent draws would be white noise, not a curve, so the drawn
+    contour is author-only (PitchEnvShape's shuffle skips it — see drumKit.ts). */
+const pd = (i: number): ParamEntry => p(`Draw ${i}`, -4, 4, 0, 1, 0.01, "oct", false);
 
 /** One row per parameter. Exhaustive by type: a missing row fails the build. */
 export const PARAMS: Record<RealParamId, ParamEntry> = {
@@ -213,7 +243,10 @@ export const PARAMS: Record<RealParamId, ParamEntry> = {
   // Pitch-sweep contour: Exp (default) = the classic exponential drop/rise; Line +
   // Curve = a straight sloped ramp bendable toward exponential; the rest give
   // s-curve / parabola / oscillating (sine/cos/triangle/wobble) motion over the decay.
-  [ParamId.PitchEnvShape]: p("Pitch Shape", 0, ENV_SHAPE_CHOICES.length - 1, 0, 1, 1, "", true, ENV_SHAPE_CHOICES),
+  // "Drawn" is the odd one out: it ignores Env/Dec/Curve/Cycles entirely and plays the
+  // freehand curve in the PitchDraw* slots across the whole graph. The shuffle stops one
+  // index short of it (see drumKit.ts) — a random 32-point contour is just noise.
+  [ParamId.PitchEnvShape]: p("Pitch Shape", 0, PITCH_SHAPE_CHOICES.length - 1, 0, 1, 1, "", true, PITCH_SHAPE_CHOICES),
   [ParamId.PitchEnvCurve]: p("Pitch Curve", 0, 1, 0, 1, 0.01, ""),
   [ParamId.PitchEnvCycles]: p("Pitch Cycles", 0.25, 8, 1, 0.5, 0.25, "x"),
   [ParamId.Waveform]: p("Wave", 0, 3, 0, 1, 1, "", true, labels("Sine", "Tri", "Square", "Saw")),
@@ -364,7 +397,25 @@ export const PARAMS: Record<RealParamId, ParamEntry> = {
   // --- Output ---
   [ParamId.Volume]: p("Volume", 0, 1, 0.85, 1, 0.02, "", false),
   [ParamId.Pan]: p("Pan", -1, 1, 0, 1, 0.02, ""),
+
+  // --- Drawn pitch contour ---
+  // One row per sample, spelled out rather than generated, because the Record's
+  // exhaustiveness is this file's compile-time guard and a computed spread would defeat it.
+  // ±4 octaves covers the drawable axis (a 200 Hz base pitch reaches 12.5 Hz .. 3.2 kHz),
+  // and 0 = "sits on the base pitch", so a defaulted/padded snapshot draws a flat line.
+  [ParamId.PitchDraw1]: pd(1), [ParamId.PitchDraw2]: pd(2), [ParamId.PitchDraw3]: pd(3), [ParamId.PitchDraw4]: pd(4),
+  [ParamId.PitchDraw5]: pd(5), [ParamId.PitchDraw6]: pd(6), [ParamId.PitchDraw7]: pd(7), [ParamId.PitchDraw8]: pd(8),
+  [ParamId.PitchDraw9]: pd(9), [ParamId.PitchDraw10]: pd(10), [ParamId.PitchDraw11]: pd(11), [ParamId.PitchDraw12]: pd(12),
+  [ParamId.PitchDraw13]: pd(13), [ParamId.PitchDraw14]: pd(14), [ParamId.PitchDraw15]: pd(15), [ParamId.PitchDraw16]: pd(16),
+  [ParamId.PitchDraw17]: pd(17), [ParamId.PitchDraw18]: pd(18), [ParamId.PitchDraw19]: pd(19), [ParamId.PitchDraw20]: pd(20),
+  [ParamId.PitchDraw21]: pd(21), [ParamId.PitchDraw22]: pd(22), [ParamId.PitchDraw23]: pd(23), [ParamId.PitchDraw24]: pd(24),
+  [ParamId.PitchDraw25]: pd(25), [ParamId.PitchDraw26]: pd(26), [ParamId.PitchDraw27]: pd(27), [ParamId.PitchDraw28]: pd(28),
+  [ParamId.PitchDraw29]: pd(29), [ParamId.PitchDraw30]: pd(30), [ParamId.PitchDraw31]: pd(31), [ParamId.PitchDraw32]: pd(32),
 };
+
+/** The first PitchDraw slot's index — the drawn contour is PITCH_DRAW_SLOTS values from here.
+    Callers walk the block by offset rather than naming 32 enum members. */
+export const PITCH_DRAW_BASE = ParamId.PitchDraw1;
 
 // --- Derived views -----------------------------------------------------------
 
@@ -399,7 +450,13 @@ export const ENGINE_TABLES = {
     Object.keys(PARAMS).map((k) => [ParamId[Number(k) as ParamId], Number(k)]),
   ) as Record<string, number>,
   LFO: LFO_DESTINATIONS,
-  ENV_SHAPE_IDS: choiceMeanings<string | null>(ParamId.PitchEnvShape),
+  /** Tone/Noise layer-decay contours. */
+  ENV_SHAPE_IDS: choiceMeanings<string | null>(ParamId.ToneEnvShape),
+  /** The pitch sweep's contours — ENV_SHAPE_IDS plus "drawn" at the end. */
+  PITCH_SHAPE_IDS: choiceMeanings<string | null>(ParamId.PitchEnvShape),
+  /** Where the drawn pitch contour's samples start, and how many there are. */
+  PITCH_DRAW_BASE: ParamId.PitchDraw1 as number,
+  PITCH_DRAW_SLOTS: PITCH_DRAW_SLOTS as number,
   UNISON_VOICES: choiceMeanings<number>(ParamId.Unison),
   CRUSH_BITS: choiceMeanings<number>(ParamId.Crush),
   DOWNSAMPLE_FACTOR: choiceMeanings<number>(ParamId.Downsample),
@@ -427,7 +484,10 @@ export enum ParamGroup {
 
 // Groups are contiguous in ParamId order, so a param's group is just which boundary it
 // falls under (each check names the LAST id of its group). Keep these in enum order.
+// The one exception is the PitchDraw* block, which trails the whole enum for save
+// compatibility (see PitchDraw1) but belongs to Tone with the pitch params it serves.
 export function getParamGroup(id: ParamId): ParamGroup {
+  if (id >= ParamId.PitchDraw1) return ParamGroup.Tone;
   if (id <= ParamId.ClickType) return ParamGroup.Tone;
   if (id <= ParamId.AmpDecayShape) return ParamGroup.Amp;
   if (id <= ParamId.FilterReso) return ParamGroup.Filter;

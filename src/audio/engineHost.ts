@@ -37,6 +37,12 @@ export interface EngineSound {
   lo: number; // Pitch range low (for the key/scale mapping)
   hi: number; // Pitch range high
   tail: number; // estimated audible length, seconds
+  /** Seconds the sound's Sound-Graph x axis spans (traceAxisSeconds). Derived from the
+      snapshot, recomputed on every push — it is NOT stored in the snapshot, because it is a
+      function of the other params rather than a value of its own. The drawn pitch contour
+      (PitchEnvShape = "Drawn") is stretched over exactly this width, so what you drew on the
+      graph is what plays. */
+  span: number;
 }
 
 export class EngineHost {
@@ -125,9 +131,11 @@ export class EngineHost {
   }
 
   /** Preview a sound once now (editor voice or a lane), on the reserved audition
-      channel. `gate` is the hold length in samples; `tail` its estimated ring. */
-  audition(snapshot: number[], gate: number, tail: number): void {
-    this.node?.port.postMessage({ type: "audition", snapshot, gate, tail });
+      channel. `gate` is the hold length in samples; `tail` its estimated ring; `span` the
+      width of its graph, for a drawn pitch contour (auditions aren't in the sound table, so
+      they can't look their own span up there). */
+  audition(snapshot: number[], gate: number, tail: number, span = 0): void {
+    this.node?.port.postMessage({ type: "audition", snapshot, gate, tail, span });
   }
 
   /** Replace the 6 voice lines (node chains with precomputed patterns). Resend on any
