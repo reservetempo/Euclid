@@ -281,7 +281,7 @@ else pitchEnv = 1 - shapeT(min(1, t/D), {shape, curve, cycles}); // shaped conto
     active: () => true,
     duration: (g) => {
       const gate = g(ParamId.Gate) > 0 ? g(ParamId.Gate) : 0.4;
-      return Math.min(32, Math.max(g(ParamId.AmpAttack) + g(ParamId.AmpDecay), gate) + g(ParamId.AmpRelease) + 0.02);
+      return Math.min(62, Math.max(g(ParamId.AmpAttack) + g(ParamId.AmpDecay), gate) + g(ParamId.AmpRelease) + 0.02);
     },
     curve: (g, t) => {
       const a = Math.max(0.0001, g(ParamId.AmpAttack)), d = Math.max(0.0001, g(ParamId.AmpDecay));
@@ -752,5 +752,5 @@ export function traceAxisSeconds(get: ParamGet, ctx: TraceCtx): number {
     const d = tr.duration(get, ctx);
     if (isFinite(d)) t = Math.max(t, d);
   }
-  return Math.max(0.25, Math.min(32, t || 0.5));
+  return Math.max(0.25, Math.min(62, t || 0.5));
 }
