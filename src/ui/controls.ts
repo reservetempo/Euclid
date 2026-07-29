@@ -1,8 +1,8 @@
-// Small shared UI pieces + the shuffle settings the per-loop shuffle menu
-// (voiceShuffleMenu.ts) renders: the Randomness / Spread / Max-len / Snap / Seed
-// controls that feed the same options into DrumKit.shuffleAll.
+// Small shared UI pieces + the shuffle settings every sound-editing surface renders:
+// the Randomness / Spread / Max-len / Snap / Seed controls that feed the same options
+// into DrumKit.shuffleAll.
 
-import { FreqCurve, PitchSnap, ShuffleOptions } from "../model/drumKit";
+import { DrumKit, FreqCurve, PitchSnap, ShuffleOptions } from "../model/drumKit";
 
 // Shuffle frequency spread: how Pitch & Filter Cutoff are randomly distributed.
 // "Linear" is uniform in Hz (high-heavy); the others spread the draw the way the
@@ -36,6 +36,12 @@ export const SNAP_OPTIONS: { label: string; snap: PitchSnap }[] = [
   { label: "Semitone", snap: PitchSnap.Chromatic },
   { label: "Key", snap: PitchSnap.Key },
 ];
+
+/** One sound-editing surface: its shuffle settings plus the kit holding the live
+    params and undo stack for the single sound being edited. */
+export interface VoiceEditor extends ShuffleSettings {
+  kit: DrumKit;
+}
 
 /** The mutable shuffle settings an editing surface keeps between shuffles. */
 export interface ShuffleSettings {

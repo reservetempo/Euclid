@@ -388,9 +388,12 @@ export interface VoiceNode {
   // sound's own random rolls in the engine (see perHit). Unset = the sound's own feel.
   accent?: LifePlacement;
   ghost?: LifePlacement;
-  // A melody note's absolute pitch in Hz (the one re-pitched instrument playing a scale
-  // degree). Set only on generated melody nodes; the engine swaps P.Pitch to it. Unset
-  // on ordinary loop nodes, which keep their sound's own pitch.
+  // A node's absolute pitch in Hz: the engine swaps P.Pitch to it (pitchedSnap) so one
+  // sound can play a specific note rather than its own tuning. Unset on ordinary loop
+  // nodes, which keep their sound's pitch — which today means NOTHING sets it: the
+  // melody section that fed it was removed (see docs/adr/0001-remove-melody-section.md)
+  // and the seam was deliberately kept for a future pitched sequence. Don't strip it as
+  // dead code.
   pitchHz?: number;
 }
 
@@ -621,7 +624,7 @@ export interface LineMessage {
     // step offsets within the sounding window) that replace the grid pattern in the span.
     intro?: { steps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number; warp?: number[] };
     outro?: { steps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number; warp?: number[] };
-    pitchHz?: number; // melody notes only — absolute pitch the engine tunes to
+    pitchHz?: number; // absolute pitch the engine tunes to (see VoiceNode.pitchHz)
     // Per-loop deterministic accent / ghost placement (see LifePlacement); the engine
     // uses these instead of the sound's random accent/ghost when present.
     accent?: LifePlacement;

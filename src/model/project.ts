@@ -19,9 +19,8 @@ import { DrumKit } from "./drumKit";
 import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, LoopTransition,
-  DEFAULT_BAR_LIMIT, randomSeed, MelodyItem,
+  DEFAULT_BAR_LIMIT, randomSeed,
 } from "./track";
-import { MelodyNode, MelodyNote, emptyMelody, melodySeed, MELODY_COLOR_INDEX } from "./melody";
 
 export interface RuleJSON {
   every: EveryRule;
@@ -63,7 +62,6 @@ export interface LoopJSON {
   rotation: number;
   split?: number;
   patternOv?: number[]; // hand-edited pattern override (the Loop tab's sequencer grid)
-  rhythm?: boolean; // melody instrument: re-time notes onto the Euclid pattern
   gain?: number;
   intro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; fromId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number };
   outro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number };
@@ -105,33 +103,6 @@ export interface ProjectJSON {
   colors?: ColorJSON[];
   drums?: Record<number, number[]>;
   soundName?: string;
-  melodies?: MelodyItemJSON[];  // the melody row: a list of placeable per-instrument melodies
-}
-
-/** One melody in the list: its re-pitched instrument (sound + placement rule) and notes. */
-export interface MelodyItemJSON {
-  inst: LoopJSON;
-  node: MelodyJSON;
-}
-
-// A melody node serialises recursively (a note may carry a branch node).
-export interface MelodyNoteJSON {
-  degree: number; weight: number; lengthSteps: number; restSteps: number; branch?: MelodyJSON;
-}
-export interface MelodyJSON {
-  scale: number; root: number; octave: number;
-  notes: MelodyNoteJSON[]; seed: number; seedHistory: number[];
-}
-
-function cloneMelody(m: MelodyNode): MelodyJSON {
-  return {
-    scale: m.scale, root: m.root, octave: m.octave,
-    seed: m.seed, seedHistory: m.seedHistory.slice(),
-    notes: m.notes.map((n): MelodyNoteJSON => ({
-      degree: n.degree, weight: n.weight, lengthSteps: n.lengthSteps, restSteps: n.restSteps,
-      branch: n.branch ? cloneMelody(n.branch) : undefined,
-    })),
-  };
 }
 
 const cloneTransition = (t: LoopTransition): LoopTransitionJSON => ({
@@ -146,7 +117,7 @@ const cloneLoop = (l: Loop): LoopJSON => ({
   soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name, label: l.label,
   pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
   split: l.split, patternOv: l.patternOv ? l.patternOv.slice() : undefined,
-  rhythm: l.rhythm, gain: l.gain,
+  gain: l.gain,
   transitions: l.transitions && l.transitions.length ? l.transitions.map(cloneTransition) : undefined,
   intro: l.intro ? { reps: l.intro.reps, mode: l.intro.mode, modes: l.intro.modes?.slice(), fromId: l.intro.fromId, rate: l.intro.rate, curve: l.intro.curve, from: l.intro.from, to: l.intro.to, dir: l.intro.dir, shape: l.intro.shape, cycles: l.intro.cycles } : undefined,
   outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, modes: l.outro.modes?.slice(), toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir, shape: l.outro.shape, cycles: l.outro.cycles } : undefined,
@@ -188,7 +159,6 @@ export function serialize(
     })),
     drums: drumSnaps,
     soundName,
-    melodies: track.melodies.map((m) => ({ inst: cloneLoop(m.inst), node: cloneMelody(m.node) })),
   };
 }
 
@@ -417,7 +387,6 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     split: typeof s.split === "number" ? s.split : undefined,
     patternOv: Array.isArray(s.patternOv) && s.patternOv.length
       ? s.patternOv.map((x) => (x ? 1 : 0)) : undefined,
-    rhythm: s.rhythm === true ? true : undefined,
     gain: typeof s.gain === "number" && isFinite(s.gain) ? Math.max(0.2, Math.min(4, s.gain)) : undefined,
     intro: readEnv(s.intro, "intro"),
     outro: readEnv(s.outro, "outro"),
@@ -426,41 +395,6 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     transitions: readTransitions(s.transitions),
     rule: readRule(s.rule),
   };
-}
-
-function readMelody(mv: unknown): MelodyNode {
-  const base = emptyMelody();
-  if (!mv || typeof mv !== "object") return base;
-  const m = mv as Partial<MelodyJSON>;
-  const notes: MelodyNote[] = Array.isArray(m.notes)
-    ? m.notes.map((nj): MelodyNote => ({
-        degree: Math.round(Number(nj?.degree) || 0),
-        weight: Math.max(1, Math.min(6, Math.round(Number(nj?.weight) || 3))),
-        lengthSteps: Math.max(1, Math.round(Number(nj?.lengthSteps) || 4)),
-        restSteps: Math.max(0, Math.round(Number(nj?.restSteps) || 0)),
-        branch: nj?.branch ? readMelody(nj.branch) : undefined,
-      }))
-    : [];
-  return {
-    scale: Math.max(0, Math.round(Number(m.scale) || 0)),
-    root: typeof m.root === "number" ? ((m.root % 12) + 12) % 12 : 0,
-    octave: typeof m.octave === "number" ? Math.max(-3, Math.min(3, Math.round(m.octave))) : 0,
-    notes,
-    seed: typeof m.seed === "number" ? (m.seed >>> 0) : melodySeed(),
-    seedHistory: Array.isArray(m.seedHistory) ? m.seedHistory.map((x) => Number(x) >>> 0) : [],
-  };
-}
-
-/** The melody list from the stored `melodies` array. Empty when there's no melody data
-    (the UI then starts on the "add a melody" menu). */
-function readMelodies(json: ProjectJSON): MelodyItem[] {
-  if (Array.isArray(json.melodies) && json.melodies.length) {
-    return json.melodies.map((mj) => ({
-      inst: readLoop(mj?.inst, MELODY_COLOR_INDEX),
-      node: readMelody(mj?.node),
-    }));
-  }
-  return [];
 }
 
 /** Apply a loaded project into the live track + kit. Returns the tempo. A non-v12 file
@@ -473,11 +407,9 @@ export function deserialize(
   track.barLimit = DEFAULT_BAR_LIMIT;
   track.root = 0;
   track.scale = 0;
-  track.melodies = [];
 
   const v = json && json.version;
   if (json && typeof v === "number" && v === 14) {
-    track.melodies = readMelodies(json);
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
         if (ci >= NUM_LINES || !cj) return;

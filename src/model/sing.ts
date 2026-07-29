@@ -1,11 +1,17 @@
-// SING-TO-NOTES: live microphone pitch tracking for the melody's Sing tab. Analyser
-// frames run through a bounded autocorrelation pitch detector; a SingTracker segments
-// the per-frame pitch stream into discrete sung notes (median midi + start/end times);
-// and sungToMelodyNotes quantizes a finished take onto a melody context's scale and the
-// track tempo as ordinary MelodyNotes — in the exact order they were sung.
+// SING-TO-NOTES: live microphone pitch tracking. Analyser frames run through a bounded
+// autocorrelation pitch detector; a SingTracker segments the per-frame pitch stream into
+// discrete sung notes (median midi + start/end times); and quantizeTake snaps a finished
+// take onto a scale and the track tempo — in the exact order it was sung.
+//
+// PARKED, ON PURPOSE. Nothing imports this file. It was the Sing tab of the melody
+// section, which was removed (see docs/adr/0001-remove-melody-section.md); the pitch
+// detector and the segmenter are the expensive, DOM-free half and are kept verbatim for
+// a future feature that plays a sung phrase back. Do NOT delete it as dead code — its
+// absence of callers is the documented state, not an oversight. The mic plumbing
+// (getUserMedia + the rAF loop) was NOT kept: it was UI, and it will be rewritten
+// against whatever surface the take eventually lands on.
 
 import { degreesPerOctave, semitoneForDegree, ALL_ROOTS, ROOT_MIDI } from "./melodyScale";
-import type { MelodyNote } from "./melody";
 
 // The singing range the detector listens for (low bass to high soprano).
 const MIN_HZ = 70;
@@ -128,13 +134,23 @@ export function midiName(midi: number): string {
   return `${ALL_ROOTS[((m % 12) + 12) % 12]}${Math.floor(m / 12) - 1}`;
 }
 
-/** Quantize a finished take onto a melody context: each sung note snaps to the nearest
+/** One note of a quantized take: a scale degree with a sounding length and a pre-rest,
+    both in 16th-note steps. Its own type rather than a sequencer type — nothing consumes
+    a take yet, so a future feature starts from this shape rather than inheriting the
+    dead melody model's. */
+export interface QuantizedNote {
+  degree: number;      // scale-degree index (0 = the context's root)
+  lengthSteps: number; // sounding length, in 16th-note steps
+  restSteps: number;   // silent steps before the note; 0 = none
+}
+
+/** Quantize a finished take onto a scale context: each sung note snaps to the nearest
     degree of `scale`/`root`/`octave` (the whole take first auto-shifts by octaves to
-    best fit the grid's two-octave degree span) and its length/pre-rest quantize to
-    16th steps at `bpm`. Returns MelodyNotes in the sung order, mid dice weight. */
-export function sungToMelodyNotes(
+    best fit a two-octave degree span) and its length/pre-rest quantize to 16th steps at
+    `bpm`. Returns the notes in the sung order. */
+export function quantizeTake(
   sung: SungNote[], bpm: number, scale: number, root: number, octave: number,
-): MelodyNote[] {
+): QuantizedNote[] {
   if (sung.length === 0) return [];
   const maxDeg = degreesPerOctave(scale) * 2; // match the note grid's span
   const base = ROOT_MIDI + root + 12 * octave; // midi of degree 0
@@ -153,7 +169,7 @@ export function sungToMelodyNotes(
   }
 
   const stepMs = 60000 / Math.max(1, bpm) / 4;
-  const out: MelodyNote[] = [];
+  const out: QuantizedNote[] = [];
   let prevEnd = -1;
   for (let i = 0; i < sung.length; i++) {
     const target = desired[i] + bestK;
@@ -166,7 +182,7 @@ export function sungToMelodyNotes(
     // The first note starts the phrase (lead-in breath isn't a rest).
     const rest = prevEnd < 0 ? 0 : Math.max(0, Math.min(32, Math.round((sung[i].startMs - prevEnd) / stepMs)));
     prevEnd = sung[i].endMs;
-    out.push({ degree: deg, weight: 3, lengthSteps: len, restSteps: rest });
+    out.push({ degree: deg, lengthSteps: len, restSteps: rest });
   }
   return out;
 }

@@ -24,7 +24,6 @@ import {
   emptyNode, clampEnvelopes, STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
 import { ParamId } from "./params";
-import { MelodyNode, emptyMelody, melodyNoteNode, generateMelody, regatePhrase, EmittedNote, MELODY_COLOR_INDEX } from "./melody";
 import { rng01, randomSeed } from "./rng";
 
 export { randomSeed }; // re-export: a rule's seed is minted here and in the UI
@@ -213,10 +212,6 @@ export interface Loop {
   // Hand-edited pattern override (the Loop tab's sequencer grid); cleared whenever the
   // rhythm circles are edited. See VoiceNode.patternOv.
   patternOv?: number[];
-  rhythm?: boolean;        // melody instrument only: re-time the phrase's notes onto the
-                           // Euclid pattern above (see regatePhrase); unset = the notes'
-                           // own lengths/rests. Voice loops ignore it (their pattern
-                           // always sounds).
   gain?: number;
   intro?: IntroEnv;
   outro?: OutroEnv;
@@ -245,127 +240,11 @@ export class Track {
   barLimit = DEFAULT_BAR_LIMIT;
   root = 0;  // 0 = C
   scale = 0; // 0 = Major
-  // The last coloured row is a LIST of melodies (each a placeable phrase with its own
-  // re-pitched instrument + placement rule), mirroring a voice colour's list of loops. A
-  // fresh track starts empty — the melody section opens on an "add a melody" menu.
-  melodies: MelodyItem[] = [];
 
-  /** Compile to engine lanes (see compile()). Each melody adds its own lane(s) on the last
-      colour: its generated phrase, placed across the track by its instrument's rule. The
-      melody COLOUR's row sweeps ride over every melody lane (on top of per-placement
-      fades — overlaps compose in the engine). */
+  /** Compile to engine lanes (see compile()). */
   toLanes(): Lane[] {
-    const lanes = compile(this.colors, this.barLimit);
-    const rowWins = rowSweepWindows(this.colors[MELODY_COLOR_INDEX]?.sweeps, this.barLimit);
-    lanes.push(...melodyLanes(this.melodies, this.barLimit, rowWins));
-    return lanes;
+    return compile(this.colors, this.barLimit);
   }
-}
-
-/** One melody in the list: a re-pitched instrument (its `rule` places it + sets its length
-    in bars via forBars; it also carries the sound + fades) and the generative note tree. */
-export interface MelodyItem {
-  inst: Loop;
-  node: MelodyNode;
-}
-
-/** A melody's default placement: an 8-bar phrase tiled to fill the track (like a loop set
-    to "fill"). forBars is the phrase LENGTH; the rule is edited on the Loop-options page. */
-export function melodyRule(): PlacementRule {
-  return { every: { kind: "fill" }, forBars: 8, mode: "solo", seed: randomSeed(), seedHistory: [] };
-}
-
-/** A fresh melody item: an empty re-pitched instrument (sound minted on first edit) with a
-    melody placement rule, and an empty note tree. */
-export function newMelodyItem(): MelodyItem {
-  const inst = emptyLoop(MELODY_COLOR_INDEX, -1);
-  inst.rule = melodyRule();
-  return { inst, node: emptyMelody() };
-}
-
-/** Lay each melody into its own engine lane: generate the item's phrase (its own seeded
-    recurring motif, `forBars` long), then drop a copy at every placement its instrument's
-    rule produces (gaps + the tail padded with rests), tuned to the item's own sound.
-    `rowSweeps` (the melody colour's row-wide FX windows) ride over every lane. */
-export function melodyLanes(melodies: MelodyItem[], barLimit: number, rowSweeps: SweepWindow[] = []): Lane[] {
-  const limit = Math.max(1, Math.round(barLimit));
-  const limitSteps = limit * STEPS_PER_BAR;
-  const lanes: Lane[] = [];
-  for (const item of melodies) {
-    const inst = item.inst;
-    if (inst.soundId < 0 || !inst.snapshot.length || item.node.notes.length === 0) continue;
-    const phraseBars = Math.max(1, Math.round(inst.rule.forBars));
-    // The generated phrase, optionally re-timed onto the instrument's Euclid rhythm
-    // (its hits/steps circles) — see regatePhrase.
-    const phrase = regatePhrase(generateMelody(item.node, phraseBars), inst, phraseBars * STEPS_PER_BAR);
-    if (!phrase.length) continue;
-    const intervals = placementsFor(inst, limit).sort((a, b) => a.startBar - b.startBar);
-    const nodes: VoiceNode[] = [];
-    const sweeps: SweepWindow[] = [];
-    let cursor = 0;
-    for (const iv of intervals) {
-      const start = iv.startBar * STEPS_PER_BAR;
-      if (start < cursor) continue;                                   // overlap guard
-      if (start > cursor) { nodes.push(restOf(start - cursor)); cursor = start; }
-      const budget = Math.min(phraseBars * STEPS_PER_BAR, limitSteps - cursor);
-      if (budget <= 0) break;
-      const used = emitPhrase(phrase, inst, budget, nodes);
-      // A melody transition (item.inst.intro/outro) fades EACH placement in/out — realised
-      // as row-sweep windows over this placement (env.reps read as a length in BARS).
-      collectMelodySweeps(inst, start, used, sweeps);
-      cursor += used;
-    }
-    if (cursor < limitSteps) nodes.push(restOf(limitSteps - cursor));
-    const allSweeps = [...sweeps, ...rowSweeps];
-    lanes.push({
-      color: MELODY_COLOR_INDEX,
-      nodes: nodes.length ? nodes : [restOf(limitSteps)],
-      sweeps: allSweeps.length ? allSweeps : undefined,
-    });
-  }
-  return lanes;
-}
-
-/** Add a melody placement's fade-in / fade-out windows (from item.inst.intro/outro) to
-    `out`. A melody has no pattern reps, so the envelope's `reps` is read as a length in
-    BARS, capped to the placement. Intro = fade IN (effect → sound, side "in") at the
-    placement start; outro = fade OUT (sound → effect, side "out") at its end. */
-function collectMelodySweeps(inst: Loop, startStep: number, usedSteps: number, out: SweepWindow[]): void {
-  if (usedSteps <= 0) return;
-  const placeBars = Math.max(1, Math.round(usedSteps / STEPS_PER_BAR));
-  const end = startStep + usedSteps;
-  if (inst.intro) {
-    const bars = Math.max(1, Math.min(placeBars, Math.round(inst.intro.reps)));
-    out.push({ from: startStep, to: startStep + bars * STEPS_PER_BAR, mode: inst.intro.mode, modes: inst.intro.modes,
-      side: "in", fromV: inst.intro.from, toV: inst.intro.to, curve: inst.intro.curve, dir: inst.intro.dir,
-      shape: inst.intro.shape, cycles: inst.intro.cycles });
-  }
-  if (inst.outro) {
-    const bars = Math.max(1, Math.min(placeBars, Math.round(inst.outro.reps)));
-    out.push({ from: end - bars * STEPS_PER_BAR, to: end, mode: inst.outro.mode, modes: inst.outro.modes,
-      side: "out", fromV: inst.outro.from, toV: inst.outro.to, curve: inst.outro.curve, dir: inst.outro.dir,
-      shape: inst.outro.shape, cycles: inst.outro.cycles });
-  }
-}
-
-/** Emit a generated phrase's notes/rests into `out`, consuming up to `budget` steps (the
-    remaining room in the placement / track). Pitches clamp to the instrument's range. */
-function emitPhrase(phrase: EmittedNote[], inst: Loop, budget: number, out: VoiceNode[]): number {
-  const [lo, hi] = inst.pitch;
-  let used = 0;
-  for (const ev of phrase) {
-    if (used >= budget) break;
-    if (ev.restSteps > 0) {
-      const rs = Math.min(ev.restSteps, budget - used);
-      if (rs > 0) { out.push(restOf(rs)); used += rs; }
-      if (used >= budget) break;
-    }
-    const len = Math.min(ev.lengthSteps, budget - used);
-    if (len <= 0) continue;
-    out.push(melodyNoteNode(inst, len, Math.max(lo, Math.min(hi, ev.hz))));
-    used += len;
-  }
-  return used;
 }
 
 /** A fresh placement rule: EVERY bar, the length of the track — a new loop covers the
@@ -642,7 +521,6 @@ export function compile(colors: ColorTrack[], barLimit: number): Lane[] {
   const limit = Math.max(1, Math.round(barLimit));
   const lanes: Lane[] = [];
   for (let c = 0; c < colors.length; c++) {
-    if (c === MELODY_COLOR_INDEX) continue; // the last colour is the melody (see toLanes)
     const loops = colors[c]?.loops ?? [];
     if (loops.length === 0) continue;
     // The whole row's FX sweeps ride over every lane this colour compiles to, and every
@@ -698,7 +576,6 @@ export function cloneLoop(loop: Loop): Loop {
     rotation: loop.rotation,
     split: loop.split,
     patternOv: loop.patternOv ? loop.patternOv.slice() : undefined,
-    rhythm: loop.rhythm,
     gain: loop.gain,
     intro: loop.intro ? { ...loop.intro, modes: loop.intro.modes?.slice() } : undefined,
     outro: loop.outro ? { ...loop.outro, modes: loop.outro.modes?.slice() } : undefined,
