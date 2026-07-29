@@ -476,9 +476,9 @@ export class App {
     this.melodySoloItem = null;
     const sounds = this.buildSounds();
     this.melodySoloItem = hs;
-    // Cap at 40s so a drone-length Gate near the end still rings out in the export.
+    // Cap at 70s so a drone-length Gate near the end still rings out in the export.
     const maxTail = sounds.reduce((m, s) => Math.max(m, s.tail || 0), 0);
-    const tailSec = Math.min(40, Math.max(1.5, maxTail + 0.5));
+    const tailSec = Math.min(70, Math.max(1.5, maxTail + 0.5));
     const buffer = await this.engine.renderToBuffer({
       lines: this.arr.linesMessage(),
       sounds,

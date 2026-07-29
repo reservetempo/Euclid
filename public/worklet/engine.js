@@ -1433,9 +1433,17 @@ class EngineProcessor extends AudioWorkletProcessor {
         for (const s of m.sounds) this.sounds.set(s.id, { snap: s.snap, lo: s.lo, hi: s.hi, tail: s.tail });
         break;
       }
-      case "audition": // one-shot preview now (editor / lane), on the reserved channel
+      case "audition": {
+        // One-shot preview now (editor / lane), on the reserved channel. Auditioning is
+        // MONOPHONIC: each new preview cuts the last, or editing a sound with a long Gate
+        // stacks up to NUM_VOICES drones the UI has no way to silence. Choke (fast release,
+        // no click) rather than kill, and clear the FX so the old preview's echo/reverb tail
+        // doesn't bleed into the new one — safe because AUDITION owns its own channel.
+        const prev = this.soundToChannel.get(AUDITION);
+        if (prev !== undefined) { this.channels[prev].chokeVoices(); this.channels[prev].resetFx(); }
         this.triggerSound(AUDITION, m.snapshot, m.snapshot, m.gate | 0, m.tail);
         break;
+      }
       case "lines":
         if (this.playing && !m.restart) {
           // Stage; applied at the next bar boundary so the current bar plays unchanged.
@@ -1465,6 +1473,9 @@ class EngineProcessor extends AudioWorkletProcessor {
         break;
       case "stop":
         this.playing = false;
+        // Pause is a hard stop: choke every held voice (fast release, no click) and drop the
+        // FX tails, so a drone-length Gate doesn't keep ringing after the transport stops.
+        for (let c = 0; c < NUM_DRUMS; c++) { this.channels[c].chokeVoices(); this.channels[c].resetFx(); }
         this.promotePending(); // settle staged edits once stopped
         this.reportPlayhead(null, []);
         break;
@@ -2180,7 +2191,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     this.clock += n; // sample clock for allocation/steal decisions
 
     if (!this.playing) {
-      this.renderChannels(0, n); // audition / tails keep ringing
+      this.renderChannels(0, n); // auditions started while stopped keep ringing (stop chokes the rest)
     } else {
       let pos = 0;
       while (pos < n) {

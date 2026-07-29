@@ -175,10 +175,10 @@ export function baseSpec(id: ParamId): ParamSpec {
     case ParamId.Lfo2Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     case ParamId.Lfo3Sync:       return make("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNCS);
     // Note-hold in seconds; default 0.4 matches the sequencer's default step gate.
-    // Max 30s for drone-length holds (pair with Sustain > 0 so the note actually rings);
+    // Max 60s for drone-length holds (pair with Sustain > 0 so the note actually rings);
     // the low skew keeps most of the slider's travel on the ordinary short gates.
     // Not randomizable — it's a length choice, not part of the sound's character.
-    case ParamId.Gate:           return make("Gate", 0.02, 30, 0.4, 0.2, 0.005, "s", false);
+    case ParamId.Gate:           return make("Gate", 0.02, 60, 0.4, 0.2, 0.005, "s", false);
     // Sixth wave — fatter oscillators, modulation FX, wavetable morph oscillator.
     case ParamId.Unison:         return make("Unison", 0, 3, 0, 1, 1, "", true, UNISON_CHOICES);
     case ParamId.UnisonDetune:   return make("Spread", 0, 1, 0.2, 1, 0.02, "");
