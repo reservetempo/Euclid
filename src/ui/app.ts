@@ -24,6 +24,7 @@ import {
   traceDomain, traceParts, hzToNorm, normToHz,
 } from "../model/soundTraces";
 import { openDrawOverlay } from "./drawOverlay";
+import { openPathOverlay } from "./pathOverlay";
 import { DrumKit, estimateLength } from "../model/drumKit";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { reportCount, exportReports, clearReports } from "../model/soundReports";
@@ -2287,7 +2288,7 @@ export class App {
         const drawBtn = document.createElement("button");
         drawBtn.className = "seg-btn" + (Math.round(get(ty.param)) === PITCH_SHAPE_DRAWN ? " on" : "");
         drawBtn.textContent = "✏ Draw";
-        drawBtn.title = "Sketch the pitch by hand across the whole graph";
+        drawBtn.title = "Place the pitch by hand, point by point, across the whole graph";
         drawBtn.onclick = () => this.openPitchDraw(host, rerender);
         seg.append(drawBtn);
       }
@@ -2881,7 +2882,10 @@ export class App {
     });
   }
 
-  /** The PITCH contour's draw screen. Unlike the transition's, canvas space is not storage
+  /** The PITCH contour's editor — the NODE PATH screen (ui/pathOverlay.ts), not the freehand
+      one the transitions use: a pitch line is a few places you want the tone to BE, which is
+      easier to place and re-grab as points than to hit in one stroke.
+      Unlike the transition's, canvas space is not storage
       space: the y axis is the graph's own log-frequency axis (20 Hz .. 12 kHz), and what gets
       stored is the OCTAVE OFFSET from the base pitch at each sample — so the curve renders
       exactly where it was drawn, yet still transposes with Pitch, follows the key, and rides
@@ -2895,10 +2899,10 @@ export class App {
     const yToOct = (y: number) => Math.log2(normToHz(y) / base);
     const octToY = (oct: number) => hzToNorm(base * Math.pow(2, oct));
     const drawn = Math.round(get(ParamId.PitchEnvShape)) === PITCH_SHAPE_DRAWN;
-    openDrawOverlay({
+    openPathOverlay({
       axis: {
         title: "Draw the pitch",
-        hint: `Sketch the tone's frequency across the whole graph — the height is the pitch itself, on the same 20 Hz–12 kHz scale the graph draws. Points thins the curve out; the drawing replaces the sweep's Env, Dec, curve and waves entirely.`,
+        hint: `Tap to place points across the whole graph — the height is the pitch itself, on the same 20 Hz–12 kHz scale the graph draws. Drag a point to move it, tap it twice to remove it, and hold or drag a line to bend it. The path replaces the sweep's Env, Dec, curve and waves entirely.`,
         color: "#ff6b6b",
         topLabel: "12 kHz",
         bottomLabel: "20 Hz",
@@ -2909,7 +2913,7 @@ export class App {
         ? Array.from({ length: PITCH_DRAW_SLOTS }, (_, i) => octToY(get((PITCH_DRAW_BASE + i) as ParamId)))
         : null,
       verdict: (ys) => {
-        if (!ys) return "Draw left to right — redrawing replaces the line.";
+        if (!ys) return "Tap the graph to place the first point.";
         const hz = ys.map((y) => normToHz(y));
         return `${Math.round(Math.min(...hz))} Hz … ${Math.round(Math.max(...hz))} Hz over ${Math.round(span * 100) / 100}s`;
       },

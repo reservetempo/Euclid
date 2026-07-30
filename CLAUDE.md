@@ -129,11 +129,18 @@ src/
                         soundTraces.ts); recompile() is the hub (track -> lanes -> engine).
                         BY FAR the largest file.
     controls.ts         shared UI pieces + the shuffle settings every sound editor renders
-    drawOverlay.ts      THE freehand draw screen, shared by both things you can sketch: a
-                        transition's blend function and the pitch contour. Works purely in
-                        canvas space (y 0..1) and hands the caller N uniform samples, so the
-                        axis MEANING (plain 0..1 vs log-Hz) stays with the caller. Owns the
-                        Simplify stage (the point slider, via simplify.ts + spline.ts)
+    drawShell.ts        the chrome both sketch screens wear (modal card, canvas sizing, axis
+                        backdrop, verdict + button rows) + the DrawAxis both are described by.
+                        Canvas space only (y 0..1); the axis MEANING (plain 0..1 vs log-Hz)
+                        stays with the caller, which gets N uniform samples either way
+    drawOverlay.ts      the FREEHAND draw screen: one stroke, cleaned up and simplified. Used
+                        by a transition's blend function. Owns the Simplify stage (the point
+                        slider, via simplify.ts + spline.ts)
+    pathOverlay.ts      the NODE PATH screen: tap to place points, drag one to move it, tap it
+                        twice to remove it, hold/drag a line to bend it (quadratic with the
+                        control point halfway across, so the curve can never fold back and
+                        sampling needs no root-finding). Used by the pitch contour. Nodes are
+                        NOT stored — reopening rebuilds them by ranking the stored samples
     euclidView.ts       the 6 nested rings visualization
     soundHelp.ts        the shared "?" help panel + plain-words glossary for Graph mode
                         (quotes engine code)
@@ -166,7 +173,8 @@ src/
   There are **no presets** — every sound is a generic full-range sound; the shuffle draws each
   param from its full base range (`paramSpec.baseRange`). `drumKit.ts` owns shuffle + undo.
 - **Drawn pitch contour:** `PitchEnvShape` has a ninth choice, `Drawn`, which is not an
-  envelope — it plays a hand-sketched curve held in the 32 `PitchDraw*` slots and ignores
+  envelope — it plays a hand-drawn curve (authored point by point in `ui/pathOverlay.ts`)
+  held in the 32 `PitchDraw*` slots and ignores
   Amount/Decay/Curve/Cycles. Each slot is an **octave offset** from the base `Pitch`
   (`freq = P · 2^slot(t)`), so the drawing renders exactly where it was drawn on the graph's
   log-Hz axis yet still transposes, pitch-snaps and follows `pitchTrack`. Its length is

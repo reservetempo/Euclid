@@ -1,12 +1,13 @@
-// The freehand DRAW screen, shared by everything in the app you can sketch a function for.
+// The FREEHAND draw screen: one stroke, cleaned up and simplified into a function.
 //
-// Two callers today: a transition's blend function (0..1, "how far transformed") and the
-// pitch envelope's Drawn contour (a log-Hz axis). They differ ONLY in what their axes mean
-// and how many samples they store, so both of those are injected and everything else —
-// stroke capture, de-shake, the Simplify stage, the canvas, the overlay lifecycle — is here.
+// One caller today — a transition's blend function (0..1, "how far transformed"). The pitch
+// contour used to share this screen; it now has its own editor (ui/pathOverlay.ts), where the
+// line is built from points you place and bend, because a pitch line is a few deliberate
+// places you want the tone to BE and a single stroke can't say that precisely. What the two
+// screens still share is their chrome and their axis description, which live in ui/drawShell.ts.
 //
-// The overlay itself is axis-agnostic on purpose: it works entirely in canvas space, where y
-// runs 0 (bottom) to 1 (top), and hands the caller `slots` uniform samples in that space.
+// The overlay is axis-agnostic on purpose: it works entirely in canvas space, where y runs
+// 0 (bottom) to 1 (top), and hands the caller `slots` uniform samples in that space.
 // Converting those to stored units is the caller's job, which is what keeps a log-frequency
 // axis from leaking into a module that also serves a plain 0..1 one.
 //
@@ -26,23 +27,9 @@
 import { smoothStroke } from "../model/curveFit";
 import { Point, Ranked, rankPoints, takeTop } from "../model/simplify";
 import { buildSpline, resampleUniform } from "../model/spline";
+import { DrawAxis, openDrawShell, paintAxisBackdrop, prepareCanvas } from "./drawShell";
 
-/** What the two axes mean, and how much of the curve survives being stored. */
-export interface DrawAxis {
-  title: string;
-  /** Sentence under the title: what drawing high vs low actually does. */
-  hint: string;
-  /** Accent colour for the card (the voice's colour). */
-  color: string;
-  /** Corner labels for the y axis — drawn top-left and bottom-left. */
-  topLabel: string;
-  bottomLabel: string;
-  /** Caption under the x axis (e.g. the window in seconds), or "" for none. */
-  xLabel: string;
-  /** How many uniform samples the caller stores. Also the point slider's ceiling: a 33rd
-      point could not survive a 32-slot store, so offering one would be a lie. */
-  slots: number;
-}
+export type { DrawAxis };
 
 /** One extra way out of the overlay, beside Clear and Use drawing (the transition editor's
     "Use formula"). `ys` is always in canvas space. */
@@ -77,39 +64,10 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 /** Open the draw screen. Returns nothing: every exit runs through `commit` or an action. */
 export function openDrawOverlay(opts: DrawOverlayOptions): void {
   const { axis } = opts;
-  document.querySelector(".draw-overlay")?.remove();
-
-  const overlay = document.createElement("div");
-  overlay.className = "draw-overlay";
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-  const card = document.createElement("div");
-  card.className = "draw-card";
-  card.style.setProperty("--vc", axis.color);
-
-  const head = document.createElement("div");
-  head.className = "draw-head";
-  const title = document.createElement("h3");
-  title.className = "tr-title";
-  title.textContent = axis.title;
-  const close = document.createElement("button");
-  close.className = "seg-btn";
-  close.textContent = "✕";
-  close.onclick = () => overlay.remove();
-  head.append(title, close);
-  card.append(head);
-
-  const hint = document.createElement("p");
-  hint.className = "sing-hint";
-  hint.textContent = axis.hint;
-  card.append(hint);
-
-  const canvas = document.createElement("canvas");
-  canvas.className = "draw-canvas";
-  card.append(canvas);
+  const shell = openDrawShell(axis);
+  const { canvas, verdict, actions } = shell;
 
   // --- the Simplify stage: how many of the ranked points to keep ---
-  const simplify = document.createElement("div");
-  simplify.className = "draw-simplify";
   const simplifyLbl = document.createElement("span");
   simplifyLbl.className = "draw-simplify-lbl";
   const slider = document.createElement("input");
@@ -117,13 +75,8 @@ export function openDrawOverlay(opts: DrawOverlayOptions): void {
   slider.min = "2";
   slider.max = String(axis.slots);
   slider.step = "1";
-  simplify.append(simplifyLbl, slider);
-  card.append(simplify);
+  shell.controls.append(simplifyLbl, slider);
 
-  const verdict = document.createElement("p");
-  verdict.className = "sing-hint draw-verdict";
-  const actions = document.createElement("div");
-  actions.className = "placement-seg draw-actions";
   const clearBtn = document.createElement("button");
   clearBtn.className = "seg-btn";
   clearBtn.textContent = "Clear";
@@ -140,9 +93,6 @@ export function openDrawOverlay(opts: DrawOverlayOptions): void {
     actions.append(b);
     return { spec: a, el: b };
   });
-  card.append(verdict, actions);
-  overlay.append(card);
-  document.body.append(overlay);
 
   // --- state ---------------------------------------------------------------
   // `ranked` is the whole ranking, computed once per stroke; `count` is where the slider
@@ -197,35 +147,10 @@ export function openDrawOverlay(opts: DrawOverlayOptions): void {
 
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   const redraw = () => {
-    const rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    if (canvas.width !== Math.round(rect.width * dpr)) {
-      canvas.width = Math.round(rect.width * dpr);
-      canvas.height = Math.round(rect.height * dpr);
-    }
-    const ctx = canvas.getContext("2d");
+    const ctx = prepareCanvas(canvas, dpr);
     if (!ctx) return;
+    paintAxisBackdrop(ctx, axis, dpr);
     const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#0d1019";
-    ctx.fillRect(0, 0, W, H);
-    // Quarter grid, edges brighter (mirroring the Graph tab's viz).
-    for (let q = 0; q <= 4; q++) {
-      ctx.strokeStyle = q === 0 || q === 4 ? "rgba(154,168,204,0.28)" : "rgba(154,168,204,0.12)";
-      ctx.lineWidth = 1 * dpr;
-      ctx.beginPath();
-      ctx.moveTo((q / 4) * W, 0); ctx.lineTo((q / 4) * W, H);
-      ctx.moveTo(0, (q / 4) * H); ctx.lineTo(W, (q / 4) * H);
-      ctx.stroke();
-    }
-    ctx.fillStyle = "#97a0b6";
-    ctx.font = `600 ${11 * dpr}px system-ui, sans-serif`;
-    ctx.fillText(axis.topLabel, 6 * dpr, 14 * dpr);
-    ctx.fillText(axis.bottomLabel, 6 * dpr, H - 6 * dpr);
-    if (axis.xLabel) {
-      const w = ctx.measureText(axis.xLabel).width;
-      ctx.fillText(axis.xLabel, W - w - 6 * dpr, H - 6 * dpr);
-    }
     const strokePath = (fn: (x01: number) => number) => {
       ctx.beginPath();
       const N = 128;
@@ -321,14 +246,14 @@ export function openDrawOverlay(opts: DrawOverlayOptions): void {
   useDraw.onclick = () => {
     const ys = curveOf();
     if (!ys) return;
-    overlay.remove();
+    shell.close();
     opts.commit(ys);
   };
   for (const { spec, el } of extras) {
     el.onclick = () => {
       const ys = curveOf();
       if (!ys) return;
-      overlay.remove();
+      shell.close();
       spec.run(ys);
     };
   }

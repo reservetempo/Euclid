@@ -855,6 +855,8 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .draw-simplify-lbl { font-size: 0.82rem; color: #97a0b6; font-weight: 600; min-width: 5.5em; }
 .draw-simplify input[type="range"] { flex: 1 1 0; --slider: var(--vc); }
 .draw-simplify input[type="range"]:disabled { opacity: 0.4; }
+/* The path editor has no slider in that row — just how many points are on the line. */
+.draw-path-lbl { min-width: 0; }
 .draw-verdict { min-height: 2.4em; }
 .draw-actions { display: flex; gap: 8px; }
 .draw-actions .seg-btn { flex: 1 1 0; padding: 11px 8px; }

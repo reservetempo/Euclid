@@ -293,7 +293,7 @@ export const SOUND_TRACES: TraceSpec[] = [
     // over traceAxisSeconds, so reporting a finite duration here would feed the very span
     // that sets its own length.
     duration: () => Infinity, // the tone holds its base pitch for the whole note
-    // Drawn: the freehand contour, read as octave offsets across the graph's full width.
+    // Drawn: the hand-placed contour, read as octave offsets across the graph's full width.
     // Everything else: the classic sweep over the D window.
     curve: (g, t, ctx) => {
       if (isPitchDrawn(g(ParamId.PitchEnvShape))) {
@@ -312,7 +312,7 @@ export const SOUND_TRACES: TraceSpec[] = [
       }
       return `${Math.round(p * (1 + g(ParamId.PitchEnvAmount)))} Hz → ${Math.round(p)} Hz  (${nm})`;
     },
-    about: "The tone's frequency for the note's whole life. It starts at P·(1+A) and moves toward the base pitch P over the D window (negative A rises up into the note instead). SHAPE picks HOW it travels: Exp is the classic exponential drop; Line is a straight sloped ramp whose angle the curve bends toward exponential; S-curve/Parabola bend differently; and Sine/Cos/Triangle/Wobble make the pitch rise AND fall across the sweep (waves = how many times). DRAWN is the odd one out: instead of a formula it plays a curve you sketch by hand, stretched across the WHOLE width of this graph rather than over D — so shaping the sound longer (a longer tail, a bigger reverb) stretches the contour with it. Because it carries its own full excursion, Drawn ignores A, D, curve and waves entirely; its samples are octave offsets from P, so the contour still transposes with the base pitch and still follows the key. For a continuous wobble over the whole note instead, point an LFO at Pitch.",
+    about: "The tone's frequency for the note's whole life. It starts at P·(1+A) and moves toward the base pitch P over the D window (negative A rises up into the note instead). SHAPE picks HOW it travels: Exp is the classic exponential drop; Line is a straight sloped ramp whose angle the curve bends toward exponential; S-curve/Parabola bend differently; and Sine/Cos/Triangle/Wobble make the pitch rise AND fall across the sweep (waves = how many times). DRAWN is the odd one out: instead of a formula it plays a curve you build by hand — tap the ✏ Draw screen to place points, drag them around, and hold a line to bend it — stretched across the WHOLE width of this graph rather than over D — so shaping the sound longer (a longer tail, a bigger reverb) stretches the contour with it. Because it carries its own full excursion, Drawn ignores A, D, curve and waves entirely; its samples are octave offsets from P, so the contour still transposes with the base pitch and still follows the key. For a continuous wobble over the whole note instead, point an LFO at Pitch.",
     code: `// engine.js — Voice.renderAdding: the per-sample pitch (env runs 1→0)
 let freq = basePitch * (1 + pitchEnvAmount * pitchEnv) * pitchMul;
 if (pitchEnvShape === null) pitchEnv *= pitchEnvCoef;      // Exp: exp(−t/D)
