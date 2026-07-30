@@ -513,6 +513,27 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
     border-left-color: var(--vc);
   }
 }
+/* A loop-list card stacks: the strip, then its Sound / Loop / Transitions tabs. The plain
+   .loop-row stays a horizontal strip — the transition list reuses it as one. */
+.loop-row-tabs { flex-direction: column; align-items: stretch; gap: 0; }
+.loop-row-head { display: flex; align-items: stretch; gap: 8px; }
+/* The tabs read as a foot to the card, not as three buttons floating on it: flat, full
+   width, divided by hairlines off the card's own tint. */
+.loop-nav {
+  gap: 0; flex-wrap: nowrap;
+  border-top: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--vc) 5%, transparent);
+}
+.loop-nav .seg-btn {
+  flex: 1 1 0; min-width: 0; text-align: center;
+  padding: 9px 6px; font-size: 12.5px;
+  background: transparent; border: none; border-radius: 0; box-shadow: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.loop-nav .seg-btn + .seg-btn { border-left: 1px solid var(--line-soft); }
+.loop-nav .seg-btn:active { background: color-mix(in srgb, var(--vc) 14%, transparent); color: var(--vc); }
+@media (hover: hover) { .loop-nav .seg-btn:hover { color: var(--vc); } }
+
 .loop-order { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding-left: 6px; }
 .loop-move {
   width: 26px; height: 20px; padding: 0; line-height: 1;
@@ -723,7 +744,7 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* Loop popup tab nav (Sound / Loop / Transition): a segmented glass control. */
+/* Transition editor tab nav (Bars / Curve / Sound / Speed): a segmented glass control. */
 .placement-nav {
   justify-content: stretch; gap: 4px; margin: -4px 0 -2px;
   background: var(--field); border: 1px solid var(--line-soft);

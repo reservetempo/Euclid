@@ -64,6 +64,10 @@ const BARS_PER_ROW = 32;
 
 type View = "track" | "color" | "mixer";
 
+// The loop editor's three pages. Named because the tabs that pick them live out on the
+// loop rows now, so the type crosses between the list and the popup.
+type PlacementTab = "sound" | "loop" | "transition";
+
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
 type RhythmField = "hits" | "steps" | "rotation" | "split";
 
@@ -97,7 +101,7 @@ export class App {
   private lastViewKey = "";             // view identity at the previous render (scroll-preserve guard)
   private openColor = 0;               // which colour panel is open
   private editLoop: Loop | null = null; // loop whose placement popup is open
-  private placementTab: "loop" | "transition" | "sound" = "sound"; // which sub-page of the loop popup
+  private placementTab: PlacementTab = "sound"; // which sub-page of the loop popup
   // Loop tab sub-view: the main page (default), or the panels the action buttons open.
   private loopSub: "grid" | "options" | "life" = "grid";
   // Loop-tab drag grid: rows shown. A view preference — the grid auto-grows past it so
@@ -970,12 +974,16 @@ export class App {
       included (it warps the timing while the tonal styles morph the tone) — and the last
       active style can't be removed. */
   /** One row in a colour's loop list: priority reorder (solo), name + rule summary,
-      remove. Tapping the row opens the placement popup. */
+      remove, and — across the card's foot — the loop's own Sound / Loop / Transitions tabs.
+      The tabs live HERE rather than inside the popup so any of the three pages is one tap
+      away from the list, and so the popup itself doesn't spend a row on navigation. */
   private loopRow(loop: Loop, i: number): HTMLElement {
     const c = this.openColor;
     const loops = this.track.colors[c].loops;
     const row = document.createElement("div");
-    row.className = "loop-row";
+    // .loop-row-tabs stacks the card: the strip below, then the tab nav. (Plain .loop-row
+    // stays a horizontal strip — the transition list reuses it as one.)
+    row.className = "loop-row loop-row-tabs";
     row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
 
     // Reorder controls (priority for solo loops; list order in general).
@@ -1015,7 +1023,25 @@ export class App {
     rm.title = "Remove this loop";
     rm.onclick = (e) => { e.stopPropagation(); this.removeLoop(c, i); };
 
-    row.append(order, body, rm);
+    const head = document.createElement("div");
+    head.className = "loop-row-head";
+    head.append(order, body, rm);
+
+    // The three pages of this loop's editor, each opening the popup straight onto it.
+    const nav = document.createElement("div");
+    nav.className = "placement-seg loop-nav";
+    const mkTab = (tab: PlacementTab, text: string) => {
+      const b = document.createElement("button");
+      b.className = "seg-btn";
+      b.textContent = text;
+      // No lit state: the popup covers the page, so this row is never visible while one of
+      // its tabs is active — these are launchers, not a display of where you are.
+      b.onclick = (e) => { e.stopPropagation(); this.openPlacement(loop, tab); };
+      return b;
+    };
+    nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transitions"));
+
+    row.append(head, nav);
     return row;
   }
 
@@ -1188,13 +1214,17 @@ export class App {
     this.render();
   }
 
-  /** The placement popup for `loop`: a Sound / Loop / Transitions tab nav over its
-      sub-pages — Sound (the default) = the FULL parameter editor, embedded; Loop = the
-      rhythm circles + sequencer pattern grid + the placement squares; Transitions = the
-      loop's transition list (each opening its Bars / Graph / Effects / Speed editor).
+  /** The placement popup for `loop`, showing ONE of its three pages — Sound = the FULL
+      parameter editor, embedded; Loop = the rhythm circles + sequencer pattern grid + the
+      placement squares; Transitions = the loop's transition list (each opening its Bars /
+      Graph / Effects / Speed editor). Which one is chosen out in the list, by the tabs on
+      the loop's own row, and passed in as `tab`; the popup carries no nav of its own, so
+      each page gets the whole sheet.
+      Omitting `tab` means "rebuild where we are": that's how every in-place re-render goes
+      through here without resetting the page you're on.
       Rebuilt in place on any change (it's appended to the root, so it survives a panel
       re-render). */
-  private openPlacement(loop: Loop): void {
+  private openPlacement(loop: Loop, tab?: PlacementTab): void {
     // The sheet is rebuilt from scratch on every change, which would snap its scroll
     // back to the top — capture it before the old overlay goes, restore it below when
     // the rebuild is IN-PLACE (same tab/sub-page; a genuine navigation starts at top).
@@ -1202,11 +1232,12 @@ export class App {
     document.querySelector(".placement-overlay")?.remove();
     // Stale cell refs from a previous Loop-tab render; patternGrid re-sets them if shown.
     this.patternPlayCells = null;
-    const fresh = this.editLoop !== loop;
-    if (fresh) {
-      // Fresh open: land on the Sound page (the full params ARE the default now) and
+    // A genuine open: a different loop, or the same one re-entered through a tab.
+    const opening = this.editLoop !== loop || tab !== undefined;
+    if (opening) {
+      // Land on the page the row's tab asked for (Sound when opened by the name alone) and
       // reset every sub-state the popup carries.
-      this.placementTab = "sound";
+      this.placementTab = tab ?? "sound";
       this.loopSub = "grid";
       this.gridPick = null;
       this.editTransition = null;
@@ -1223,13 +1254,13 @@ export class App {
       this.transTab,
       `g:${this.graphTrace ?? ""}:${this.graphPage}`,
     ].join(":");
-    const sameView = !fresh && this.popupViewKey === viewKey;
+    const sameView = !opening && this.popupViewKey === viewKey;
     this.popupViewKey = viewKey;
     const rerender = () => this.openPlacement(loop);
 
     const overlay = document.createElement("div");
     // .sheet-enter animates the card in — only on a fresh open, not in-place rebuilds.
-    overlay.className = "placement-overlay voice-sheet-overlay" + (fresh ? " sheet-enter" : "");
+    overlay.className = "placement-overlay voice-sheet-overlay" + (opening ? " sheet-enter" : "");
     // The sheet fills the page BELOW the top bar (the nav stays visible/usable), so the
     // editor gets the whole rest of the screen.
     const topbar = this.root.querySelector(".topbar");
@@ -1314,29 +1345,8 @@ export class App {
       }
     }
 
-    // Tab nav across the three sub-pages.
-    const nav = document.createElement("div");
-    nav.className = "placement-seg placement-nav";
-    const mkTab = (tab: "sound" | "loop" | "transition", text: string) => {
-      const b = document.createElement("button");
-      b.className = "seg-btn" + (this.placementTab === tab ? " on" : "");
-      b.textContent = text;
-      b.onclick = () => {
-        if (this.placementTab === tab) return;
-        this.placementTab = tab;
-        this.loopSub = "grid";
-        this.gridPick = null;
-        // Leaving (or re-entering) the Transitions page drops back to its list and
-        // silences the editing preview.
-        this.editTransition = null;
-        this.stopPreview();
-        rerender();
-      };
-      return b;
-    };
-    nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transitions"));
-    if (!openTr) sheet.append(nav);
-
+    // No tab nav here — the pages are picked by the tabs on the loop's row, and ‹ Loops
+    // goes back to them.
     if (this.placementTab === "sound") {
       // The sound graph IS the sound panel.
       sheet.append(this.soundGraphPanel(this.graphHostForLoop(loop, rerender), rerender));
