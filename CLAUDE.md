@@ -105,13 +105,14 @@ src/
                         ENGINE_TABLES, which build/euclidParams.ts emits to the worklet.
                         Import-free on purpose: vite.config.ts loads it.
     paramSpec.ts        reading helpers over that registry (specs, ranges, formatting)
-    drums.ts            DrumType enum + the shipped drum palette
-    drumKit.ts          editable/stateful sound params, seeded shuffle + undo, snap modes
+    sound.ts            SoundDraft: ONE sound being edited — the snapshot it writes
+                        THROUGH to, its undo stack, shuffle settings + seeded shuffle,
+                        snap modes, and estimateLength
     lines.ts            the engine data model: voice LINES of NODES; transitions; sweeps
     track.ts            PROCEDURAL PLACEMENT model: colours -> ordered loops + placement
                         rules; compile() turns a Track into engine lanes
-    project.ts          whole-project save/load (JSON, version 14); serialize/deserialize
-    melodyScale.ts      keys/scales, degree->semitone/Hz mapping (drumKit's Key pitch-snap)
+    project.ts          whole-project save/load (JSON, version 15); serialize/deserialize
+    melodyScale.ts      keys/scales, degree->semitone/Hz mapping (sound.ts's Key pitch-snap)
     sing.ts             mic pitch tracking -> sung notes. PARKED: nothing imports it, on
                         purpose — see docs/adr/0001-remove-melody-section.md
     name.ts             procedural pronounceable name generator for sounds
@@ -128,7 +129,7 @@ src/
                         Sound Graph editor (the only sound-editing surface, drawn from
                         soundTraces.ts); recompile() is the hub (track -> lanes -> engine).
                         BY FAR the largest file.
-    controls.ts         shared UI pieces + the shuffle settings every sound editor renders
+    controls.ts         shared UI pieces + the shuffle option lists (label ↔ value maps)
     drawShell.ts        the chrome both sketch screens wear (modal card, canvas sizing, axis
                         backdrop, verdict + button rows) + the DrawAxis both are described by.
                         Canvas space only (y 0..1); the axis MEANING (plain 0..1 vs log-Hz)
@@ -171,7 +172,12 @@ src/
   the UI can author since the melody section (their only editor) was removed.
 - **Sound / snapshot:** a sound is a `number[]` of `NUM_PARAMS` values, one per `ParamId`.
   There are **no presets** — every sound is a generic full-range sound; the shuffle draws each
-  param from its full base range (`paramSpec.baseRange`). `drumKit.ts` owns shuffle + undo.
+  param from its full base range (`paramSpec.baseRange`). `sound.ts` owns shuffle + undo, as
+  a `SoundDraft`: an editing surface makes one over the array the model already holds
+  (`loop.snapshot`, or a transition's) and it mutates that array IN PLACE, so there is no
+  copy to sync back. Its `rev` counter is how async work (the offline loudness pass) tells
+  the sound moved on, since the array's identity never changes. A draft lives on its loop
+  (`loop.draft`) and is excluded from `cloneLoop` and from the save format on purpose.
 - **Drawn pitch contour:** `PitchEnvShape` has a ninth choice, `Drawn`, which is not an
   envelope — it plays a hand-drawn curve (authored point by point in `ui/pathOverlay.ts`)
   held in the 32 `PitchDraw*` slots and ignores
@@ -186,13 +192,12 @@ src/
   32 slots per envelope is affordable only once, the contour table SPLIT in two:
   `PITCH_SHAPE_CHOICES` (the 8 + `Drawn`) and `ENV_SHAPE_CHOICES` (the 8, for Tone/Noise
   decay), identical in their first eight indices so stored values kept their meaning.
-- **Save format:** `project.ts`, JSON `version: 14`. **Only version 14 loads**; any other
-  version loads a blank track and the DEFAULT drum kit — only the tempo is restored. (The
-  kit is version-gated too because v14 shifted the snapshot indices, so an older kit
-  snapshot would land on the wrong params.) The format is
-  deliberately NOT back-compatible with earlier generations. A v14 file written before the
-  melody section was removed still loads — its obsolete `melodies` array is simply ignored.
-  Every field is validated on load
+- **Save format:** `project.ts`, JSON `version: 15`. **Only version 15 loads**; any other
+  version loads a blank track — only the tempo is restored. The format is deliberately NOT
+  back-compatible with earlier generations. v15 dropped three fields that had lost their
+  reader (the `drums` kit blob, `soundName`, and each loop's constant `pitch` range); no
+  index moved, so refusing v14 is a deliberate clean break rather than a necessity — see
+  `docs/adr/0002`. Every field is validated on load
   (`read*` helpers) so malformed/partial saves degrade gracefully. `localStorage` key is
   `"msq010.project"` (kept from the working title so old saves keep loading).
 
