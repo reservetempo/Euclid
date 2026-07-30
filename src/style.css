@@ -1,31 +1,58 @@
 /* ============================================================================
-   Euclid — dark glass + neon. One shared visual language: dots and lines, six
-   voice colours, glass panels floating over a slowly drifting aurora.
+   Euclid — Windows 98. One shared visual language: grey #c0c0c0 chrome, square
+   corners, and a 2px bevel that is either OUT (raised, clickable) or IN (pressed,
+   inset well). Nothing blurs, nothing glows, nothing animates — depth is drawn
+   with four hairlines, the way the real thing did it.
    Sections: tokens/base · controls · topbar · views · track · colour · sheets ·
-   numpad · melody · mixer · sound editor · toast · motion · a11y.
+   numpad · melody · mixer · sound editor · toast · a11y.
    ========================================================================== */
 
+/* A period bitmap face needs a font FILE. Rather than ship an unvetted one, the
+   stack below leans on fonts Windows already has (Tahoma is the Win98-era UI face
+   for anything post-SP1) and degrades to Verdana elsewhere. To go full pixel, drop
+   a w95fa.woff2 into public/fonts/ and uncomment this block — nothing else changes.
+@font-face {
+  font-family: "W95FA";
+  src: url("/fonts/w95fa.woff2") format("woff2");
+  font-display: swap;
+}
+*/
+
 :root {
-  --bg: #0a0c12;
-  --panel: #141826;            /* solid card */
-  --panel-glass: rgba(21, 26, 40, 0.72);
-  --panel2: #1b2132;           /* raised card / key */
-  --panel2-glass: rgba(28, 34, 52, 0.82);
-  --field: #0d1019;            /* inset wells (displays, timelines) */
-  --line: rgba(154, 168, 204, 0.16);
-  --line-soft: rgba(154, 168, 204, 0.09);
-  --text: #eef1f8;
-  --muted: #97a0b6;
-  --accent: #ffd60a;
-  --brand-a: #7c5cff;
-  --brand-b: #00ffc8;
-  --brand: linear-gradient(135deg, var(--brand-a), var(--brand-b));
-  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px rgba(0, 0, 0, 0.35);
-  --pop-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --r-sm: 10px;
-  --r-md: 14px;
-  --r-lg: 18px;
-  color-scheme: dark;
+  --bg: #008080;               /* the teal desktop */
+  --panel: #c0c0c0;            /* face of every window, button and key */
+  --panel-glass: #c0c0c0;      /* nothing is translucent any more — kept as an alias */
+  --panel2: #c0c0c0;
+  --panel2-glass: #c0c0c0;
+  --field: #ffffff;            /* inset wells (displays, timelines, list boxes) */
+  --line: #808080;             /* the shadow edge */
+  --line-soft: #dfdfdf;        /* the highlight edge */
+  --text: #000000;
+  --muted: #404040;
+  --accent: #000080;           /* selection / title-bar navy */
+  --brand-a: #000080;
+  --brand-b: #1084d0;
+  --brand: linear-gradient(90deg, var(--brand-a), var(--brand-b));
+
+  /* The whole design system in two variables. Outer pair = the 1px black outline and
+     its white counter-light; inner pair = the grey/white body of the bevel. Swapping
+     the four colours end-for-end is the entire difference between raised and pressed. */
+  --btn-out: inset -1px -1px 0 #000000, inset 1px 1px 0 #ffffff,
+    inset -2px -2px 0 #808080, inset 2px 2px 0 #dfdfdf;
+  --btn-in: inset -1px -1px 0 #ffffff, inset 1px 1px 0 #000000,
+    inset -2px -2px 0 #dfdfdf, inset 2px 2px 0 #808080;
+  /* A "field" bevel: two lines only, for white wells that shouldn't look clickable. */
+  --field-in: inset -1px -1px 0 #ffffff, inset 1px 1px 0 #808080;
+  --win-shadow: 2px 2px 0 rgba(0, 0, 0, 0.35);
+
+  --card-shadow: var(--btn-out);
+  --pop-shadow: var(--win-shadow);
+  /* Square everything in one stroke: every radius in the file below resolves to 0.
+     The handful of deliberately round things (LEDs, dots) set their own. */
+  --r-sm: 0;
+  --r-md: 0;
+  --r-lg: 0;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -35,9 +62,11 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  font-family: "W95FA", Tahoma, "MS Sans Serif", "Microsoft Sans Serif", Geneva, Verdana, sans-serif;
+  font-size: 13px;
   -webkit-text-size-adjust: 100%;
-  -webkit-font-smoothing: antialiased;
+  /* NOT antialiased: Win98 type was aliased, and Tahoma at these sizes is crisper for it. */
+  -webkit-font-smoothing: none;
   overscroll-behavior: none;
   /* The BODY never scrolls — .viewroot scrolls inside instead. A scrolled body is what
      desyncs tap targets from position:fixed overlays on iOS (worst as a home-screen app
@@ -45,37 +74,20 @@ html, body {
   overflow: hidden;
 }
 
-/* Aurora: four voice-coloured glows behind everything. It DRIFTS only on the
-   start screen (its marquee moment) — inside the app the huge layer holds still,
-   so an idle session isn't repainting the whole screen forever. */
+/* The desktop: the 50% checkerboard dither Win98 used to fake a half-tone out of two
+   solid colours. Two 2px-offset gradients on a 4px grid — no image, no animation. */
 body::before {
-  content: "";
-  position: fixed;
-  inset: -45%;
-  z-index: -2;
-  pointer-events: none;
-  background:
-    radial-gradient(38% 30% at 24% 30%, rgba(124, 92, 255, 0.16), transparent 70%),
-    radial-gradient(30% 26% at 78% 18%, rgba(0, 255, 200, 0.08), transparent 70%),
-    radial-gradient(36% 30% at 72% 80%, rgba(77, 171, 247, 0.10), transparent 70%),
-    radial-gradient(26% 22% at 22% 82%, rgba(255, 107, 107, 0.06), transparent 70%);
-}
-body::before {
-  animation: aurora-drift 26s ease-in-out infinite alternate;
-}
-@keyframes aurora-drift {
-  from { transform: rotate(0deg) scale(1); }
-  to { transform: rotate(10deg) scale(1.15); }
-}
-/* Fine film grain so the glass has something to catch. */
-body::after {
   content: "";
   position: fixed;
   inset: 0;
-  z-index: -1;
+  z-index: -2;
   pointer-events: none;
-  opacity: 0.05;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.28;
+  background-image:
+    linear-gradient(45deg, #0a5c5c 25%, transparent 25%, transparent 75%, #0a5c5c 75%),
+    linear-gradient(45deg, #0a5c5c 25%, transparent 25%, transparent 75%, #0a5c5c 75%);
+  background-size: 4px 4px;
+  background-position: 0 0, 2px 2px;
 }
 
 #app {
@@ -86,46 +98,62 @@ body::after {
     env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
-::selection { background: color-mix(in srgb, var(--brand-a) 45%, transparent); }
+::selection { background: #000080; color: #ffffff; }
 
-/* Slim scrollbars that match the glass. */
-* { scrollbar-width: thin; scrollbar-color: rgba(154, 168, 204, 0.25) transparent; }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background: rgba(154, 168, 204, 0.22); border-radius: 4px; }
-*::-webkit-scrollbar-thumb:hover { background: rgba(154, 168, 204, 0.4); }
-*::-webkit-scrollbar-track { background: transparent; }
+/* Scrollbars: the grey dithered track and a raised grey thumb (no arrow buttons —
+   those were not part of this reskin's brief). */
+* { scrollbar-width: auto; scrollbar-color: #c0c0c0 #dfdfdf; }
+*::-webkit-scrollbar { width: 14px; height: 14px; }
+*::-webkit-scrollbar-thumb { background: #c0c0c0; box-shadow: var(--btn-out); border-radius: 0; }
+*::-webkit-scrollbar-track {
+  background-color: #dfdfdf;
+  background-image:
+    linear-gradient(45deg, #ffffff 25%, transparent 25%, transparent 75%, #ffffff 75%),
+    linear-gradient(45deg, #ffffff 25%, transparent 25%, transparent 75%, #ffffff 75%);
+  background-size: 2px 2px;
+  background-position: 0 0, 1px 1px;
+}
 
+/* The 1px dotted focus rectangle, drawn INSIDE the control's bevel. */
 :focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--brand-b) 70%, #fff);
-  outline-offset: 2px;
-  border-radius: 4px;
+  outline: 1px dotted #000000;
+  outline-offset: -4px;
+  border-radius: 0;
 }
 
 /* --- controls base ------------------------------------------------------- */
+/* Every button is a raised grey tile. Pressing swaps the bevel and shoves the label
+   one pixel down-right — the label move IS the press feedback (no transform, no
+   transition: Win98 buttons changed state between one frame and the next). */
 button {
   font: inherit;
   color: var(--text);
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  padding: 10px 14px;
-  cursor: pointer;
+  border: none;
+  border-radius: 0;
+  padding: 5px 12px;
+  cursor: default;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  /* Springy press feel everywhere: transform snaps in, glow eases out. */
-  transition: transform 0.09s ease, border-color 0.18s ease, box-shadow 0.25s ease,
-    background-color 0.18s ease, color 0.18s ease;
+  box-shadow: var(--btn-out);
 }
-button:active { transform: scale(0.94); }
-button:disabled { opacity: 0.38; cursor: default; transform: none; }
-@media (hover: hover) {
-  button:not(:disabled):hover { border-color: rgba(180, 192, 224, 0.32); }
+button:active:not(:disabled) {
+  box-shadow: var(--btn-in);
+  padding: 6px 11px 4px 13px;
+}
+/* Disabled: the classic embossed grey — the label is redrawn in white one pixel
+   down-right, so it reads as pressed into the face rather than merely faded. */
+button:disabled {
+  color: #808080;
+  text-shadow: 1px 1px 0 #ffffff;
+  cursor: default;
 }
 
 .hint { color: var(--muted); font-size: 13px; margin: 0; text-align: center; line-height: 1.5; }
 
-/* Every range input is a dot on a line (the sequencer language). --slider tints it. */
+/* The COMMON CONTROL trackbar: a sunken channel with a raised rectangular slider.
+   --slider used to tint the fill; there is no fill here, so it only survives as the
+   variable other rules still set (harmless — the track is grey regardless). */
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
@@ -133,61 +161,61 @@ input[type="range"] {
   margin: 0;
   min-width: 0;
   background: transparent;
-  cursor: pointer;
+  cursor: default;
 }
 input[type="range"]::-webkit-slider-runnable-track {
-  height: 3px;
-  border-radius: 2px;
-  background: linear-gradient(90deg,
-    color-mix(in srgb, var(--slider, #fff) 55%, transparent),
-    color-mix(in srgb, var(--slider, #fff) 16%, transparent));
+  height: 4px;
+  border-radius: 0;
+  background: #808080;
+  box-shadow: var(--field-in);
 }
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 16px;
-  height: 16px;
-  margin-top: -6.5px;
+  width: 11px;
+  height: 21px;
+  margin-top: -8.5px;
   border: none;
-  border-radius: 50%;
-  background: var(--slider, #fff);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--slider, #fff) 55%, transparent),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.3);
-  transition: transform 0.12s ease;
+  border-radius: 0;
+  background: var(--panel);
+  box-shadow: var(--btn-out);
 }
-input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.25); }
 input[type="range"]::-moz-range-track {
-  height: 3px;
-  border-radius: 2px;
-  background: linear-gradient(90deg,
-    color-mix(in srgb, var(--slider, #fff) 55%, transparent),
-    color-mix(in srgb, var(--slider, #fff) 16%, transparent));
+  height: 4px;
+  border-radius: 0;
+  background: #808080;
+  box-shadow: var(--field-in);
 }
 input[type="range"]::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
+  width: 11px;
+  height: 21px;
   border: none;
-  border-radius: 50%;
-  background: var(--slider, #fff);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--slider, #fff) 55%, transparent),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+  border-radius: 0;
+  background: var(--panel);
+  box-shadow: var(--btn-out);
 }
 
-/* Selects: dark glass fields with a drawn chevron. */
+/* Selects: a white sunken field with a raised drop-down button carrying a black ▼.
+   The button is faked with two background layers — a grey square with its own bevel
+   drawn as gradients, then the arrow on top — since a select has no room for a child. */
 select {
   font: inherit;
   color: var(--text);
-  background-color: var(--panel2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  padding: 8px 30px 8px 10px;
+  background-color: var(--field);
+  border: none;
+  border-radius: 0;
+  padding: 4px 24px 4px 6px;
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2397a0b6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
+  box-shadow: var(--field-in);
+  /* The drop-down button, drawn as one 17px SVG tile (bevel + arrow) pinned right. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='40' viewBox='0 0 17 40' preserveAspectRatio='none'%3E%3Crect width='17' height='40' fill='%23c0c0c0'/%3E%3Cpath d='M0 0h17v1H0zM0 0h1v40H0z' fill='%23dfdfdf'/%3E%3Cpath d='M0 39h17v1H0zM16 0h1v40h-1z' fill='%23808080'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='4' viewBox='0 0 7 4'%3E%3Cpath d='M0 0h7L3.5 4z' fill='%23000'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, no-repeat;
+  background-position: right 2px center, right 7px center;
+  background-size: 17px calc(100% - 4px), 7px 4px;
 }
-select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55%, var(--line)); }
+select:focus { outline: none; }
 
 /* --- top bar ---------------------------------------------------------------- */
 .topbar {
@@ -200,75 +228,63 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   position: sticky;
   top: 0;
   z-index: 5;
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
-  -webkit-backdrop-filter: blur(18px) saturate(1.5);
-  backdrop-filter: blur(18px) saturate(1.5);
-  border-bottom: 1px solid var(--line-soft);
-}
-/* A faint brand hairline under the bar. */
-.topbar::after {
-  content: "";
-  position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(124, 92, 255, 0.35), rgba(0, 255, 200, 0.25), transparent);
-  pointer-events: none;
+  /* The application's own toolbar: a grey strip with a raised bottom edge. */
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 #808080, 0 1px 0 #ffffff;
 }
 
-/* Round, colour-coded control buttons: every toolbar button is a circle with its
-   own hue (a dot in the app's dots-and-lines language). --bc sets the hue. */
+/* Toolbar buttons: square raised tiles. --bc no longer tints the face (a Win98
+   toolbar is grey, always) — it survives as the GLYPH colour, which is what still
+   tells the four buttons apart at a glance. */
 .play-btn, .menu-btn, .loop-view-btn, .mixer-open-btn {
-  width: 42px; height: 42px; padding: 0; flex: none;
+  width: 40px; height: 40px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center;
-  border-radius: 50%;
-  border: 1.5px solid color-mix(in srgb, var(--bc, #fff) 60%, transparent);
+  border-radius: 0;
+  border: none;
   color: var(--bc, var(--text));
-  background: color-mix(in srgb, var(--bc, #fff) 8%, var(--panel));
+  background: var(--panel);
+  box-shadow: var(--btn-out);
 }
-@media (hover: hover) {
-  .play-btn:hover, .menu-btn:hover, .loop-view-btn:hover, .mixer-open-btn:hover {
-    border-color: var(--bc, #fff);
-    box-shadow: 0 0 14px color-mix(in srgb, var(--bc, #fff) 35%, transparent);
-  }
-}
+.play-btn:active, .menu-btn:active,
+.loop-view-btn:active, .mixer-open-btn:active { padding: 1px 0 0 1px; }
 
 /* --- menu --- */
 .menu { position: relative; }
-.menu-btn { --bc: #b197fc; font-size: 18px; line-height: 1; }
+.menu-btn { --bc: #000080; font-size: 18px; line-height: 1; }
+/* A real menu: flat grey, one raised bevel, items highlighted navy on hover. */
 .menu-panel {
   position: absolute;
   right: 0;
-  top: 48px;
+  top: 44px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  background: var(--panel2-glass);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  backdrop-filter: blur(20px) saturate(1.4);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  padding: 6px;
+  gap: 0;
+  background: var(--panel);
+  border: none;
+  border-radius: 0;
+  padding: 2px;
   z-index: 20;
   min-width: 190px;
-  box-shadow: var(--pop-shadow);
+  box-shadow: var(--btn-out), var(--win-shadow);
 }
 .menu-panel.hidden { display: none; }
 .menu-panel button {
   text-align: left; background: transparent; border: none; box-shadow: none;
-  padding: 10px 12px; border-radius: 8px;
+  padding: 5px 10px; border-radius: 0;
 }
-.menu-panel button:active { background: rgba(255, 255, 255, 0.07); }
-@media (hover: hover) { .menu-panel button:not(:disabled):hover { background: rgba(255, 255, 255, 0.06); } }
-
-.transport { display: flex; align-items: center; gap: 10px; }
-.play-btn { --bc: #69db7c; font-size: 15px; }
-/* The BPM button: a pill that opens the numpad. */
-.tempo-btn {
-  height: 42px; padding: 0 16px; border-radius: 21px;
-  font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
-  color: #fff; background: transparent;
-  border: 1.5px solid rgba(255, 255, 255, 0.4);
-}
+.menu-panel button:active:not(:disabled) { background: #000080; color: #ffffff; padding: 5px 10px; }
 @media (hover: hover) {
-  .tempo-btn:hover { border-color: #fff; box-shadow: 0 0 14px rgba(255, 255, 255, 0.18); }
+  .menu-panel button:not(:disabled):hover { background: #000080; color: #ffffff; }
+}
+
+.transport { display: flex; align-items: center; gap: 4px; }
+.play-btn { --bc: #008000; font-size: 15px; }
+/* The BPM button: a raised tile that opens the numpad. */
+.tempo-btn {
+  height: 40px; padding: 0 14px; border-radius: 0;
+  font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--text); background: var(--panel);
+  border: none; box-shadow: var(--btn-out);
 }
 
 /* --- main views -------------------------------------------------------------- */
@@ -282,78 +298,52 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 }
 .viewroot > * { width: min(100%, 740px); flex: none; }
 
-/* Entrance choreography — only when the VIEW changes (app.ts adds .view-enter),
-   so in-place edits re-render without replaying it. */
-.view-enter > * { animation: rise-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
-.view-enter > :nth-child(2) { animation-delay: 40ms; }
-.view-enter > :nth-child(3) { animation-delay: 80ms; }
-.view-enter > :nth-child(4) { animation-delay: 120ms; }
-.view-enter > :nth-child(5) { animation-delay: 160ms; }
-.view-enter > :nth-child(6) { animation-delay: 200ms; }
-.view-enter > :nth-child(n+7) { animation-delay: 240ms; }
-@keyframes rise-in {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: none; }
-}
+/* .view-enter is still set by app.ts on a view change; it simply has nothing to play
+   any more. Windows didn't fade its windows in, and neither do we. */
 
 /* Top-left back-to-track chain icon button. */
-.loop-view-btn { --bc: var(--accent); line-height: 1; }
-.loop-view-btn.on { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+.loop-view-btn { --bc: #000080; line-height: 1; }
+.loop-view-btn.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
 .loop-view-btn svg { display: block; }
 
 /* Track view's top-left control: the track length (scrub/tap to edit) as a compact pill,
    with the loop's total seconds beside it in small muted type. */
 .loop-meta { display: flex; align-items: center; gap: 6px; }
 .loop-meta-bars {
-  width: auto; padding: 5px 9px; border-radius: 14px; text-align: center;
-  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  color: var(--accent); font: inherit; font-size: 12px; font-weight: 700;
+  width: auto; padding: 4px 8px; border-radius: 0; text-align: center;
+  background: var(--field); border: none; box-shadow: var(--field-in);
+  color: var(--text); font: inherit; font-size: 12px; font-weight: 700;
   font-variant-numeric: tabular-nums; cursor: ns-resize; touch-action: none;
 }
 .loop-meta-secs { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* Rings visualizer (the sequencer's canvas, centred) with the Play-range button at its
    top-left and the Mixer button at its top-right, floating on a soft glow. */
-.loop-rings { position: relative; display: flex; justify-content: center; max-width: 232px; margin: 0 auto; }
-.loop-rings::before {
-  content: "";
-  position: absolute; inset: -14%;
-  background: radial-gradient(50% 50% at 50% 50%, rgba(124, 92, 255, 0.12), transparent 70%);
-  pointer-events: none;
+/* The rings sit in a sunken white well — the app's one "canvas document" area. */
+.loop-rings {
+  position: relative; display: flex; justify-content: center;
+  max-width: 232px; margin: 0 auto;
+  background: var(--field); box-shadow: var(--field-in), inset 0 0 0 2px var(--field);
 }
 .loop-rings .mixer-open-btn { position: absolute; top: 0; right: 0; z-index: 2; }
 .loop-rings .playrange-open-btn {
   position: absolute; top: 0; left: 0; z-index: 2;
-  width: 38px; height: 38px; padding: 0; flex: none;
-  display: flex; align-items: center; justify-content: center; border-radius: 50%;
-  color: #22d3ee;
-  border: 1.5px solid color-mix(in srgb, #22d3ee 55%, transparent);
-  background: color-mix(in srgb, #22d3ee 8%, var(--panel));
+  width: 36px; height: 36px; padding: 0; flex: none;
+  display: flex; align-items: center; justify-content: center; border-radius: 0;
+  color: #000080; border: none;
+  background: var(--panel); box-shadow: var(--btn-out);
 }
-.loop-rings .playrange-open-btn.on {
-  border-color: #22d3ee;
-  background: color-mix(in srgb, #22d3ee 20%, var(--panel));
-  box-shadow: 0 0 12px color-mix(in srgb, #22d3ee 45%, transparent);
-}
+.loop-rings .playrange-open-btn.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
 .playrange-open-btn svg { display: block; }
-@media (hover: hover) {
-  .playrange-open-btn:hover { border-color: #22d3ee; box-shadow: 0 0 12px color-mix(in srgb, #22d3ee 35%, transparent); }
-}
 .euclid-canvas { display: inline-block; max-width: 380px; position: relative; }
 
-/* Play-range popup: the drag strip in a centred glass card (kept off the main column). */
+/* Play-range popup: the drag strip in a centred window. */
 .playrange-overlay {
   position: fixed; inset: 0; z-index: 240; padding: 16px;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(5, 7, 12, 0.6);
-  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  animation: fade-in 0.16s ease-out;
+  background: rgba(0, 0, 0, 0.25);
 }
-.playrange-card {
-  width: 100%; max-width: 420px;
-  animation: sheet-up 0.24s cubic-bezier(0.16, 1, 0.3, 1);
-}
+.playrange-card { width: 100%; max-width: 420px; }
 
 /* --- shared view headers ------------------------------------------------------ */
 .mixer-head { display: flex; align-items: center; gap: 12px; }
@@ -366,45 +356,45 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .mixer-title { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
 
 /* --- track view (bar limit + colour overview) --------------------------------- */
+/* A group box: the raised grey panel that holds a row of controls. */
 .track-barlimit {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 12px 14px;
-  background: var(--panel-glass);
-  border: 1px solid var(--line-soft); border-radius: var(--r-md);
-  box-shadow: var(--card-shadow);
-  font-size: 14px; font-weight: 600;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: none; border-radius: 0;
+  box-shadow: var(--btn-out);
+  font-size: 13px; font-weight: 600;
 }
 .track-barlimit input {
-  width: 92px; text-align: center; padding: 9px 6px;
-  background: var(--field); border: 1px solid var(--line); border-radius: var(--r-sm);
-  color: var(--text); font: inherit; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+  width: 92px; text-align: center; padding: 5px 6px;
+  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
+  color: var(--text); font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
   cursor: ns-resize; touch-action: none;
 }
 
 /* Play-range (loop bars n→m): a draggable bar strip inside the .track-barlimit shell. */
 .play-range { flex-direction: column; align-items: stretch; gap: 10px; }
-.play-range.on { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-soft)); }
 .play-range-head { display: flex; align-items: center; gap: 10px; }
 .play-range-lbl { font-weight: 600; }
-.play-range-readout { flex: 1; font-size: 12.5px; font-weight: 600; color: var(--muted); }
-.play-range.on .play-range-readout { color: var(--accent); }
+.play-range-readout { flex: 1; font-size: 12px; font-weight: 600; color: var(--muted); }
+.play-range.on .play-range-readout { color: #000080; }
 .play-range-clear {
-  flex: none; width: 30px; padding: 6px 0; text-align: center; font-size: 13px; font-weight: 700;
-  background: var(--panel2); color: var(--muted); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  flex: none; width: 28px; padding: 4px 0; text-align: center; font-size: 13px; font-weight: 700;
+  background: var(--panel); color: var(--text); border: none; box-shadow: var(--btn-out); border-radius: 0;
 }
-.play-range.on .play-range-clear { color: #ff6b6b; border-color: color-mix(in srgb, #ff6b6b 40%, transparent); }
-.play-range-clear:disabled { opacity: 0.45; }
+.play-range.on .play-range-clear { color: #800000; }
 .play-range-strip {
-  position: relative; display: flex; gap: 2px; height: 24px;
+  position: relative; display: flex; gap: 1px; height: 22px;
+  padding: 2px; background: var(--field); box-shadow: var(--field-in);
   cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none;
 }
-.play-range-cell { flex: 1; min-width: 0; border-radius: 2px; background: rgba(154, 168, 204, 0.09); }
-.play-range-cell.tick { background: rgba(154, 168, 204, 0.2); }
+.play-range-cell { flex: 1; min-width: 0; border-radius: 0; background: #ffffff; box-shadow: inset 0 0 0 1px #dfdfdf; }
+.play-range-cell.tick { background: #dfdfdf; }
 /* Multi-select bar strip (the "At bars" picker): lit cells for the chosen bars. */
 .multi-bar-strip { cursor: pointer; }
 .play-range-cell.sel {
-  background: color-mix(in srgb, var(--vc, var(--accent)) 60%, transparent);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--vc, var(--accent)) 45%, transparent);
+  background: var(--vc, #000080);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
 .atbars-pick { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
 .atbars-pick-hint { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -425,35 +415,23 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .track-color-row {
   --vc: var(--accent);
   display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%;
-  padding: 9px 12px; text-align: left;
+  padding: 8px 10px 8px 12px; text-align: left;
   color: var(--text);
-  background:
-    linear-gradient(120deg, color-mix(in srgb, var(--vc) 9%, transparent), transparent 42%),
-    var(--panel-glass);
-  border: 1px solid var(--line-soft);
-  border-left: 4px solid var(--vc);
-  border-radius: var(--r-md);
-  box-shadow: var(--card-shadow);
+  background: var(--panel);
+  border: none; border-left: 6px solid var(--vc);
+  border-radius: 0;
+  box-shadow: var(--btn-out);
 }
-.track-color-row:active { background-color: var(--panel2); }
-@media (hover: hover) {
-  .track-color-row:hover {
-    transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--vc) 35%, var(--line));
-    border-left-color: var(--vc);
-    box-shadow: var(--card-shadow), 0 6px 22px color-mix(in srgb, var(--vc) 14%, transparent);
-  }
-}
+.track-color-row:active { box-shadow: var(--btn-in); padding: 9px 9px 7px 13px; }
 .track-color-lanes { display: flex; flex-direction: column; gap: 3px; }
 
 /* Overview playback line: sweeps to the playing bar, looping at each wrap. */
 .track-playhead {
   position: absolute; top: 0; bottom: 0; width: 2px; z-index: 5;
   left: calc(18px + var(--ph, 0) * (100% - 32px));
-  background: linear-gradient(to bottom, transparent, #fff 12%, #fff 88%, transparent);
-  box-shadow: 0 0 8px #fff, 0 0 2px #fff;
+  background: #000000;
   pointer-events: none;
-  opacity: 0; transition: opacity 0.15s;
+  opacity: 0;
 }
 .track-playhead.live { opacity: 0.9; }
 /* "Line n / N" badge — which wrapped line is playing. */
@@ -467,26 +445,25 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* Timeline cells (shared by the overview and the colour panel preview). */
 .color-preview {
   --vc: var(--accent);
-  display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 10px;
+  display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 8px;
   background: var(--field);
-  border: 1px solid var(--line-soft); border-radius: var(--r-md);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+  border: none; border-radius: 0;
+  box-shadow: var(--field-in);
 }
 .track-color-row .color-preview,
 .track-color-row .track-color-lanes { margin-top: 0; }
 .track-overview .color-preview-lane,
 .color-preview-lane { display: flex; gap: 2px; }
 .color-preview-cell {
-  flex: 1; height: 13px; border-radius: 3px;
-  background: rgba(154, 168, 204, 0.08);
+  flex: 1; height: 13px; border-radius: 0;
+  background: #ffffff; box-shadow: inset 0 0 0 1px #dfdfdf;
   display: flex; align-items: center; justify-content: center;
-  font-size: 9px; font-weight: 700; line-height: 1; color: var(--bg);
+  font-size: 9px; font-weight: 700; line-height: 1; color: #ffffff;
   font-variant-numeric: tabular-nums; overflow: hidden;
 }
 .color-preview-cell.on {
   background: var(--vc);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--vc) 65%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 .color-preview-cell.pad { visibility: hidden; }
 /* The overview lanes sit inside the row cards, so no extra well around them. */
@@ -497,21 +474,10 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .loop-row {
   --vc: var(--accent);
   display: flex; align-items: stretch; gap: 8px;
-  background:
-    linear-gradient(120deg, color-mix(in srgb, var(--vc) 8%, transparent), transparent 45%),
-    var(--panel-glass);
-  border: 1px solid var(--line-soft);
-  border-left: 4px solid var(--vc);
-  border-radius: var(--r-md); overflow: hidden;
-  box-shadow: var(--card-shadow);
-  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
-}
-@media (hover: hover) {
-  .loop-row:hover {
-    transform: translateY(-1px);
-    border-color: color-mix(in srgb, var(--vc) 35%, var(--line));
-    border-left-color: var(--vc);
-  }
+  background: var(--panel);
+  border: none; border-left: 6px solid var(--vc);
+  border-radius: 0; overflow: hidden;
+  box-shadow: var(--btn-out);
 }
 /* A loop-list card stacks: the strip, then its Sound / Loop / Transitions tabs. The plain
    .loop-row stays a horizontal strip — the transition list reuses it as one. */
@@ -520,19 +486,19 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* The tabs read as a foot to the card, not as three buttons floating on it: flat, full
    width, divided by hairlines off the card's own tint. */
 .loop-nav {
-  gap: 0; flex-wrap: nowrap;
-  border-top: 1px solid var(--line-soft);
-  background: color-mix(in srgb, var(--vc) 5%, transparent);
+  gap: 2px; flex-wrap: nowrap;
+  padding: 2px 2px 0;
+  box-shadow: inset 0 1px 0 #808080;
 }
 .loop-nav .seg-btn {
   flex: 1 1 0; min-width: 0; text-align: center;
-  padding: 9px 6px; font-size: 12.5px;
-  background: transparent; border: none; border-radius: 0; box-shadow: none;
+  padding: 6px 6px; font-size: 12px;
+  background: var(--panel); color: var(--text);
+  border: none; border-radius: 0; box-shadow: var(--btn-out);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.loop-nav .seg-btn + .seg-btn { border-left: 1px solid var(--line-soft); }
-.loop-nav .seg-btn:active { background: color-mix(in srgb, var(--vc) 14%, transparent); color: var(--vc); }
-@media (hover: hover) { .loop-nav .seg-btn:hover { color: var(--vc); } }
+.loop-nav .seg-btn.on { box-shadow: var(--btn-in); font-weight: 700; }
+.loop-nav .seg-btn:active { padding: 7px 5px 5px 7px; }
 
 .loop-order { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding-left: 6px; }
 .loop-move {
@@ -546,55 +512,33 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 12px 8px;
   text-align: left; background: transparent; border: none; box-shadow: none; color: var(--text);
 }
-.loop-name { font-size: 14px; font-weight: 700; color: var(--vc); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.loop-name { font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .loop-summary { font-size: 12px; color: var(--muted); }
 .loop-remove {
   width: 40px; flex: none; background: transparent; border: none; box-shadow: none;
-  border-left: 1px solid var(--line-soft); border-radius: 0; color: var(--muted); font-size: 20px;
+  border-left: 1px solid #808080; border-radius: 0; color: var(--text); font-size: 18px;
 }
-.loop-remove:active { color: #ff453a; background: rgba(255, 69, 58, 0.08); }
-@media (hover: hover) { .loop-remove:hover { color: #ff6b6b; } }
-.loop-body.hit-flash { animation: mix-flash 0.4s ease-out; }
+.loop-remove:active { color: #800000; }
 
 .loop-add {
-  width: 100%; margin-top: 12px; padding: 13px;
-  background: color-mix(in srgb, var(--accent) 4%, transparent);
-  border: 1.5px dashed color-mix(in srgb, var(--accent) 45%, var(--line));
-  border-radius: var(--r-md); color: var(--accent); font-size: 14px; font-weight: 600;
+  width: 100%; margin-top: 12px; padding: 8px;
+  background: var(--panel); box-shadow: var(--btn-out);
+  border: none; border-radius: 0; color: var(--text); font-size: 13px; font-weight: 600;
 }
-.loop-add:active { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-@media (hover: hover) {
-  .loop-add:hover {
-    background: color-mix(in srgb, var(--accent) 9%, transparent);
-    border-color: var(--accent);
-    box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 18%, transparent);
-  }
-}
+.loop-add:active { box-shadow: var(--btn-in); padding: 9px 7px 7px 9px; }
 
-/* "Copy to another row" — a loop-add button tinted to the loop's own colour. */
-.copy-loop-btn {
-  margin-top: 4px;
-  background: color-mix(in srgb, var(--vc) 5%, transparent);
-  border-color: color-mix(in srgb, var(--vc) 45%, var(--line)); color: var(--vc);
-}
-.copy-loop-btn:active { background: color-mix(in srgb, var(--vc) 12%, transparent); }
-@media (hover: hover) {
-  .copy-loop-btn:hover {
-    background: color-mix(in srgb, var(--vc) 10%, transparent);
-    border-color: var(--vc); box-shadow: 0 0 18px color-mix(in srgb, var(--vc) 18%, transparent);
-  }
-}
+/* "Copy to another row" — the same button, one step down the visual hierarchy. */
+.copy-loop-btn { margin-top: 4px; font-weight: 400; }
 
 /* Loop-tab action row: three small buttons (Options / Accents / Copy) under the grid. */
 .loop-actions { display: flex; gap: 8px; margin-top: 12px; }
 .loop-action-btn {
-  flex: 1 1 0; min-width: 0; padding: 10px 6px; font-size: 12.5px; font-weight: 600;
-  background: var(--panel2); color: var(--text);
-  border: 1px solid var(--line); border-radius: var(--r-sm);
+  flex: 1 1 0; min-width: 0; padding: 7px 6px; font-size: 12px; font-weight: 600;
+  background: var(--panel); color: var(--text);
+  border: none; border-radius: 0; box-shadow: var(--btn-out);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.loop-action-btn:active { background: color-mix(in srgb, var(--vc) 12%, var(--panel2)); border-color: var(--vc); color: var(--vc); }
-@media (hover: hover) { .loop-action-btn:hover { border-color: color-mix(in srgb, var(--vc) 55%, var(--line)); } }
+.loop-action-btn:active { box-shadow: var(--btn-in); padding: 8px 5px 6px 7px; }
 
 /* Loop-tab sub-panel back header (⚙ Options / Accents). */
 .loop-sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
@@ -607,108 +551,125 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* Row-count stepper: − N rows + (how much of the arrangement the grid shows). */
 .place-grid-rowctl { display: flex; align-items: center; gap: 6px; }
 .place-grid-rowbtn {
-  flex: none; width: 28px; padding: 5px 0; text-align: center; font-size: 14px; font-weight: 700;
-  background: var(--panel2); color: var(--muted); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  flex: none; width: 26px; padding: 4px 0; text-align: center; font-size: 14px; font-weight: 700;
+  background: var(--panel); color: var(--text); border: none; box-shadow: var(--btn-out); border-radius: 0;
 }
-.place-grid-rowbtn:disabled { opacity: 0.45; }
 .place-grid-rowsn {
   font-size: 11.5px; font-weight: 600; color: var(--muted);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
+/* The grid is a white document well; each cell is a flat square outlined in silver,
+   so the whole thing reads as graph paper rather than as a strip of lights. */
 .place-grid {
-  display: grid; grid-template-columns: repeat(var(--cols, 8), 1fr); gap: 4px;
-  padding: 8px; background: var(--field); border: 1px solid var(--line-soft); border-radius: var(--r-md);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+  display: grid; grid-template-columns: repeat(var(--cols, 8), 1fr); gap: 2px;
+  padding: 4px; background: var(--field); border: none; border-radius: 0;
+  box-shadow: var(--field-in);
   touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer;
 }
 .place-cell {
-  aspect-ratio: 1 / 1; min-width: 0; border-radius: 4px;
-  background: rgba(154, 168, 204, 0.10);
+  aspect-ratio: 1 / 1; min-width: 0; border-radius: 0;
+  background: #ffffff; box-shadow: inset 0 0 0 1px #dfdfdf;
 }
-/* Every 4-bar phrase quarter a touch brighter; the first column brighter still. */
-.place-cell.beat { background: rgba(154, 168, 204, 0.17); }
-.place-cell.rowstart { box-shadow: inset 2px 0 0 rgba(154, 168, 204, 0.4); }
-/* A square covered by ANOTHER loop of this colour (a clash hint): faint diagonal stripe. */
+/* Every 4-bar phrase quarter a shade darker; the first column gets a hard rule. */
+.place-cell.beat { background: #efefef; }
+.place-cell.rowstart { box-shadow: inset 0 0 0 1px #dfdfdf, inset 2px 0 0 #808080; }
+/* A square covered by ANOTHER loop of this colour (a clash hint): the 50% dither. */
 .place-cell.occ {
-  background:
-    repeating-linear-gradient(45deg, rgba(255,255,255,0.16) 0 2px, transparent 2px 5px),
-    rgba(154, 168, 204, 0.10);
+  background-color: #ffffff;
+  background-image: repeating-linear-gradient(45deg, #a0a0a0 0 1px, transparent 1px 4px);
 }
-/* Squares past the track length: dimmed (painting into them grows the track). */
-.place-cell.out { opacity: 0.32; }
-/* This loop's chosen squares, lit in its colour. */
+/* Squares past the track length: greyed (painting into them grows the track). */
+.place-cell.out { background-color: #dfdfdf; opacity: 0.6; }
+/* This loop's chosen squares, filled in its colour. */
 .place-cell.sel {
   background: var(--vc);
-  box-shadow: 0 0 7px color-mix(in srgb, var(--vc) 55%, transparent), inset 0 0 0 1px rgba(255,255,255,0.25);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
   opacity: 1;
 }
-/* Only one of the square's 2 bars is placed: lit on that half only. */
-.place-cell.sel.half-l { background: linear-gradient(90deg, var(--vc) 0 50%, rgba(154, 168, 204, 0.10) 50% 100%); }
-.place-cell.sel.half-r { background: linear-gradient(90deg, rgba(154, 168, 204, 0.10) 0 50%, var(--vc) 50% 100%); }
+/* Only one of the square's 2 bars is placed: filled on that half only. */
+.place-cell.sel.half-l { background: linear-gradient(90deg, var(--vc) 0 50%, #ffffff 50% 100%); }
+.place-cell.sel.half-r { background: linear-gradient(90deg, #ffffff 0 50%, var(--vc) 50% 100%); }
 
 /* Copy-to-row picker: a compact modal over the loop popup. */
 .copy-menu-overlay {
   position: fixed; inset: 0; z-index: 240; padding: 16px;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(5, 7, 12, 0.6);
-  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  animation: fade-in 0.16s ease-out;
+  background: rgba(0, 0, 0, 0.25);
 }
 .copy-menu-card {
-  width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 8px; padding: 16px;
-  background: var(--panel2-glass);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4); backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--pop-shadow);
-  animation: sheet-up 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+  width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 6px; padding: 12px;
+  background: var(--panel);
+  border: none; border-radius: 0; box-shadow: var(--btn-out), var(--win-shadow);
 }
 .copy-menu-row {
-  display: flex; align-items: center; gap: 10px; padding: 12px 12px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 11px;
-  color: var(--text); font-size: 14px; font-weight: 600; text-align: left;
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  background: var(--panel); border: none; border-radius: 0; box-shadow: var(--btn-out);
+  color: var(--text); font-size: 13px; font-weight: 600; text-align: left;
 }
 .copy-menu-dot {
-  flex: none; width: 12px; height: 12px; border-radius: 50%;
-  background: var(--vc); box-shadow: 0 0 8px color-mix(in srgb, var(--vc) 70%, transparent);
+  flex: none; width: 12px; height: 12px; border-radius: 0;
+  background: var(--vc); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
 }
 .copy-menu-name { flex: 1; }
 .copy-menu-count { font-size: 12px; font-weight: 600; color: var(--muted); }
-.copy-menu-row:active { border-color: var(--vc); background: color-mix(in srgb, var(--vc) 12%, var(--panel2)); }
-@media (hover: hover) {
-  .copy-menu-row:hover { border-color: var(--vc); background: color-mix(in srgb, var(--vc) 10%, var(--panel2)); }
-}
-.copy-menu-card .tr-cancel { margin-top: 2px; padding: 11px; border-radius: 11px; }
+.copy-menu-row:active { box-shadow: var(--btn-in); padding: 9px 9px 7px 11px; }
+.copy-menu-card .tr-cancel { margin-top: 2px; padding: 6px; }
 
 /* --- sheets (placement popup / melody note popup) ------------------------------- */
 /* A modal glass card over the whole app. The card margin:auto-centres when it fits
    and pins to the (safe-area-padded) top when taller than the screen. */
 .voice-sheet-overlay {
   position: fixed; inset: 0; z-index: 200;
-  background: rgba(5, 7, 12, 0.6);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
+  background: rgba(0, 0, 0, 0.25);
   display: flex; align-items: flex-start; justify-content: center;
   padding: calc(12px + env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom));
 }
 .voice-sheet {
   width: 100%; max-width: 560px; margin: auto;
   max-height: 100%; overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 12px; padding: 16px;
-  background: var(--panel-glass);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  box-shadow: var(--pop-shadow);
+  display: flex; flex-direction: column; gap: 10px; padding: 12px;
+  background: var(--panel);
+  border: none;
+  border-radius: 0;
+  box-shadow: var(--btn-out), var(--win-shadow);
 }
-/* Entrance only on a FRESH open (app.ts adds .sheet-enter) — in-place rebuilds
-   after each edit stay still. */
-.sheet-enter { animation: fade-in 0.2s ease-out; }
-.sheet-enter .voice-sheet { animation: sheet-up 0.34s cubic-bezier(0.16, 1, 0.3, 1); }
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes sheet-up {
-  from { opacity: 0; transform: translateY(22px) scale(0.98); }
-  to { opacity: 1; transform: none; }
+/* .sheet-enter is still applied on a fresh open; it has nothing to play any more. */
+
+/* ================= the title bar =================================================
+   The one piece of colour left in the chrome. Every modal card wears it: an 18px
+   navy→blue strip with white bold text and a raised ✕ box on the right. .win-title
+   is added in TS to the head elements the cards already had, so one rule dresses
+   the voice sheet, the numpad, the draw card, the help panel and the copy menu.
+   The negative margins cancel the card's own padding so the bar reaches the frame. */
+.win-title {
+  display: flex; align-items: center; gap: 6px;
+  /* -9px = the card's 12px padding minus the 3px frame the bevel wants left showing. */
+  margin: -9px -9px 2px; padding: 3px 3px 3px 5px; min-height: 22px;
+  background: linear-gradient(90deg, #000080, #1084d0);
+  color: #ffffff; font-size: 12px; font-weight: 700;
+  flex: none; position: sticky; top: -9px; z-index: 3;
 }
+/* Every text child of a title bar goes white, whatever colour it asked for. */
+.win-title .voice-sheet-title,
+.win-title .help-title,
+.win-title .numpad-title,
+.win-title .tr-title,
+.win-title .crumb-current,
+.win-title .transition-head { color: #ffffff; text-transform: none; letter-spacing: 0; }
+.win-title .crumb-seg { color: #c8d8f0; }
+/* Buttons living in the bar (✕, the dice, breadcrumb segments) stay flat until the
+   ✕, which is a proper little raised box. */
+.win-title button { background: transparent; box-shadow: none; color: #ffffff; padding: 2px 4px; }
+.win-title .help-close,
+.win-title .tr-cancel {
+  flex: none; width: 18px; height: 16px; min-width: 18px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; line-height: 1;
+  color: #000000; background: var(--panel); box-shadow: var(--btn-out);
+}
+.win-title .help-close:active,
+.win-title .tr-cancel:active { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
+
 .voice-sheet-head { display: flex; align-items: center; gap: 10px; }
 /* Nested-folder breadcrumb shown while a transition editor is open: Loops › name › Transition N. */
 .sheet-crumb {
@@ -736,8 +697,8 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   flex: none; background: transparent; border: none; box-shadow: none; padding: 4px 6px;
   font-size: 16px; line-height: 1; cursor: pointer; opacity: 0.6;
 }
-.voice-name-dice:active { transform: scale(0.9); }
-@media (hover: hover) { .voice-name-dice:hover { opacity: 1; border-color: transparent; } }
+.voice-name-dice:active { opacity: 1; }
+@media (hover: hover) { .voice-name-dice:hover { opacity: 1; } }
 /* Sound-description subtitle under a coined voice name. */
 .voice-sheet-sub {
   margin: -2px 0 8px; font-size: 11.5px; color: var(--muted);
@@ -746,19 +707,16 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 
 /* Transition editor tab nav (Bars / Curve / Sound / Speed): a segmented glass control. */
 .placement-nav {
-  justify-content: stretch; gap: 4px; margin: -4px 0 -2px;
-  background: var(--field); border: 1px solid var(--line-soft);
-  border-radius: 10px; padding: 3px;
+  justify-content: stretch; gap: 2px; margin: -2px 0;
+  background: transparent; border: none;
+  border-radius: 0; padding: 0;
+  box-shadow: inset 0 -1px 0 #808080;
 }
 .placement-nav .seg-btn {
-  flex: 1 1 0; text-align: center; padding: 5px 8px; font-size: 12.5px;
-  background: transparent; border-color: transparent; box-shadow: none;
+  flex: 1 1 0; text-align: center; padding: 5px 8px; font-size: 12px;
+  background: var(--panel); box-shadow: var(--btn-out);
 }
-.placement-nav .seg-btn.on {
-  background: color-mix(in srgb, var(--vc) 16%, var(--panel2));
-  border-color: color-mix(in srgb, var(--vc) 40%, transparent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--vc) 22%, transparent);
-}
+.placement-nav .seg-btn.on { box-shadow: var(--btn-in); }
 
 /* Rule editor rows. */
 .placement-sheet { --vc: var(--accent); }
@@ -766,28 +724,27 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .placement-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .placement-lbl { font-size: 13px; color: var(--muted); flex: none; }
 .placement-row input {
-  width: 78px; text-align: center; padding: 9px 6px;
-  background: var(--field); border: 1px solid var(--line); border-radius: var(--r-sm);
-  color: var(--text); font: inherit; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+  width: 78px; text-align: center; padding: 5px 6px;
+  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
+  color: var(--text); font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
   cursor: ns-resize; touch-action: none;
 }
-.placement-seg { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.placement-seg { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+/* THE universal toggle/tab: raised when off, pressed (and bold) when on. Every
+   segmented control in the app is built from it, so this pair carries most of the
+   app's state-at-a-glance on its own. */
 .seg-btn {
-  padding: 8px 11px; font-size: 12px; font-weight: 600;
-  background: var(--panel2); color: var(--muted); border: 1px solid var(--line); border-radius: 9px;
+  padding: 5px 10px; font-size: 12px; font-weight: 400;
+  background: var(--panel); color: var(--text);
+  border: none; border-radius: 0; box-shadow: var(--btn-out);
 }
-.seg-btn.on {
-  border-color: var(--vc); color: var(--vc);
-  background: color-mix(in srgb, var(--vc) 12%, var(--panel2));
-  box-shadow: inset 0 0 0 1px var(--vc), 0 0 10px color-mix(in srgb, var(--vc) 20%, transparent);
-}
+.seg-btn.on { box-shadow: var(--btn-in); font-weight: 700; }
+.seg-btn:active:not(:disabled) { box-shadow: var(--btn-in); padding: 6px 9px 4px 11px; }
 .placement-roll { justify-content: flex-end; gap: 8px; }
 .roll-btn {
-  padding: 8px 14px; font-size: 13px; font-weight: 600;
-  background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 5px 12px; font-size: 13px; font-weight: 400;
+  background: var(--panel); color: var(--text); border: none; border-radius: 0; box-shadow: var(--btn-out);
 }
-.roll-btn:disabled { opacity: 0.35; }
-.roll-btn:active:not(:disabled) { background: var(--panel); border-color: var(--vc); color: var(--vc); }
 .placement-hint { text-align: left; margin: 2px 0 0; }
 
 /* Manual "At bars" list field. */
@@ -799,21 +756,22 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* Dice-face weight picker: six faces, the active one lit in the voice colour. */
 .dice-faces { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .dice-face {
-  width: 40px; height: 40px; padding: 0; font-size: 26px; line-height: 1;
+  width: 38px; height: 38px; padding: 0; font-size: 24px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
-  color: var(--muted); background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text); background: var(--panel); border: none; border-radius: 0;
+  box-shadow: var(--btn-out);
 }
-.dice-face.on {
-  color: var(--vc); border-color: var(--vc);
-  background: color-mix(in srgb, var(--vc) 12%, var(--panel2));
-  box-shadow: inset 0 0 0 1px var(--vc), 0 0 12px color-mix(in srgb, var(--vc) 25%, transparent);
-}
+.dice-face.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
 
-/* Transitions / Accents & Ghosts sections. */
-.transition-controls { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+/* Transitions / Accents & Ghosts sections — separated by the classic engraved rule
+   (a dark hairline with a white one under it). */
+.transition-controls {
+  margin-top: 6px; padding-top: 12px;
+  border-top: 1px solid #808080; box-shadow: inset 0 1px 0 #ffffff;
+}
 .transition-head {
-  font-weight: 700; color: var(--text); text-transform: uppercase;
-  letter-spacing: 0.07em; font-size: 11px;
+  font-weight: 700; color: var(--text); text-transform: none;
+  letter-spacing: 0; font-size: 12px;
 }
 .fade-row { align-items: flex-start; }
 .fade-controls { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; flex: 1 1 auto; min-width: 0; }
@@ -828,52 +786,50 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* Transition curve visualization: the blend function's path over a quarter grid +
    start/end value labels. Bigger than the old strip — a proper little graph. */
 .curve-viz-box {
-  width: 100%; margin-top: 2px; padding: 8px;
-  background: var(--field); border: 1px solid var(--line-soft); border-radius: 9px;
+  width: 100%; margin-top: 2px; padding: 6px;
+  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
 }
 .curve-viz { display: block; width: 100%; height: auto; }
 .curve-viz-line {
   fill: none; stroke: var(--vc); stroke-width: 2;
-  stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--vc) 65%, transparent));
+  stroke-linecap: butt; stroke-linejoin: miter; vector-effect: non-scaling-stroke;
 }
 .curve-viz-grid {
-  stroke: var(--line-soft); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.55;
+  stroke: #c0c0c0; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 1;
 }
-.curve-viz-grid.edge { opacity: 1; }
+.curve-viz-grid.edge { stroke: #808080; }
 .curve-viz-lbl { fill: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* Freehand function drawing screen (the transition Graph tab's ✏ Draw). */
 .draw-overlay {
   position: fixed; inset: 0; z-index: 240; padding: 16px;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(5, 7, 12, 0.65);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  animation: fade-in 0.16s ease-out;
+  background: rgba(0, 0, 0, 0.25);
 }
 .draw-card {
   --vc: var(--accent);
   width: 100%; max-width: 560px; max-height: 92vh; overflow: auto;
-  display: flex; flex-direction: column; gap: 10px; padding: 16px;
-  background: var(--panel2-glass);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid var(--line); border-radius: var(--r-lg);
-  box-shadow: var(--pop-shadow);
-  animation: sheet-up 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex; flex-direction: column; gap: 10px; padding: 12px;
+  background: var(--panel);
+  border: none; border-radius: 0;
+  box-shadow: var(--btn-out), var(--win-shadow);
 }
 .draw-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.draw-head .seg-btn { flex: none; padding: 8px 12px; }
+.draw-head .seg-btn { flex: none; padding: 5px 10px; }
+/* Inside the title bar the head's own buttons must not be full-height tiles. */
+.draw-head.win-title .seg-btn {
+  padding: 1px 6px; font-size: 11px;
+  background: var(--panel); color: #000000; box-shadow: var(--btn-out);
+}
 .draw-canvas {
   width: 100%; aspect-ratio: 4 / 3; display: block;
-  background: var(--field); border: 1px solid var(--line-soft); border-radius: 9px;
+  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
   touch-action: none; cursor: crosshair;
 }
 /* The Simplify stage: how many ranked control points the curve keeps. Transient — the count
    is never stored, so it reads as a tool on the drawing rather than a value of the sound. */
 .draw-simplify { display: flex; align-items: center; gap: 10px; margin: 10px 0 2px; }
-.draw-simplify-lbl { font-size: 0.82rem; color: #97a0b6; font-weight: 600; min-width: 5.5em; }
+.draw-simplify-lbl { font-size: 0.82rem; color: var(--muted); font-weight: 600; min-width: 5.5em; }
 .draw-simplify input[type="range"] { flex: 1 1 0; --slider: var(--vc); }
 .draw-simplify input[type="range"]:disabled { opacity: 0.4; }
 /* The path editor has no slider in that row — just how many points are on the line. */
@@ -891,23 +847,23 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .euclid-vals { flex: 0 0 auto; display: flex; gap: 8px; position: relative; }
 .euclid-vals::before {
   content: ""; position: absolute; left: 23px; right: 23px; bottom: 22px;
-  height: 2px; border-radius: 1px;
-  background: linear-gradient(90deg, transparent, var(--vc, var(--line)), transparent);
-  opacity: 0.6;
+  height: 1px; border-radius: 0;
+  background: #808080;
 }
 .euclid-num {
   flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; align-items: center;
   font-size: 10px; color: var(--muted); position: relative; z-index: 1;
 }
-/* Big, tappable number circles (tap = numpad, drag = scrub). Opaque background so
-   the connecting line passes behind, not through. */
+/* Big, tappable number FIELDS (tap = numpad, drag = scrub). Square white wells now —
+   the circles were the one place the old skin's dots-and-lines language showed up in
+   a text input, and a sunken field is what Win98 would have put here. Opaque so the
+   connecting line passes behind, not through. */
 .euclid-num input {
-  width: 46px; height: 46px; box-sizing: border-box; text-align: center;
-  font: inherit; font-size: 17px; font-weight: 600;
-  color: var(--vc, var(--text)); background: var(--field);
-  border: 1.5px solid color-mix(in srgb, var(--vc, #fff) 65%, transparent);
-  border-radius: 50%; padding: 0;
-  box-shadow: 0 0 12px color-mix(in srgb, var(--vc, #000) 14%, transparent);
+  width: 46px; height: 44px; box-sizing: border-box; text-align: center;
+  font: inherit; font-size: 17px; font-weight: 700;
+  color: var(--text); background: var(--field);
+  border: none; border-radius: 0; padding: 0;
+  box-shadow: var(--field-in);
   -moz-appearance: textfield; appearance: textfield;
   cursor: ns-resize; touch-action: none;
 }
@@ -920,57 +876,50 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   /* Above the voice sheet (z-index 200) so a tapped value circle's pad shows on top. */
   position: fixed; inset: 0; z-index: 210; padding: 16px;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(5, 7, 12, 0.6);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  animation: fade-in 0.16s ease-out;
+  background: rgba(0, 0, 0, 0.25);
 }
 .numpad {
   --vc: var(--accent);
   width: 100%; max-width: 270px;
-  display: flex; flex-direction: column; gap: 12px; padding: 16px;
-  background: var(--panel2-glass);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid var(--line); border-radius: var(--r-lg);
-  box-shadow: var(--pop-shadow);
-  animation: sheet-up 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  background: var(--panel);
+  border: none; border-radius: 0;
+  box-shadow: var(--btn-out), var(--win-shadow);
 }
 .numpad-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .numpad-title {
-  font-size: 12px; font-weight: 700; color: var(--vc);
-  text-transform: uppercase; letter-spacing: 0.07em;
+  font-size: 12px; font-weight: 700; color: var(--text);
+  text-transform: none; letter-spacing: 0;
 }
 .numpad-hint { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The calculator readout: a sunken white field, right-aligned like every Windows
+   numeric display of the era. */
 .numpad-display {
-  height: 56px; display: flex; align-items: center; justify-content: center;
-  font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text);
+  height: 44px; display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 8px;
+  font-size: 26px; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--text);
   background: var(--field);
-  border: 1.5px solid color-mix(in srgb, var(--vc) 60%, transparent);
-  border-radius: 12px;
-  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.4), 0 0 16px color-mix(in srgb, var(--vc) 12%, transparent);
-  text-shadow: 0 0 14px color-mix(in srgb, var(--vc) 40%, transparent);
+  border: none; border-radius: 0;
+  box-shadow: var(--field-in);
 }
-.numpad-display.empty { color: var(--muted); text-shadow: none; } /* old value as placeholder */
+.numpad-display.empty { color: #808080; } /* old value as placeholder */
 /* A comma list can be long — let it wrap and shrink instead of overflowing. */
 .numpad-display.list { font-size: 20px; line-height: 1.2; padding: 0 10px; text-align: center; word-break: break-word; }
-.numpad-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.numpad-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .numpad-key {
-  height: 52px; padding: 0; font-size: 20px; font-weight: 600;
+  height: 44px; padding: 0; font-size: 18px; font-weight: 700;
   display: flex; align-items: center; justify-content: center;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel); border: none; border-radius: 0; box-shadow: var(--btn-out);
 }
-.numpad-key:active { background: var(--panel2); transform: translateY(1px) scale(0.97); }
-@media (hover: hover) { .numpad-key:hover { background: var(--panel2); } }
-.numpad-key.back { color: var(--muted); font-size: 22px; }
-.numpad-key.clear { color: var(--muted); font-weight: 800; }
-.numpad-key.comma { font-size: 24px; font-weight: 800; }
-.numpad-key.sign, .numpad-key.frac { color: var(--muted); font-size: 22px; font-weight: 800; }
-.numpad-key.enter {
-  color: #0b0d12; border: none; font-weight: 800;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--vc) 80%, #fff), var(--vc));
-  box-shadow: 0 4px 16px color-mix(in srgb, var(--vc) 35%, transparent);
-}
+.numpad-key:active { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
+.numpad-key.back { font-size: 20px; }
+.numpad-key.clear { color: #800000; }
+.numpad-key.comma { font-size: 22px; }
+.numpad-key.sign, .numpad-key.frac { font-size: 20px; }
+/* The default button: same grey tile, ringed in black the way Windows marked the
+   one Enter would press. */
+.numpad-key.enter { box-shadow: var(--btn-out), inset 0 0 0 1px #000000; }
+.numpad-key.enter:active { box-shadow: var(--btn-in), inset 0 0 0 1px #000000; }
 .numpad-key.wide2 { grid-column: span 2; }
 .numpad-key.wide3 { grid-column: span 3; }
 .melody-field.grow { flex: 1 1 90px; }
@@ -980,35 +929,19 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .stepper.compact { gap: 6px; }
 .stepper.compact .stepper-val { min-width: 34px; }
 .melody-genbtns .seg-btn { flex: 1 1 0; }
-.melody-gen-btn.seg-btn { color: var(--vc); border-color: var(--vc); }
-.melody-branch-toggle.on {
-  color: var(--vc); border-color: var(--vc);
-  background: color-mix(in srgb, var(--vc) 12%, var(--panel2));
-  box-shadow: inset 0 0 0 1px var(--vc);
-}
+.melody-branch-toggle.on { box-shadow: var(--btn-in); }
 
-/* Sound-params nav buttons (Loop options / Instrument sound): solid nav pills. */
-.melody-inst-btn {
-  border-style: solid; border-color: color-mix(in srgb, var(--vc) 55%, transparent);
-  color: var(--vc); font-weight: 600; text-align: center;
-}
-@media (hover: hover) {
-  .melody-sq:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px color-mix(in srgb, var(--nc) 24%, transparent);
-    border-color: var(--nc);
-  }
-}
+/* Sound-params nav buttons (Loop options / Instrument sound): solid nav tiles. */
+.melody-inst-btn { font-weight: 600; text-align: center; }
 /* Branch tile (B1, B2…): filled in the melody colour — a "go deeper" chip. */
 .melody-sq.branch {
-  color: #0b0d12;
-  background: linear-gradient(160deg, color-mix(in srgb, var(--vc) 85%, #fff), var(--vc));
-  border-color: var(--vc);
-  box-shadow: 0 3px 14px color-mix(in srgb, var(--vc) 35%, transparent);
+  color: #ffffff;
+  background: var(--vc);
+  box-shadow: var(--btn-out);
 }
 .melody-sq.branch::before { display: none; } /* no pitch stripe — it's a branch, not a note */
-.melody-sq.branch .melody-sq-letter { color: #0b0d12; }
-.melody-sq.branch .melody-sq-weight { color: rgba(0, 0, 0, 0.6); }
+.melody-sq.branch .melody-sq-letter { color: #ffffff; }
+.melody-sq.branch .melody-sq-weight { color: rgba(255, 255, 255, 0.75); }
 .melody-note-head .placement-row { flex: 1 1 auto; }
 .melody-note .placement-row input { max-width: 150px; }
 .melody-branch-open.on { border-color: var(--vc); color: var(--vc); }
@@ -1016,26 +949,21 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* Small × remove circle (notes, loops-in-cards). */
 .loop-remove.melody-branch-del,
 .melody-note .loop-remove {
-  width: 26px; height: 26px; padding: 0; flex: 0 0 auto;
+  width: 22px; height: 20px; padding: 0; flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center;
-  font-size: 14px; line-height: 1; color: #ff6b6b;
+  font-size: 13px; line-height: 1; color: #000000;
   background: var(--panel);
-  border: 1.5px solid color-mix(in srgb, #ff6b6b 45%, var(--panel));
-  border-radius: 50%;
+  border: none; border-left: none; border-radius: 0;
+  box-shadow: var(--btn-out);
 }
-.melody-crumb.here { color: var(--vc); border-color: var(--vc); }
-.tr-title { margin: 0; font-size: 16px; font-weight: 700; }
-.tr-cancel { flex: none; background: var(--panel); color: var(--muted); }
+.melody-crumb.here { box-shadow: var(--btn-in); }
+.tr-title { margin: 0; font-size: 13px; font-weight: 700; }
+.tr-cancel { flex: none; background: var(--panel); color: var(--text); }
 .melody-tree-link.dim { opacity: 0.35; }
 .melody-tree-node.dim { opacity: 0.5; }
 .melody-tree-node.dim .nd-body { filter: none; }
 @media (hover: hover) { .melody-tree-node:hover .nd-body { stroke-width: 3; } }
 .melody-tree-lbl.small { font-size: 9.5px; }
-@keyframes melody-clk-pulse {
-  0% { transform: scale(1); opacity: 0.5; }
-  70%, 100% { transform: scale(1.9); opacity: 0; }
-}
-@media (prefers-reduced-motion: reduce) { .melody-tree-clock .clk-pulse { animation: none; } }
 @media (hover: hover) { .melody-tree-clock:hover .clk-body { stroke-width: 3; } }
 @media (hover: hover) {
   .melody-tree-add:hover { opacity: 1; }
@@ -1043,66 +971,46 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 }
 
 /* --- melody headphone-solo (audition one melody alone) ------------------------- */
-.melody-solo-btn.on {
-  background: linear-gradient(160deg, #ffe14d, var(--accent)); color: #141826; border-color: transparent;
-  box-shadow: 0 0 12px rgba(255, 214, 10, 0.5);
-}
-.sing-rec.armed {
-  color: #ff8896; border-color: rgba(255, 90, 110, 0.65);
-  background: rgba(255, 80, 100, 0.12);
-  animation: sing-arm 1.3s ease-in-out infinite;
-}
-@keyframes sing-arm {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 80, 100, 0.35); }
-  50% { box-shadow: 0 0 16px 2px rgba(255, 80, 100, 0.22); }
-}
-@media (prefers-reduced-motion: reduce) { .sing-rec.armed { animation: none; } }
+.melody-solo-btn.on { box-shadow: var(--btn-in); font-weight: 700; }
+.sing-rec.armed { color: #800000; box-shadow: var(--btn-in); font-weight: 700; }
 .sing-chip .sub { font-size: 10.5px; font-weight: 600; color: var(--muted); }
 .sing-apply .seg-btn { flex: 1 1 0; padding: 11px 8px; }
 .sing-hint { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
 
 /* --- mixer -------------------------------------------------------------------- */
-.mixer-open-btn { --bc: #4dabf7; font-size: 18px; }
-.mixer-list { display: flex; flex-direction: column; gap: 10px; }
+.mixer-open-btn { --bc: #000080; font-size: 18px; }
+.mixer-list { display: flex; flex-direction: column; gap: 8px; }
 .mix-strip {
-  background:
-    linear-gradient(120deg, color-mix(in srgb, var(--lane) 8%, transparent), transparent 45%),
-    var(--panel-glass);
-  border: 1px solid var(--line-soft);
-  border-left: 4px solid var(--lane);
-  border-radius: var(--r-md);
-  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
-  box-shadow: var(--card-shadow);
+  background: var(--panel);
+  border: none;
+  border-left: 6px solid var(--lane);
+  border-radius: 0;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: var(--btn-out);
   --slider: var(--lane);
 }
 .mix-strip-head { display: flex; align-items: center; gap: 10px; }
+/* The activity LED: a sunken square that fills solid on a hit. Its old glow ran on a
+   keyframe; this one just swaps a colour, so it stays a one-frame change like the
+   rest of the skin (app.ts still adds/removes .flash on the same schedule). */
 .mix-led {
-  width: 14px; height: 14px; flex: none; border-radius: 50%;
-  background: var(--lane); opacity: 0.26;
-  box-shadow: 0 0 0 0 var(--lane), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+  width: 12px; height: 12px; flex: none; border-radius: 0;
+  background: #808080;
+  box-shadow: var(--field-in);
 }
-.mix-led.flash { animation: mix-flash 0.4s ease-out; }
-@keyframes mix-flash {
-  0% { opacity: 1; box-shadow: 0 0 12px 3px var(--lane); }
-  100% { opacity: 0.26; box-shadow: 0 0 0 0 var(--lane); }
-}
+.mix-led.flash { background: var(--lane); }
 .mix-name {
   flex: 1; min-width: 0; font-weight: 700; font-size: 14px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .mix-toggles { display: flex; gap: 6px; flex: none; }
 .mix-toggle {
-  width: 34px; padding: 6px 0; text-align: center; font-weight: 700; font-size: 13px;
-  background: var(--panel2); color: var(--muted);
+  width: 32px; padding: 4px 0; text-align: center; font-weight: 700; font-size: 13px;
+  background: var(--panel); color: var(--text);
 }
-.mix-toggle.mute.on {
-  background: linear-gradient(160deg, #ff5f52, #e03a2f); color: #fff; border-color: transparent;
-  box-shadow: 0 0 12px rgba(255, 69, 58, 0.5);
-}
-.mix-toggle.solo.on {
-  background: linear-gradient(160deg, #ffe14d, var(--accent)); color: #141826; border-color: transparent;
-  box-shadow: 0 0 12px rgba(255, 214, 10, 0.5);
-}
+/* Latched toggles: pressed in, and coloured so M and S read across the strip list. */
+.mix-toggle.mute.on { box-shadow: var(--btn-in); color: #800000; padding: 5px 0 3px 1px; }
+.mix-toggle.solo.on { box-shadow: var(--btn-in); color: #000080; padding: 5px 0 3px 1px; }
 .mix-fader { display: flex; align-items: center; gap: 10px; }
 .mix-fader-lbl { width: 34px; flex: none; font-size: 12px; color: var(--muted); }
 .mix-fader input[type="range"] { flex: 1; min-width: 0; }
@@ -1114,39 +1022,24 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* --- per-loop shuffle panel ------------------------------------------------------ */
 /* The shuffle menu (voiceShuffleMenu.ts) flows inline inside the sheet / instrument
    page; its Back/Reset use the small .cat-btn pill. */
-.cat-btn { padding: 6px 12px; font-size: 13px; background: var(--panel2); border-radius: 9px; }
+.cat-btn { padding: 4px 10px; font-size: 12px; background: var(--panel); border-radius: 0; }
 
-/* The star of the show: the brand-gradient Shuffle button with a passing sheen. */
+/* The primary action. It was a gradient with a sheen and a pulse; here it's the
+   default button — a plain grey tile ringed in black, which is exactly how Windows
+   said "this is the one Enter presses". Size does the shouting instead of light. */
 .shuffle-big {
-  position: relative; overflow: hidden;
-  width: 100%; color: #0b0d12; font-weight: 800; font-size: 18px; letter-spacing: 0.3px;
-  padding: 13px 18px; border: none; border-radius: 13px; cursor: pointer;
-  background: var(--brand);
-  background-size: 180% 180%;
-  box-shadow: 0 6px 22px rgba(124, 92, 255, 0.4);
-  animation: shuffle-glow 2.6s ease-in-out infinite;
+  position: relative;
+  width: 100%; color: var(--text); font-weight: 700; font-size: 15px; letter-spacing: 0;
+  padding: 10px 18px; border: none; border-radius: 0; cursor: default;
+  background: var(--panel);
+  box-shadow: var(--btn-out), inset 0 0 0 1px #000000;
 }
-.shuffle-big::after {
-  content: ""; position: absolute; top: -20%; bottom: -20%; left: -60%; width: 36%;
-  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.45), transparent);
-  transform: skewX(-18deg);
-  animation: sheen 3.4s ease-in-out infinite;
-  pointer-events: none;
-}
-@keyframes sheen {
-  0%, 55% { left: -60%; }
-  90%, 100% { left: 135%; }
-}
-.shuffle-big:active { transform: scale(0.97); }
-@keyframes shuffle-glow {
-  0%, 100% { background-position: 0% 50%; box-shadow: 0 5px 18px rgba(124, 92, 255, 0.38); }
-  50% { background-position: 100% 50%; box-shadow: 0 6px 26px rgba(0, 255, 200, 0.5); }
-}
+.shuffle-big:active { box-shadow: var(--btn-in), inset 0 0 0 1px #000000; padding: 11px 17px 9px 19px; }
 
 .shuffle-section { display: flex; flex-direction: column; gap: 12px; }
 
 /* Randomness + labelled select/seed rows. */
-.rnd { display: flex; align-items: center; gap: 6px; width: 100%; --slider: #b197fc; }
+.rnd { display: flex; align-items: center; gap: 6px; width: 100%; --slider: #000080; }
 .rnd input { flex: 1; }
 .rnd-lbl { color: var(--muted); font-size: 12px; width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
 .precision { display: flex; align-items: center; gap: 8px; width: 100%; }
@@ -1165,29 +1058,22 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .vbox-num {
   width: 58px; flex: none; font: inherit; font-size: 12px; text-align: right;
   color: var(--text); background: var(--field);
-  border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px;
+  border: none; border-radius: 0; box-shadow: var(--field-in); padding: 4px 5px;
   -moz-appearance: textfield; appearance: textfield;
 }
 .vbox-num::-webkit-inner-spin-button,
 .vbox-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-.vbox-num:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55%, var(--line)); }
+.vbox-num:focus { outline: none; }
 .vbox-select { font-size: 13px; padding: 7px 28px 7px 8px; }
 
 /* Section help: the little "?" in each section head opens a glossary of that
    section's controls; each entry expands into a plain-words description. */
 .help-btn {
-  flex: none; width: 24px; height: 24px; padding: 0;
-  border-radius: 50%; font-size: 12px; font-weight: 800; line-height: 1;
-  color: var(--muted); background: var(--panel2); border: 1px solid var(--line);
+  flex: none; width: 22px; height: 22px; padding: 0;
+  border-radius: 0; font-size: 12px; font-weight: 700; line-height: 1;
+  color: var(--text); background: var(--panel); border: none; box-shadow: var(--btn-out);
 }
-.help-btn.on {
-  color: var(--vc);
-  border-color: color-mix(in srgb, var(--vc) 50%, transparent);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--vc) 22%, transparent);
-}
-@media (hover: hover) {
-  .help-btn:hover { color: var(--text); }
-}
+.help-btn.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
 /* In the Back/Reset/Preset row (the Shuffle section's anchor) it sits at the far right. */
 .sound-lib .help-btn { margin-left: auto; }
 
@@ -1196,41 +1082,30 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   position: fixed; inset: 0; z-index: 250;
   display: flex; align-items: center; justify-content: center;
   padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
-  background: rgba(4, 6, 10, 0.62);
-  -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px);
-  animation: fade-in 0.15s ease-out;
+  background: rgba(0, 0, 0, 0.25);
 }
 .help-panel {
   width: min(640px, 100%); max-height: 100%; overflow-y: auto;
-  background: var(--panel2-glass);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  backdrop-filter: blur(20px) saturate(1.4);
-  border: 1px solid var(--line); border-radius: var(--r-lg, 18px);
-  padding: 4px 14px 14px; box-shadow: var(--pop-shadow);
-  animation: pop-in 0.18s ease-out;
+  background: var(--panel);
+  border: none; border-radius: 0;
+  padding: 12px; box-shadow: var(--btn-out), var(--win-shadow);
 }
-/* Sticky header so the title + ✕ stay reachable while the glossary scrolls. */
+/* The head is the window's title bar (.win-title is added alongside in TS), pinned
+   so the title + ✕ stay reachable while the glossary scrolls. */
 .help-head {
-  position: sticky; top: 0; z-index: 1;
   display: flex; align-items: center; gap: 10px;
-  margin: 0 -14px 2px; padding: 12px 14px 8px;
-  background: color-mix(in srgb, var(--panel2) 82%, transparent);
-  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--line-soft);
 }
 .help-title {
-  flex: 1; font-size: 12px; font-weight: 700; color: var(--vc);
-  text-transform: uppercase; letter-spacing: 0.07em;
+  flex: 1; font-size: 12px; font-weight: 700; color: var(--text);
+  text-transform: none; letter-spacing: 0;
 }
 .help-close {
   flex: none; width: 34px; height: 34px; padding: 0;
-  font-size: 24px; line-height: 1; color: var(--muted);
+  font-size: 20px; line-height: 1; color: var(--text);
   background: transparent; border: none; box-shadow: none;
 }
-.help-close:active { color: var(--text); }
-@media (hover: hover) { .help-close:hover { color: var(--text); border-color: transparent; } }
 .help-hint { font-size: 11px; color: var(--muted); margin: 6px 2px 4px; }
-.help-item { border-top: 1px solid var(--line-soft); }
+.help-item { border-top: 1px solid #808080; box-shadow: inset 0 1px 0 #ffffff; }
 .help-item summary {
   display: flex; align-items: center; gap: 8px;
   list-style: none; cursor: pointer;
@@ -1239,96 +1114,53 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 }
 .help-item summary::-webkit-details-marker { display: none; }
 .help-item summary::after { content: "+"; margin-left: auto; color: var(--muted); font-weight: 700; }
-.help-item[open] summary { color: var(--vc); }
-.help-item[open] summary::after { content: "−"; color: var(--vc); }
+.help-item[open] summary { font-weight: 700; }
+.help-item[open] summary::after { content: "−"; color: var(--text); }
 .help-desc { padding: 0 2px 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
-/* The behind-the-scenes snippet: the real engine lines, styled like the JSON box. */
+/* The behind-the-scenes snippet: the real engine lines in a sunken white well. */
 .help-code {
-  margin: 0 2px 10px; padding: 8px 10px; overflow-x: auto;
-  background: var(--field); border: 1px solid var(--line-soft); border-radius: 8px;
-  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-  font-size: 10.5px; line-height: 1.5; color: var(--text);
+  margin: 0 2px 10px; padding: 6px 8px; overflow-x: auto;
+  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
+  font-family: "Courier New", Courier, monospace;
+  font-size: 11px; line-height: 1.5; color: var(--text);
   white-space: pre; user-select: text; -webkit-user-select: text;
 }
 
 /* --- toast -------------------------------------------------------------------------- */
+/* A little notification window that appears and, 1.7s later, is removed by JS. */
 .toast {
   position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom));
   transform: translateX(-50%); z-index: 300; pointer-events: none;
-  padding: 10px 18px; border-radius: 19px; font-size: 13px; font-weight: 600;
-  background: var(--panel2-glass);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  padding: 6px 14px; border-radius: 0; font-size: 12px; font-weight: 400;
+  background: var(--panel);
+  border: none;
   color: var(--text);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
-  animation: toast-in-out 1.7s ease forwards;
-}
-@keyframes toast-in-out {
-  0% { opacity: 0; transform: translateX(-50%) translateY(8px); }
-  12%, 82% { opacity: 1; transform: translateX(-50%) translateY(0); }
-  100% { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  box-shadow: var(--btn-out), var(--win-shadow);
 }
 
-/* ================= motion pass: micro-delights =================
-   Decorative juice only (compositor-friendly transforms/opacity), switched off
-   wholesale under prefers-reduced-motion at the bottom. */
+/* ================= state, not motion =============================================
+   The old skin had a "motion pass" here — a beating play button, a wiggling die, rows
+   that flashed and popups that dropped in. Win98 changed state between one frame and
+   the next, so all of it is gone. The CLASSES survive (app.ts still adds .playing,
+   .rolled, .hit-flash, .flash on the same schedule) and are re-expressed as a bevel
+   or a colour instead, so nothing in the TS had to learn a new vocabulary. */
 
-/* Play button beats at the tempo while playing (--beat set from the BPM). */
+/* Playing is a LATCHED button: pressed in for as long as the transport runs. */
 .play-btn.playing {
-  color: #0b0d12;
-  background: var(--accent);
-  border-color: var(--accent);
-  animation: beat var(--beat, 0.5s) ease-out infinite;
-}
-@keyframes beat {
-  0% { transform: scale(1.08); box-shadow: 0 0 18px rgba(255, 214, 10, 0.55); }
-  40% { transform: scale(1); box-shadow: 0 0 0 rgba(255, 214, 10, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 rgba(255, 214, 10, 0); }
+  color: #000080;
+  background: var(--panel);
+  box-shadow: var(--btn-in);
+  padding: 1px 0 0 1px;
 }
 
-/* Dice: idle wiggle to invite a roll; a full tumble right after each shuffle. */
 .dice { display: inline-block; }
-.shuffle-big .dice { animation: dice-idle 3.4s ease-in-out infinite; }
-.dice.rolled { animation: dice-roll 0.55s cubic-bezier(0.2, 1.4, 0.4, 1); }
-@keyframes dice-idle {
-  0%, 86%, 100% { transform: rotate(0); }
-  90% { transform: rotate(-16deg); }
-  94% { transform: rotate(12deg); }
-  97% { transform: rotate(-6deg); }
-}
-@keyframes dice-roll {
-  0% { transform: rotate(0) scale(1); }
-  45% { transform: rotate(260deg) scale(1.45); }
-  100% { transform: rotate(360deg) scale(1); }
-}
-@keyframes recap-in {
-  from { opacity: 0; transform: translateX(6px); }
-  to { opacity: 1; transform: translateX(0); }
-}
 
-/* Rows flash their own colour when their sound fires (--vc / mix-flash reuse). */
-.hit-flash { animation: hit-flash 0.3s ease-out; }
-@keyframes hit-flash {
-  0% { box-shadow: 0 0 14px 2px var(--vc, #fff); filter: brightness(1.25); }
-  100% { box-shadow: 0 0 0 0 transparent; filter: brightness(1); }
-}
+/* Rows mark their own hit by inverting to the selection colours for that instant. */
+.hit-flash { background: #000080; color: #ffffff; }
 
-/* Popups land with a soft drop. */
-.menu-panel { animation: pop-in 0.18s ease-out; }
-@keyframes pop-in {
-  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-/* Hover-raised cards still compress on press (the raise rule outranks the base
-   button:active otherwise). */
-@media (hover: hover) {
-  .track-color-row:hover:active,
-  .melody-sq:hover:active { transform: scale(0.96); }
-}
-
-/* ================= accessibility: one switch turns the fun off ================= */
+/* ================= accessibility ================================================
+   There is nothing left to switch off — the skin has no animations and no
+   transitions. The rule stays as a guard for anything added later. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -1336,8 +1168,6 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  /* The toast is REMOVED by JS after 1.7s — keep it visible until then. */
-  .toast { animation: none !important; opacity: 1; }
 }
 
 /* ================= voice popup redesign: Loop tab + per-loop transitions ========= */
@@ -1349,40 +1179,38 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* The sequencer pattern grid: one cell per step, hits lit in the voice colour. */
 .pattern-grid-wrap { --vc: var(--accent); display: flex; flex-direction: column; gap: 8px; }
 .pattern-grid {
-  display: grid; grid-template-columns: repeat(var(--cols, 16), 1fr); gap: 3px;
-  padding: 8px; background: var(--field); border: 1px solid var(--line-soft); border-radius: var(--r-md);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+  display: grid; grid-template-columns: repeat(var(--cols, 16), 1fr); gap: 2px;
+  padding: 4px; background: var(--field); border: none; border-radius: 0;
+  box-shadow: var(--field-in);
 }
 .pattern-cell {
   aspect-ratio: 1 / 1; min-width: 0; padding: 0;
-  background: rgba(154, 168, 204, 0.10);
-  border: none; border-radius: 4px; box-shadow: none; cursor: pointer;
+  background: #ffffff;
+  border: none; border-radius: 0; box-shadow: inset 0 0 0 1px #dfdfdf; cursor: default;
 }
-.pattern-cell.beat { background: rgba(154, 168, 204, 0.17); }
+.pattern-cell:active { padding: 0; }
+.pattern-cell.beat { background: #efefef; }
 .pattern-cell.on {
   background: var(--vc);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--vc) 45%, transparent);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
-/* The transport's current step, lit while playing (a bright ring; brighter still on a hit). */
+/* The transport's current step, marked while playing: a hard black outline, which
+   reads on both the white empty cells and the filled coloured ones. */
 .pattern-cell.playing {
-  outline: 2px solid #fff;
+  outline: 2px solid #000000;
   outline-offset: -2px;
-  box-shadow: 0 0 10px rgba(255, 255, 255, 0.55);
 }
-.pattern-cell.on.playing {
-  background: color-mix(in srgb, #fff 30%, var(--vc));
-  box-shadow: 0 0 14px color-mix(in srgb, var(--vc) 70%, transparent);
-}
-.pattern-euclid { width: auto; padding: 5px 10px; }
+.pattern-cell.on.playing { background: var(--vc); }
+.pattern-euclid { width: auto; padding: 4px 10px; }
 
 /* Bar-square grid tool row: squares-worth picker, Start·End pick, row stepper. */
 .place-grid-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.place-grid-rowbtn.on { border-color: var(--vc); color: var(--vc); background: color-mix(in srgb, var(--vc) 10%, var(--panel2)); }
-.pick-btn { width: auto; padding: 5px 10px; font-size: 12px; white-space: nowrap; }
-.span-btn { font-size: 12.5px; }
+.place-grid-rowbtn.on { box-shadow: var(--btn-in); }
+.pick-btn { width: auto; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+.span-btn { font-size: 12px; }
 /* A square only partially covered by the selection (span > selected bars). */
-.place-cell.part { background: linear-gradient(135deg, var(--vc) 0 50%, rgba(154, 168, 204, 0.10) 50% 100%); }
-.place-grid.picking { cursor: crosshair; outline: 1.5px dashed color-mix(in srgb, var(--vc) 55%, transparent); outline-offset: 2px; }
+.place-cell.part { background: linear-gradient(135deg, var(--vc) 0 50%, #ffffff 50% 100%); }
+.place-grid.picking { cursor: crosshair; outline: 1px dotted #000000; outline-offset: 2px; }
 
 /* Transitions tab: the list rows reuse the loop-row card; On/Off sits inline. */
 .trans-list { display: flex; flex-direction: column; gap: 8px; }
@@ -1394,13 +1222,14 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .trans-graph { display: flex; flex-direction: column; }
 /* The transition's transformed-sound panel wears a tasteful red→black wash so it
    never reads as the loop's own Sound panel. */
+/* The transition's transformed-sound panel: a sunken group box with a maroon top rule,
+   so it never reads as the loop's own Sound panel. */
 .trans-effects {
   display: flex; flex-direction: column; gap: 10px;
-  padding: 12px; border-radius: var(--r-md);
-  border: 1px solid rgba(220, 60, 70, 0.28);
-  background:
-    radial-gradient(120% 80% at 50% 0%, rgba(200, 40, 55, 0.24), transparent 60%),
-    linear-gradient(180deg, rgba(120, 20, 30, 0.22), rgba(8, 8, 12, 0.35) 70%);
+  padding: 12px; border-radius: 0;
+  border: none; border-top: 2px solid #800000;
+  background: var(--panel);
+  box-shadow: var(--btn-in);
 }
 .trans-speed { display: flex; flex-direction: column; }
 
@@ -1409,17 +1238,16 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .formula-head { display: flex; align-items: center; gap: 8px; position: relative; }
 .formula-row {
   display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
-  padding: 10px 12px; background: var(--field);
-  border: 1px solid var(--line-soft); border-radius: var(--r-md);
-  font-size: 15px; font-variant-numeric: tabular-nums;
+  padding: 8px 10px; background: var(--field);
+  border: none; border-radius: 0; box-shadow: var(--field-in);
+  font-size: 14px; font-variant-numeric: tabular-nums;
 }
 .formula-text { color: var(--text); white-space: pre; }
 .formula-var {
-  width: auto; min-width: 34px; max-width: 88px; padding: 3px 6px; text-align: center;
-  font: inherit; font-weight: 700; color: var(--vc);
-  background: color-mix(in srgb, var(--vc) 10%, var(--panel2));
-  border: 1.5px solid color-mix(in srgb, var(--vc) 55%, transparent);
-  border-radius: var(--r-sm);
+  width: auto; min-width: 34px; max-width: 88px; padding: 2px 5px; text-align: center;
+  font: inherit; font-weight: 700; color: var(--text);
+  background: var(--panel);
+  border: none; border-radius: 0; box-shadow: var(--btn-out);
   cursor: ns-resize; touch-action: none;
 }
 .formula-bounds { font-size: 13.5px; color: var(--muted); background: transparent; border: none; padding: 2px 12px; }
@@ -1443,16 +1271,15 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .sound-graph { display: flex; flex-direction: column; gap: 10px; }
 .sound-graph-box {
   position: relative;
-  background: var(--field); border: 1px solid var(--line-soft); border-radius: var(--r-md);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+  background: var(--field); border: none; border-radius: 0;
+  box-shadow: var(--field-in);
   overflow: hidden;
 }
 .sound-graph-svg { display: block; width: 100%; height: auto; max-height: 48vh; }
-.sound-graph-svg.graph-tappable { cursor: pointer; }
-.sound-graph-svg.graph-tappable:active { opacity: 0.9; }
-.sound-trace-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-.sound-trace-line.bold { stroke-width: 3.5; filter: drop-shadow(0 0 6px currentColor); }
-.sound-trace-line.dim { opacity: 0.3; }
+.sound-graph-svg.graph-tappable { cursor: default; }
+.sound-trace-line { fill: none; stroke-width: 2; stroke-linejoin: miter; stroke-linecap: butt; }
+.sound-trace-line.bold { stroke-width: 3; }
+.sound-trace-line.dim { opacity: 0.35; }
 /* One control line above the graph: Shuffle / Back / Reset, then Gate / Max len /
    Spread, then the ? — all on one row (the shuffle stands out). */
 .graph-toolbar {
@@ -1460,18 +1287,13 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
   overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px;
 }
 .graph-corner-btn {
-  flex: none; width: 38px; height: 38px; padding: 0; font-size: 17px; line-height: 1;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; color: var(--text);
+  flex: none; width: 36px; height: 36px; padding: 0; font-size: 16px; line-height: 1;
+  background: var(--panel); border: none; border-radius: 0; box-shadow: var(--btn-out); color: var(--text);
 }
-.graph-corner-btn:disabled { opacity: 0.4; }
-.graph-corner-btn:active:not(:disabled) { border-color: var(--vc); color: var(--vc); }
-/* The shuffle is the primary action — filled with the voice colour. */
-.graph-tool-dice {
-  background: var(--vc); border-color: var(--vc);
-  color: #0b0e17; font-size: 18px;
-  box-shadow: 0 2px 10px color-mix(in srgb, var(--vc) 45%, transparent);
-}
-.graph-tool-dice:active:not(:disabled) { color: #0b0e17; filter: brightness(1.1); }
+.graph-corner-btn:active:not(:disabled) { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
+/* The shuffle is the primary action — the default-button ring marks it. */
+.graph-tool-dice { font-size: 18px; box-shadow: var(--btn-out), inset 0 0 0 1px #000000; }
+.graph-tool-dice:active:not(:disabled) { box-shadow: var(--btn-in), inset 0 0 0 1px #000000; }
 .graph-tool-help { flex: none; margin-left: auto; align-self: center; }
 /* Shuffle overlaid on the graph's own top-right corner. */
 .graph-dice-corner { position: absolute; top: 8px; right: 8px; z-index: 2; }
@@ -1479,30 +1301,31 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 /* The coloured setting buttons under the graph (page 0 active, ‹ › the inactive). */
 .trace-panel { display: flex; flex-direction: column; gap: 10px; }
 .trace-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Each trace's button carries its trace colour as a swatch stripe down the left —
+   the colour has to survive (it's how a line on the graph is identified) but the
+   button itself stays a grey tile like everything else. */
 .trace-btn {
-  padding: 9px 13px; font-size: 12.5px; font-weight: 700;
-  color: var(--tc); background: color-mix(in srgb, var(--tc) 16%, var(--panel2));
-  border: 1.5px solid color-mix(in srgb, var(--tc) 70%, transparent);
-  border-radius: var(--r-sm);
+  padding: 6px 10px 6px 8px; font-size: 12px; font-weight: 700;
+  color: var(--text); background: var(--panel);
+  border: none; border-left: 5px solid var(--tc);
+  border-radius: 0; box-shadow: var(--btn-out);
 }
-.trace-btn:active { background: color-mix(in srgb, var(--tc) 28%, var(--panel2)); }
-.trace-btn.off { opacity: 0.6; background: transparent; border-style: dashed; }
+.trace-btn:active { box-shadow: var(--btn-in); padding: 7px 9px 5px 9px; }
+.trace-btn.off { color: #808080; font-weight: 400; border-left-color: #808080; }
 .trace-pager { display: flex; align-items: center; justify-content: center; gap: 10px; }
 
 /* One setting's equation card (its colour rides --vc for the formula inputs). */
 .trace-editor {
-  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
-  background:
-    linear-gradient(120deg, color-mix(in srgb, var(--vc) 8%, transparent), transparent 45%),
-    var(--panel-glass);
-  border: 1px solid var(--line-soft); border-left: 4px solid var(--vc);
-  border-radius: var(--r-md);
+  display: flex; flex-direction: column; gap: 8px; padding: 8px 10px;
+  background: var(--panel);
+  border: none; border-left: 6px solid var(--vc);
+  border-radius: 0; box-shadow: var(--btn-out);
 }
 .trace-ed-head { display: flex; align-items: center; gap: 8px; }
-.trace-ed-head .transition-head { flex: 1 1 auto; color: var(--vc); }
-.trace-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--vc); flex: none; }
-.trace-ed-close { width: 34px; border-left: none; font-size: 18px; }
-.trace-fromto { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--vc); font-variant-numeric: tabular-nums; }
+.trace-ed-head .transition-head { flex: 1 1 auto; color: var(--text); }
+.trace-dot { width: 10px; height: 10px; border-radius: 0; background: var(--vc); flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.5); }
+.trace-ed-close { width: 30px; border-left: none; font-size: 16px; }
+.trace-fromto { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
 .formula-domain { color: var(--muted); font-size: 13px; }
 .trace-ed-head { position: relative; }
 .trace-ed-head .help-btn { margin-left: 0; }
@@ -1512,13 +1335,13 @@ select:focus { outline: none; border-color: color-mix(in srgb, var(--brand-b) 55
 .graph-corner-num { flex: none; display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .graph-corner-lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
 .graph-corner-num input {
-  width: 46px; padding: 5px 2px; text-align: center;
+  width: 46px; padding: 4px 2px; text-align: center;
   font: inherit; font-size: 12px; font-weight: 700; color: var(--text);
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
   cursor: ns-resize; touch-action: none;
 }
 .graph-corner-select {
-  width: 60px; padding: 5px 2px; text-align: center;
+  width: 62px; padding: 4px 2px; text-align: center;
   font: inherit; font-size: 11px; font-weight: 700; color: var(--text);
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
 }

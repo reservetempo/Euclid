@@ -107,9 +107,10 @@ export class EuclidView {
       const v = st.node;
 
       // Faint guide ring for every slot so all 6 circles read even when empty.
+      // Silver on the white well, the way a Win98 chart drew its gridlines.
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, TWO_PI);
-      ctx.strokeStyle = "#242a3a";
+      ctx.strokeStyle = "#c0c0c0";
       ctx.lineWidth = 1;
       ctx.stroke();
 
@@ -150,9 +151,11 @@ export class EuclidView {
         const isNow = k === active;
         ctx.beginPath();
         ctx.arc(px, py, isNow ? 6 + 5 * p : hit ? 4 : 2.5, 0, TWO_PI);
-        if (isNow) ctx.fillStyle = "#ffffff";
+        // On white, the CURRENT step has to be the darkest thing on the ring — black,
+        // where the old dark skin used white. Rests are silver, one step off the grid.
+        if (isNow) ctx.fillStyle = "#000000";
         else if (hit) ctx.fillStyle = v.color;
-        else ctx.fillStyle = "#4a5064";
+        else ctx.fillStyle = "#a0a0a0";
         ctx.fill();
         if (isNow) {
           ctx.strokeStyle = v.color;

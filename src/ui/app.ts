@@ -956,7 +956,7 @@ export class App {
     // .loop-row-tabs stacks the card: the strip below, then the tab nav. (Plain .loop-row
     // stays a horizontal strip — the transition list reuses it as one.)
     row.className = "loop-row loop-row-tabs";
-    row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
 
     // Reorder controls (priority for solo loops; list order in general).
     const order = document.createElement("div");
@@ -1069,7 +1069,7 @@ export class App {
         cell.style.background = bg;
         // Dark text on light shades, light text on dark shades.
         const lum = 0.299 * parseInt(bg.slice(1, 3), 16) + 0.587 * parseInt(bg.slice(3, 5), 16) + 0.114 * parseInt(bg.slice(5, 7), 16);
-        cell.style.color = lum > 150 ? "rgba(0,0,0,0.8)" : "#fff";
+        cell.style.color = lum > 150 ? "#000" : "#fff";
         cell.textContent = String(startBar + b + 1); // the bar this square sits on
       }
       row.append(cell);
@@ -1240,7 +1240,7 @@ export class App {
 
     const sheet = document.createElement("div");
     sheet.className = "voice-sheet placement-sheet";
-    sheet.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    sheet.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
 
     // While a transition's editor is open it takes the whole page — the popup's own
     // Sound / Loop / Transitions nav hides, and its back button folds into the header's
@@ -1251,7 +1251,7 @@ export class App {
       : null;
 
     const head = document.createElement("div");
-    head.className = "voice-sheet-head";
+    head.className = "voice-sheet-head win-title";
     const loopName = loop.label || loop.name || "Loop";
     if (openTr) {
       // Breadcrumb: Loops (close) › name (back to the transition list) › Transition N.
@@ -1391,7 +1391,7 @@ export class App {
   private patternGrid(loop: Loop, rerender: () => void): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "pattern-grid-wrap";
-    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
     const steps = loop.steps >= 1 ? loop.steps : 0;
     if (steps < 1) {
       const hint = document.createElement("p");
@@ -1705,7 +1705,7 @@ export class App {
 
     return this.barGrid({
       key: "place",
-      color: loop.soundId >= 0 ? loop.color : "#4a5064",
+      color: loop.soundId >= 0 ? loop.color : "#808080",
       read: ownList,
       write: (bars) => {
         // Painting past the track grows it to fit the furthest placed bar.
@@ -1730,7 +1730,7 @@ export class App {
     }
     return this.barGrid({
       key: "trans",
-      color: loop.soundId >= 0 ? loop.color : "#4a5064",
+      color: loop.soundId >= 0 ? loop.color : "#808080",
       read: () => tr.bars.filter((b) => b >= 1 && b <= barLimit),
       write: (bars) => {
         tr.bars = bars;
@@ -1830,7 +1830,7 @@ export class App {
     const draft = this.draftFor(loop);
     return {
       draft,
-      color: loop.soundId >= 0 ? loop.color : "#4a5064",
+      color: loop.soundId >= 0 ? loop.color : "#808080",
       title: "Every setting as a function of time",
       write: () => this.writeLoopFromEditor(loop),
       commitAudition: () => this.auditionLoop(loop),
@@ -1855,7 +1855,7 @@ export class App {
     // The ⧉ "copy transformed sound as a new loop" action lives in the popup header.
     return {
       draft,
-      color: loop.soundId >= 0 ? loop.color : "#4a5064",
+      color: loop.soundId >= 0 ? loop.color : "#808080",
       title: "The transformed sound — the transition's end values",
       write,
       commitAudition: () => this.schedulePreview(loop, tr, true),
@@ -2282,7 +2282,7 @@ export class App {
   private transitionList(loop: Loop, rerender: () => void): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "trans-list";
-    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
     const trs = loop.transitions ?? (loop.transitions = []);
 
     if (!trs.length) {
@@ -2295,7 +2295,7 @@ export class App {
     trs.forEach((tr, i) => {
       const row = document.createElement("div");
       row.className = "loop-row trans-row" + (tr.on ? "" : " off");
-      row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+      row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
       const body = document.createElement("button");
       body.className = "loop-body";
       const nm = document.createElement("span");
@@ -2384,7 +2384,7 @@ export class App {
   private transitionEditor(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "trans-editor";
-    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    wrap.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
     // The back navigation + On/Off live in the popup header's breadcrumb now.
 
     const nav = document.createElement("div");
@@ -2815,7 +2815,7 @@ export class App {
       axis: {
         title: "Draw the function",
         hint: "Sketch how far the sound transforms across the window — bottom = the sound as it is, top = the Effects values. The line is cleaned up as you lift your finger, and matched to a formula. Points thins it out.",
-        color: loop.soundId >= 0 ? loop.color : "#4a5064",
+        color: loop.soundId >= 0 ? loop.color : "#808080",
         topLabel: "transformed",
         bottomLabel: "sound",
         xLabel: "",
@@ -2880,7 +2880,7 @@ export class App {
       axis: {
         title: "Draw the pitch",
         hint: `Tap to place points across the whole graph — the height is the pitch itself, on the same 20 Hz–12 kHz scale the graph draws. Drag a point to move it, tap it twice to remove it, and hold or drag a line to bend it. The path replaces the sweep's Env, Dec, curve and waves entirely.`,
-        color: "#ff6b6b",
+        color: "#800000",
         topLabel: "12 kHz",
         bottomLabel: "20 Hz",
         xLabel: `${Math.round(span * 100) / 100}s`,
@@ -3189,7 +3189,7 @@ export class App {
       // The multi-select bar strip: tap toggles a bar, drag paints a span on/off.
       const pick = document.createElement("div");
       pick.className = "atbars-pick";
-      pick.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+      pick.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
       const readout = document.createElement("span");
       readout.className = "atbars-pick-hint";
       const syncReadout = () => {
@@ -3515,7 +3515,7 @@ export class App {
     const splitLocked = loop.hits < 2 || maxSplitGap(loop.hits, loop.steps) <= 1;
     const vals = document.createElement("div");
     vals.className = "euclid-vals";
-    vals.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#4a5064");
+    vals.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
     vals.append(
       mkNum("Hits", loop.hits, "hits"),
       mkNum("Steps", loop.steps, "steps"),
@@ -3726,7 +3726,7 @@ export class App {
     if (opts.color) pad.style.setProperty("--vc", opts.color);
 
     const head = document.createElement("div");
-    head.className = "numpad-head";
+    head.className = "numpad-head win-title";
     const title = document.createElement("span");
     title.className = "numpad-title";
     title.textContent = opts.title;

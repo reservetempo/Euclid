@@ -58,13 +58,15 @@ export function openDrawShell(axis: DrawAxis): DrawShell {
   card.className = "draw-card";
   card.style.setProperty("--vc", axis.color);
 
+  // .win-title turns the head into the card's title bar (see style.css) — same
+  // elements, same order, the bar is entirely a matter of styling.
   const head = document.createElement("div");
-  head.className = "draw-head";
+  head.className = "draw-head win-title";
   const title = document.createElement("h3");
   title.className = "tr-title";
   title.textContent = axis.title;
   const closeBtn = document.createElement("button");
-  closeBtn.className = "seg-btn";
+  closeBtn.className = "tr-cancel";
   closeBtn.textContent = "✕";
   closeBtn.onclick = close;
   head.append(title, closeBtn);
@@ -112,18 +114,20 @@ export function paintAxisBackdrop(
 ): void {
   const W = ctx.canvas.width, H = ctx.canvas.height;
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = "#0d1019";
+  // A white plot area with a silver quarter grid and grey edges — the Win98 chart look.
+  ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, W, H);
   for (let q = 0; q <= 4; q++) {
-    ctx.strokeStyle = q === 0 || q === 4 ? "rgba(154,168,204,0.28)" : "rgba(154,168,204,0.12)";
+    ctx.strokeStyle = q === 0 || q === 4 ? "#808080" : "#c0c0c0";
     ctx.lineWidth = 1 * dpr;
     ctx.beginPath();
     ctx.moveTo((q / 4) * W, 0); ctx.lineTo((q / 4) * W, H);
     ctx.moveTo(0, (q / 4) * H); ctx.lineTo(W, (q / 4) * H);
     ctx.stroke();
   }
-  ctx.fillStyle = "#97a0b6";
-  ctx.font = `600 ${11 * dpr}px system-ui, sans-serif`;
+  ctx.fillStyle = "#000000";
+  // Not bold: Win98 chart labels were plain 8pt UI type.
+  ctx.font = `${11 * dpr}px Tahoma, "MS Sans Serif", sans-serif`;
   ctx.fillText(axis.topLabel, 6 * dpr, 14 * dpr);
   ctx.fillText(axis.bottomLabel, 6 * dpr, H - 6 * dpr);
   if (axis.xLabel) {

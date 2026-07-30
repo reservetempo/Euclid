@@ -107,7 +107,7 @@ export function openPathOverlay(opts: PathOverlayOptions): void {
     const py = (y: number) => (1 - clamp01(y)) * H;
     if (!nodes.length) return;
 
-    ctx.strokeStyle = "#ffd60a";
+    ctx.strokeStyle = "#000080";
     ctx.lineWidth = 2.5 * dpr;
     ctx.lineJoin = "round";
     ctx.beginPath();
@@ -126,7 +126,7 @@ export function openPathOverlay(opts: PathOverlayOptions): void {
     // line so it reads as something you can grab.
     for (let i = 0; i < nodes.length - 1; i++) {
       const a = nodes[i], b = nodes[i + 1];
-      ctx.fillStyle = i === hotSeg ? "#ffd60a" : "rgba(255,214,10,0.45)";
+      ctx.fillStyle = i === hotSeg ? "#000080" : "rgba(0,0,128,0.45)";
       ctx.beginPath();
       ctx.arc(px((a.x + b.x) / 2), py(evalSeg(a, b, 0.5)), (i === hotSeg ? 4 : 2.5) * dpr, 0, Math.PI * 2);
       ctx.fill();
@@ -135,9 +135,10 @@ export function openPathOverlay(opts: PathOverlayOptions): void {
       const r = (i === hotNode ? 7 : 5) * dpr;
       ctx.beginPath();
       ctx.arc(px(nodes[i].x), py(nodes[i].y), r, 0, Math.PI * 2);
-      ctx.fillStyle = "#0d1019";
+      // A white handle with a navy outline — a Win98 sizing grip, not a glowing dot.
+      ctx.fillStyle = "#ffffff";
       ctx.fill();
-      ctx.strokeStyle = "#ffd60a";
+      ctx.strokeStyle = "#000080";
       ctx.lineWidth = 2 * dpr;
       ctx.stroke();
     }

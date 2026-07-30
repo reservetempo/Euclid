@@ -54,7 +54,7 @@ function buildHelpPanel(section: string, items: HelpItem[], onClose: () => void)
   panel.className = "help-panel";
 
   const head = document.createElement("div");
-  head.className = "help-head";
+  head.className = "help-head win-title";
   const title = document.createElement("div");
   title.className = "help-title";
   title.textContent = section;

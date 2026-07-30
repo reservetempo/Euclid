@@ -39,7 +39,20 @@ const MAX_WARP_ONSETS = 4096;
 
 // Identity colour per voice line (inner ring → outer ring), and per logo letter —
 // one six-colour rainbow for the whole app (rings, rows, node dots, wordmark).
+//
+// These are six of the VGA low-intensity sixteen. Two constraints picked them over the
+// brighter half: the app's chrome is now #c0c0c0, so a voice colour has to be DARK to
+// separate from it, and controls.ts's textOn() flips to white text below 0.6 relative
+// luminance — every colour here clears that, so a filled cell always gets white type.
 export const VOICE_COLORS = [
+  "#a80000", "#a85400", "#a8a800", "#00a800", "#0000a8", "#a800a8",
+];
+
+// The pre-Win98 neon rainbow. Each loop's colour is PERSISTED (loop.color), so without
+// this a saved project would come back wearing the old palette on the new grey chrome.
+// project.ts maps an exact legacy hex to the new colour at the same index on load; a
+// colour that matches nothing here is treated as the user's own and passes through.
+export const LEGACY_VOICE_COLORS = [
   "#ff6b6b", "#ffa94d", "#ffd43b", "#69db7c", "#4dabf7", "#b197fc",
 ];
 

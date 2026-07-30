@@ -269,10 +269,13 @@ switch (target) {
   };
 }
 
-/** The trace set, in display order. Colours are hand-picked to stay apart on dark. */
+/** The trace set, in display order. Colours are hand-picked to stay apart from each
+    other AND to stay dark: the graph's plot area is white now, so every line here is
+    drawn from the same low-intensity family as VOICE_COLORS rather than the neon set
+    the dark skin used. */
 export const SOUND_TRACES: TraceSpec[] = [
   {
-    id: "pitch", label: "Pitch", color: "#ff6b6b",
+    id: "pitch", label: "Pitch", color: "#a80000",
     // Drawn has no formula to print — the drawing IS the formula — so it states the one
     // thing the graph can't show on its own: that t is normalised by the axis width, and
     // that A/D/curve/waves are out of the picture.
@@ -322,7 +325,7 @@ else pitchEnv = 1 - shapeT(min(1, t/D), {shape, curve, cycles}); // shaped conto
 if (pitchDrawn) freq *= 2 ** drawnOctaves(pitchDraw, pitchDrawT++, pitchDrawDur);`,
   },
   {
-    id: "amp", label: "Amp", color: "#ffa94d",
+    id: "amp", label: "Amp", color: "#a85400",
     parts: ["a(t) = A", 0, "^", 5, " D", 1, "^", 6, " S", 2, " R", 3, " · hold ", 4, "s"],
     vars: [
       { sym: "atk", param: ParamId.AmpAttack, step: 0.005, fmt: secFmt },
@@ -363,7 +366,7 @@ release: value = start * Math.pow(1 - t, dExp);
 if (samplesPlayed >= gateSeconds * sampleRate) adsr.noteOff();`,
   },
   {
-    id: "tone", label: "Tone", color: "#ffd43b",
+    id: "tone", label: "Tone", color: "#808000",
     parts: (g) => shapeParts(g(ParamId.ToneEnvShape), ["y(t) = ", 0, " · "], "",
       { decay: 1, curve: 2, cycles: 3 }),
     vars: [
@@ -391,7 +394,7 @@ if (toneEnvCoef > 0) {          // D > 0: its own decay
 mixed = toneAmp * osc + noiseAmp * noise;`,
   },
   {
-    id: "noise", label: "Noise", color: "#a9e34b",
+    id: "noise", label: "Noise", color: "#00a800",
     parts: (g) => shapeParts(g(ParamId.NoiseEnvShape), ["y(t) = ", 0, " · "], "",
       { decay: 1, curve: 2, cycles: 3 }),
     vars: [
@@ -420,7 +423,7 @@ if (noiseEnvCoef > 0) {
 mixed = toneAmp * osc + noiseAmp * noise;`,
   },
   {
-    id: "click", label: "Click", color: "#63e6be",
+    id: "click", label: "Click", color: "#008080",
     parts: (g) => {
       const τ = CLICK_DECAY[Math.max(0, Math.min(CLICK_DECAY.length - 1, Math.round(g(ParamId.ClickType))))];
       return ["y(t) = ", 0, ` · e^(−t/${Math.round(τ * 1000 * 10) / 10}ms)`];
@@ -438,7 +441,7 @@ filtered += clickSample * clickEnv * clickLevel * CLICK_GAIN;
 clickEnv *= clickCoef; // = exp(-1 / (CLICK_DECAY[type] * sampleRate))`,
   },
   {
-    id: "filter", label: "Filter", color: "#4dabf7",
+    id: "filter", label: "Filter", color: "#0000a8",
     parts: ["c(t) = ", 0, " Hz, Q = ", 1],
     vars: [
       { sym: "C", param: ParamId.FilterCutoff, step: 50, fmt: hzFmt },
@@ -457,11 +460,11 @@ const k = 1 / clamp(reso * resoMul, 0.3, 20);                // Q
 filtered = svf.process(mixed, gCoef, k, type);               // LP / HP / BP
 // Vowel type instead morphs three formant bandpasses A-E-I-O-U along Cutoff.`,
   },
-  lfoTrace(1, ParamId.Lfo1Target, ParamId.Lfo1Rate, ParamId.Lfo1Depth, ParamId.Lfo1Shape, ParamId.Lfo1Sync, "#b197fc"),
-  lfoTrace(2, ParamId.Lfo2Target, ParamId.Lfo2Rate, ParamId.Lfo2Depth, ParamId.Lfo2Shape, ParamId.Lfo2Sync, "#e599f7"),
-  lfoTrace(3, ParamId.Lfo3Target, ParamId.Lfo3Rate, ParamId.Lfo3Depth, ParamId.Lfo3Shape, ParamId.Lfo3Sync, "#f783ac"),
+  lfoTrace(1, ParamId.Lfo1Target, ParamId.Lfo1Rate, ParamId.Lfo1Depth, ParamId.Lfo1Shape, ParamId.Lfo1Sync, "#a800a8"),
+  lfoTrace(2, ParamId.Lfo2Target, ParamId.Lfo2Rate, ParamId.Lfo2Depth, ParamId.Lfo2Shape, ParamId.Lfo2Sync, "#5400a8"),
+  lfoTrace(3, ParamId.Lfo3Target, ParamId.Lfo3Rate, ParamId.Lfo3Depth, ParamId.Lfo3Shape, ParamId.Lfo3Sync, "#a80054"),
   {
-    id: "echo", label: "Echo", color: "#66d9e8",
+    id: "echo", label: "Echo", color: "#0054a8",
     parts: (g, ctx) => {
       const s = Math.round(g(ParamId.EchoSync));
       return s > 0
@@ -495,7 +498,7 @@ buf[w] = input + delayed * feedback;               // each pass × F
 out = input * (1 - mix) + delayed * mix;`,
   },
   {
-    id: "reverb", label: "Reverb", color: "#9775fa",
+    id: "reverb", label: "Reverb", color: "#5454a8",
     parts: ["y(t) = ", 0, " · e^(−t/(0.2+2·", 1, "))"],
     vars: [
       { sym: "M", param: ParamId.ReverbMix, step: 2, scale: 100, fmt: pctFmt },
@@ -513,7 +516,7 @@ for (const a of allpasses) out = a.process(out);
 buf[i] = out * wet + buf[i] * dry;   // M sets wet/dry`,
   },
   {
-    id: "modfx", label: "Mod FX", color: "#ff922b",
+    id: "modfx", label: "Mod FX", color: "#a87000",
     parts: (g) => {
       const ty = MODFX_TYPES[Math.max(0, Math.min(3, Math.round(g(ParamId.ModFxType))))];
       return ["y(t) = ", 0, ` wet · ${ty} @ `, 1, "Hz  (steady)"];
@@ -536,7 +539,7 @@ this.modfx.render(scratch, n, wetL, wetR); // quadrature LFO L/R → real width
 masterL[i] += s * gl * (1 - mix) + wetL[i] * mix; // blended by Mix`,
   },
   {
-    id: "drive", label: "Drive", color: "#e8590c",
+    id: "drive", label: "Drive", color: "#d02000",
     parts: ["y(t) = ", 0, " (steady)"],
     vars: [{ sym: "D", param: ParamId.Drive, step: 0.05, fmt: (v) => String(r2(v)) }],
     active: (g) => g(ParamId.Drive) > 0.001,
@@ -549,7 +552,7 @@ const drive = clamp(driveKnob + driveLfo, 0, 2);
 if (drive > 0) filtered = Math.tanh(filtered * (1 + drive * 5));`,
   },
   {
-    id: "bitcrush", label: "Bitcrush", color: "#e64980",
+    id: "bitcrush", label: "Bitcrush", color: "#a80038",
     // No continuous knobs — both halves are discrete choices, so the formula is
     // computed from them: the quantiser's bit depth and the sample-and-hold divisor.
     parts: (g) => {
@@ -589,7 +592,7 @@ if (bits > 0) {                            // quantise to 2^bits levels
 }`,
   },
   {
-    id: "fold", label: "Fold", color: "#c0eb75",
+    id: "fold", label: "Fold", color: "#547000",
     parts: ["y(t) = ", 0, " (steady)"],
     vars: [{ sym: "F", param: ParamId.Fold, step: 2, scale: 100, fmt: pctFmt }],
     active: (g) => g(ParamId.Fold) > 0.001,
@@ -602,7 +605,7 @@ if (fold > 0) osc = Math.sin(osc * (1 + fold * FOLD_GAIN) * 1.5707963);
 // more gain → the sine folds the wave back on itself → extra harmonics`,
   },
   {
-    id: "osc2", label: "Osc 2", color: "#74c0fc",
+    id: "osc2", label: "Osc 2", color: "#0080a8",
     parts: ["y(t) = ", 0, " at ", 1, " st"],
     vars: [
       { sym: "M", param: ParamId.Osc2Mix, step: 2, scale: 100, fmt: pctFmt },
@@ -621,7 +624,7 @@ osc2Phase += (freq * osc2Ratio) / sampleRate;
 if (hardSync && osc1Wrapped) osc2Phase = 0; // snap to oscillator 1's cycle`,
   },
   {
-    id: "fm", label: "FM / Ring", color: "#faa2c1",
+    id: "fm", label: "FM / Ring", color: "#a83080",
     parts: ["y(t) = ", 0, " at ×", 1, ", fb ", 2],
     vars: [
       { sym: "A", param: ParamId.OscModAmount, step: 2, scale: 100, fmt: pctFmt },
@@ -642,7 +645,7 @@ modPhase += (freq * ratio) / sampleRate;    // a sine at freq × r
 // Ring: osc *= 1 - amount + amount * modOut;`,
   },
   {
-    id: "unison", label: "Unison", color: "#3bc9db",
+    id: "unison", label: "Unison", color: "#007878",
     parts: (g) => {
       const n = UNISON_VOICES[Math.max(0, Math.min(3, Math.round(g(ParamId.Unison))))];
       return ["y(t) = ", 0, ` spread · ${n} voices  (steady)`];
@@ -662,7 +665,7 @@ for (let u = 0; u < unisonCount; u++) {
 osc = sum * unisonNorm; // normalise by 1/√count`,
   },
   {
-    id: "wavetable", label: "Wavetable", color: "#da77f2",
+    id: "wavetable", label: "Wavetable", color: "#7000a8",
     parts: (g) => {
       const fam = WAVETABLES[Math.max(0, Math.min(4, Math.round(g(ParamId.WaveTable))))];
       return ["y(t) = scan ", 0, `  — ${fam} table  (steady)`];
@@ -680,7 +683,7 @@ osc = this.wtFamily > 0
   : this.osc(ph, this.waveform, pw, dt);                       // else the analog wave`,
   },
   {
-    id: "comb", label: "Comb", color: "#8ce99a",
+    id: "comb", label: "Comb", color: "#308030",
     parts: ["y(t) = ", 0, " · e^(−t/(0.1+2·", 1, ")) at ×", 2],
     vars: [
       { sym: "M", param: ParamId.CombMix, step: 2, scale: 100, fmt: pctFmt },
@@ -700,7 +703,7 @@ buf[w] = Math.tanh(input + lp * feedback);        // feedback = 0.85 + D * 0.14
 out = dry * (1 - mix) + delayed * mix;`,
   },
   {
-    id: "modal", label: "Modal", color: "#ffe066",
+    id: "modal", label: "Modal", color: "#806000",
     // The material's REAL mode sum: switching material changes the τₖ set (and the
     // curve) — the formula names it.
     parts: (g) => {
@@ -730,7 +733,7 @@ for (let k = 0; k < t.r.length; k++) {
 }`,
   },
   {
-    id: "out", label: "Out", color: "#ced4da",
+    id: "out", label: "Out", color: "#505050",
     parts: ["y(t) = ", 0, " at pan ", 1, " (steady)"],
     vars: [
       { sym: "vol", param: ParamId.Volume, step: 2, scale: 100, fmt: pctFmt },
@@ -754,7 +757,7 @@ masterL[i] += sample * volume * gl;
 masterR[i] += sample * volume * gr; // centred sums to the exact mono level`,
   },
   {
-    id: "life", label: "Life", color: "#a5adba",
+    id: "life", label: "Life", color: "#703850",
     // Not a curve over ONE note — dice rolled per HIT. Drawn as a steady line at the
     // hit probability; the formula reads as the per-hit rules.
     parts: ["per hit: P(play) = ", 0, ", duck = ", 1, ", jitter = ", 2, ", roll = ", 3],

@@ -25,7 +25,7 @@
 // padSnapshot below fills the tail with defaults. The drawn pitch contour's 32 slots were
 // added that way on purpose, which is why they arrived while the format stayed at 14.
 
-import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
+import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS, LEGACY_VOICE_COLORS } from "./lines";
 import { NUM_PARAMS, PARAMS, RealParamId } from "./params";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, LoopTransition,
@@ -393,12 +393,27 @@ function readTransitions(tv: unknown): LoopTransition[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** Retint a stored loop colour when it's one the app no longer uses.
+ *
+ * The voice palette moved from the old neon rainbow to the VGA set with the Win98
+ * reskin, and `loop.color` is written into every save — so a project authored before
+ * the reskin would otherwise come back with six neon rows on grey chrome. An exact
+ * (case-insensitive) legacy hex maps to the new colour at the SAME index, which is
+ * what keeps a row's identity; anything else is a colour the user chose and is left
+ * alone. This is a value change, not a layout change, so the format stays at v15. */
+function migrateVoiceColor(hex: string): string {
+  const i = LEGACY_VOICE_COLORS.indexOf(hex.toLowerCase());
+  return i < 0 ? hex : VOICE_COLORS[i];
+}
+
 function readLoop(lv: unknown, colorIndex: number): Loop {
   const s = (lv && typeof lv === "object" ? lv : {}) as Partial<LoopJSON>;
   return {
     soundId: typeof s.soundId === "number" ? s.soundId : -1,
     snapshot: Array.isArray(s.snapshot) && s.snapshot.length ? padSnapshot(s.snapshot) : [],
-    color: typeof s.color === "string" ? s.color : VOICE_COLORS[colorIndex % VOICE_COLORS.length],
+    color: typeof s.color === "string"
+      ? migrateVoiceColor(s.color)
+      : VOICE_COLORS[colorIndex % VOICE_COLORS.length],
     name: String(s.name ?? ""),
     label: typeof s.label === "string" && s.label ? s.label : undefined,
     hits: s.hits ?? 0,

@@ -166,7 +166,7 @@ export function openDrawOverlay(opts: DrawOverlayOptions): void {
     // The caller's reference curve (a matched formula), dashed behind the drawing.
     const ghost = ys && opts.ghost ? opts.ghost(ys) : null;
     if (ghost) {
-      ctx.strokeStyle = "rgba(154,168,204,0.5)";
+      ctx.strokeStyle = "#808080";
       ctx.lineWidth = 1.5 * dpr;
       ctx.setLineDash([5 * dpr, 4 * dpr]);
       strokePath(ghost);
@@ -174,7 +174,7 @@ export function openDrawOverlay(opts: DrawOverlayOptions): void {
     }
     // The cleaned curve (or the raw stroke while the finger is still down).
     if (drawing && raw.length > 1) {
-      ctx.strokeStyle = "rgba(255,214,10,0.55)";
+      ctx.strokeStyle = "rgba(0,0,128,0.55)";
       ctx.lineWidth = 2 * dpr;
       ctx.beginPath();
       raw.forEach((p, i) => {
@@ -183,7 +183,7 @@ export function openDrawOverlay(opts: DrawOverlayOptions): void {
       });
       ctx.stroke();
     } else if (ys) {
-      ctx.strokeStyle = "#ffd60a";
+      ctx.strokeStyle = "#000080";
       ctx.lineWidth = 2.5 * dpr;
       strokePath((x) => {
         const xi = x * (ys.length - 1);
@@ -191,7 +191,7 @@ export function openDrawOverlay(opts: DrawOverlayOptions): void {
         return ys[i0] + (ys[i0 + 1] - ys[i0]) * (xi - i0);
       });
       // The retained control points — what the slider is really moving.
-      ctx.fillStyle = "#ffd60a";
+      ctx.fillStyle = "#000080";
       for (const k of knotsOf()) {
         ctx.beginPath();
         ctx.arc(k.x * W, (1 - clamp01(k.y)) * H, 3 * dpr, 0, Math.PI * 2);
