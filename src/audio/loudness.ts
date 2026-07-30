@@ -1,7 +1,7 @@
 // Post-shuffle loudness normalization: render ONE hit of a sound offline, measure
 // how loud it actually comes out, and derive a makeup gain that lands every
 // generated sound at a consistent perceived level. This is the closed loop behind
-// the open-loop shuffle guards in drumKit.ts — those keep the TIMBRE sane; this
+// the open-loop shuffle guards in sound.ts — those keep the TIMBRE sane; this
 // fixes the LEVEL, whatever the parameter stack did to it.
 //
 // Loudness = the loudest 50ms RMS window of the mono mix, taken together with a

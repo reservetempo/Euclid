@@ -1,8 +1,8 @@
-// Small shared UI pieces + the shuffle settings every sound-editing surface renders:
-// the Randomness / Spread / Max-len / Snap / Seed controls that feed the same options
-// into DrumKit.shuffleAll.
+// Small shared UI pieces + the option lists the shuffle controls render: Spread / Max len
+// / Snap. The settings themselves live on the SoundDraft being edited, as real values —
+// these tables are only the labels and the index↔value mapping a <select> needs.
 
-import { DrumKit, FreqCurve, PitchSnap, ShuffleOptions } from "../model/drumKit";
+import { FreqCurve, PitchSnap, SoundDraft } from "../model/sound";
 
 // Shuffle frequency spread: how Pitch & Filter Cutoff are randomly distributed.
 // "Linear" is uniform in Hz (high-heavy); the others spread the draw the way the
@@ -37,50 +37,17 @@ export const SNAP_OPTIONS: { label: string; snap: PitchSnap }[] = [
   { label: "Key", snap: PitchSnap.Key },
 ];
 
-/** One sound-editing surface: its shuffle settings plus the kit holding the live
-    params and undo stack for the single sound being edited. */
-export interface VoiceEditor extends ShuffleSettings {
-  kit: DrumKit;
+/** Which CURVE_OPTIONS row holds `curve` (0 if it somehow isn't listed) — the selects
+    are index-based, the draft stores the value itself. */
+export function curveOptionIndex(curve: FreqCurve): number {
+  const i = CURVE_OPTIONS.findIndex((o) => o.curve === curve);
+  return i < 0 ? 0 : i;
 }
 
-/** The mutable shuffle settings an editing surface keeps between shuffles. */
-export interface ShuffleSettings {
-  randomness: number; // 0..1 shuffle amount (1 = uniform over the full range)
-  curveIdx: number;   // index into CURVE_OPTIONS
-  maxLenIdx: number;  // index into MAXLEN_OPTIONS
-  snapIdx: number;    // index into SNAP_OPTIONS
-  seedText: string;   // user-entered seed ("" = fresh roll per shuffle)
-  lastSeed: string;   // seed the last shuffle used (shown as the placeholder)
-}
-
-export function defaultShuffleSettings(): ShuffleSettings {
-  return { randomness: 1.0, curveIdx: 1, maxLenIdx: 0, snapIdx: 0, seedText: "", lastSeed: "" };
-}
-
-/** The DrumKit.shuffleAll options for the current settings + key/tempo context. */
-export function shuffleOptions(
-  st: ShuffleSettings,
-  ctx: { root: number; scale: number; bpm: number },
-  seed: string,
-): ShuffleOptions {
-  return {
-    randomness: st.randomness,
-    curve: CURVE_OPTIONS[st.curveIdx].curve,
-    maxLen: MAXLEN_OPTIONS[st.maxLenIdx].seconds,
-    bpm: ctx.bpm,
-    snap: SNAP_OPTIONS[st.snapIdx].snap,
-    root: ctx.root,
-    scale: ctx.scale,
-    seed,
-  };
-}
-
-/** A 6-char shareable seed for a shuffle (shown after every roll). */
-export function randomSeed(): string {
-  let s = "";
-  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L look-alikes
-  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return s;
+/** Which MAXLEN_OPTIONS row holds `seconds` (0 = "Off" if it isn't listed). */
+export function maxLenOptionIndex(seconds: number): number {
+  const i = MAXLEN_OPTIONS.findIndex((o) => o.seconds === seconds);
+  return i < 0 ? 0 : i;
 }
 
 export function mkBtn(text: string, cls: string): HTMLButtonElement {
@@ -122,7 +89,7 @@ export function selectRow(label: string, options: string[], value: number, onCha
 
 /** Seed row: type a seed to repeat a shuffle exactly (best at 100% randomness);
     empty = fresh roll each time, with the used seed shown as the placeholder. */
-export function seedRow(st: ShuffleSettings): HTMLElement {
+export function seedRow(st: SoundDraft): HTMLElement {
   const row = document.createElement("div");
   row.className = "precision";
   const lbl = document.createElement("span");
@@ -139,7 +106,7 @@ export function seedRow(st: ShuffleSettings): HTMLElement {
 }
 
 /** The Randomness amount slider row. */
-export function randomnessRow(st: ShuffleSettings): HTMLElement {
+export function randomnessRow(st: SoundDraft): HTMLElement {
   const rnd = document.createElement("div");
   rnd.className = "rnd";
   const slider = document.createElement("input");

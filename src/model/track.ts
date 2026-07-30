@@ -24,6 +24,7 @@ import {
   emptyNode, clampEnvelopes, STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
 import { ParamId } from "./params";
+import { SoundDraft } from "./sound";
 import { rng01, randomSeed } from "./rng";
 
 export { randomSeed }; // re-export: a rule's seed is minted here and in the UI
@@ -133,6 +134,8 @@ export interface LoopTransition extends GraphTransform {
   on: boolean;
   bars: number[];
   snapshot: number[];
+  /** The live editing state over `snapshot` — same deal as Loop.draft. */
+  draft?: SoundDraft;
   shape?: BlendShapeId;
   curve?: number;
   dir?: "in" | "out";
@@ -201,10 +204,13 @@ export function loopTransitionWindows(loop: Loop, barLimit: number): SweepWindow
 export interface Loop {
   soundId: number;
   snapshot: number[];
+  /** The live editing state over `snapshot`, made on first edit and kept for the life of
+      the loop (its undo stack and shuffle settings). NOT data: it is deliberately absent
+      from cloneLoop and from the save format — see model/sound.ts. */
+  draft?: SoundDraft;
   color: string;
   name: string;            // auto sound-description ("Tri · 590 · Punchy …"), updated on edit
   label?: string;          // a coined display name for this voice (see model/name.ts), stable
-  pitch: [number, number];
   hits: number;
   steps: number;
   rotation: number;
@@ -331,7 +337,6 @@ export function loopToNode(loop: Loop, reps = 1): VoiceNode {
   n.snapshot = loop.snapshot.slice();
   n.color = loop.color;
   n.name = loop.name;
-  n.pitch = [loop.pitch[0], loop.pitch[1]];
   n.hits = loop.hits;
   n.steps = loop.steps;
   n.rotation = loop.rotation;
@@ -570,7 +575,6 @@ export function cloneLoop(loop: Loop): Loop {
     color: loop.color,
     name: loop.name,
     label: loop.label,
-    pitch: [loop.pitch[0], loop.pitch[1]],
     hits: loop.hits,
     steps: loop.steps,
     rotation: loop.rotation,
@@ -579,8 +583,28 @@ export function cloneLoop(loop: Loop): Loop {
     gain: loop.gain,
     intro: loop.intro ? { ...loop.intro, modes: loop.intro.modes?.slice() } : undefined,
     outro: loop.outro ? { ...loop.outro, modes: loop.outro.modes?.slice() } : undefined,
+    // Transitions are listed FIELD BY FIELD rather than spread: a transition carries a
+    // live `draft` (see LoopTransition), and a spread would hand the copy a draft still
+    // writing through to the ORIGINAL's snapshot — editing the copy would edit both.
+    // Listing the fields keeps the clone pure data, and excludes anything live added
+    // later by default (project.ts's own row builders do the same for the save file).
     transitions: loop.transitions
-      ? loop.transitions.map((t) => ({ ...t, bars: t.bars.slice(), snapshot: t.snapshot.slice() }))
+      ? loop.transitions.map((t) => ({
+          on: t.on,
+          bars: t.bars.slice(),
+          snapshot: t.snapshot.slice(),
+          shape: t.shape,
+          curve: t.curve,
+          dir: t.dir,
+          cycles: t.cycles,
+          points: t.points ? t.points.slice() : undefined,
+          speedOn: t.speedOn,
+          rate: t.rate,
+          yGain: t.yGain,
+          yBias: t.yBias,
+          yMin: t.yMin,
+          yMax: t.yMax,
+        }))
       : undefined,
     accent: loop.accent ? { ...loop.accent } : undefined,
     ghost: loop.ghost ? { ...loop.ghost } : undefined,
@@ -603,7 +627,6 @@ export function emptyLoop(colorIndex: number, soundId: number): Loop {
     snapshot: [],
     color: VOICE_COLORS[colorIndex % VOICE_COLORS.length],
     name: "",
-    pitch: [60, 1000],
     hits: 0,
     steps: 0,
     rotation: 0,

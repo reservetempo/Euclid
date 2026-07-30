@@ -1,11 +1,25 @@
-// Editable, stateful drum parameters + global randomise/undo controls.
+// ONE SOUND, being edited. A sound is a flat snapshot of NUM_PARAMS numbers (see
+// params.ts); a SoundDraft is that snapshot plus the state an editing surface needs
+// around it — an undo stack, the shuffle settings, and a revision counter.
+//
+// The draft WRITES THROUGH: it is constructed over the array the model already holds
+// (`loop.snapshot`, or a transition's `snapshot`) and mutates it in place, so there is
+// no second copy to keep in sync and no capture/restore round-trip. What a caller must
+// still do after an edit is the rest of the write path — refresh the loop's name, push
+// the sound table, recompile — see App.writeLoopFromEditor.
+//
+// Because the array's identity never changes, `rev` is how anything asynchronous tells
+// that the sound moved on under it (the offline loudness pass in App.normalizeLoop used
+// to compare array identity, which write-through would have made a silent no-op).
+//
 // Every sound is a generic full-range sound (no presets, no per-drum character): shuffle
-// draws each param from its full base range (see paramSpec baseRange).
+// draws each param from its full base range (see paramSpec baseRange). There used to be a
+// DrumKit keyed by DrumType on top of this; with presets gone the key selected nothing,
+// so both it and the drum palette were deleted — see docs/adr/0002.
 
-import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS, ENGINE_TABLES } from "./params";
 import {
-  getParamSpec, baseSpec, baseRange, isDiscrete, LFO_TARGETS, LFO_NONE, OSC_MOD_TYPES, NOISE_TYPES,
+  baseSpec, baseRange, isDiscrete, LFO_TARGETS, LFO_NONE, OSC_MOD_TYPES, NOISE_TYPES,
   CLICK_TYPES, MODAL_MATERIALS, MODFX_TYPES, WAVETABLES, ECHO_SYNC_BEATS, ENV_SHAPES,
 } from "./paramSpec";
 import { intervals } from "./melodyScale";
@@ -32,6 +46,15 @@ export function seededRng(seed: string): () => number {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/** A 6-char shareable seed for a shuffle (shown after every roll). Lives here rather
+    than in the UI because {@link SoundDraft.shuffle} mints one when no seed is typed. */
+export function randomSeed(): string {
+  let s = "";
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L look-alikes
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
 }
 
 // How a shuffled Pitch is quantised: free Hz, the nearest semitone, or the nearest
@@ -263,13 +286,47 @@ function nearestLog(x: number, table: number[]): number {
   return best;
 }
 
-export class DrumParameters {
-  readonly drum: DrumType;
-  private values: number[] = new Array(NUM_PARAMS).fill(0);
+/** The shuffle's key/tempo context: the track's key (for PitchSnap.Key) and the tempo
+    a synced echo's tail is measured at. */
+export interface ShuffleContext {
+  root: number;
+  scale: number;
+  bpm: number;
+}
 
-  constructor(drum: DrumType) {
-    this.drum = drum;
-    this.resetToDefault();
+const MAX_UNDO = 20;
+
+export class SoundDraft {
+  // THE snapshot — the array the model holds, adopted rather than copied (see the file
+  // header). Everything below mutates it in place.
+  private values: number[];
+  // Bumped by every mutation. Async work captures it and compares afterwards to tell
+  // whether the sound it started from is still the sound on screen.
+  private _rev = 0;
+  // Full-state undo entries (a shuffle or a reset is one step), most recent last.
+  private undoStack: number[][] = [];
+
+  // --- shuffle settings, as REAL values (the UI maps its option lists onto these) ---
+  randomness = 1;                    // 0..1 draw window
+  curve: FreqCurve = FreqCurve.Log;  // frequency spread
+  maxLen = 0;                        // audible-length cap in seconds (0 = off)
+  snap: PitchSnap = PitchSnap.Off;   // pitch quantisation
+  seedText = "";                     // user-entered seed ("" = fresh roll per shuffle)
+  lastSeed = "";                     // the seed the last shuffle actually used
+
+  /** Adopt `values` as the sound. An empty array (a fresh loop) is filled with the
+      default starting sound; a short one (an older save) has its tail filled with
+      param defaults. Pass nothing for a standalone draft. */
+  constructor(values: number[] = []) {
+    this.values = values;
+    if (values.length === 0) this.resetToDefault();
+    else this.restore(values);
+    values.length = NUM_PARAMS; // drop any extra entries a future format might carry
+  }
+
+  /** The revision counter — see the file header. */
+  get rev(): number {
+    return this._rev;
   }
 
   get(id: ParamId): number {
@@ -280,6 +337,7 @@ export class DrumParameters {
   set(id: ParamId, value: number): void {
     const r = baseRange(id);
     this.values[id] = Math.min(r.max, Math.max(r.min, value));
+    this._rev++;
   }
 
   /** The shuffle window / slider range for a param — always the full base range. */
@@ -302,13 +360,58 @@ export class DrumParameters {
     return this.values.slice();
   }
 
-  /** Restore values from a snapshot, filling any missing/NaN entry with the param default. */
+  /** Restore values from a snapshot, filling any missing/NaN entry with the param
+      default. Safe to pass the draft's own array (that is how the constructor adopts a
+      short or blank snapshot): every index is read before it is written. */
   restore(snap: Snapshot): void {
     for (let i = 0; i < NUM_PARAMS; i++) {
       const id = i as ParamId;
       const v = snap[i];
-      this.set(id, typeof v !== "number" || Number.isNaN(v) ? getParamSpec(this.drum, id).def : v);
+      this.set(id, typeof v !== "number" || Number.isNaN(v) ? baseSpec(id).def : v);
     }
+  }
+
+  // --- the editing surface's three big actions -----------------------------
+  /** Roll a new sound from this draft's own shuffle settings, pushing an undo step.
+      Uses `seedText` when the user typed one, otherwise a fresh seed; either way the
+      seed used is recorded in `lastSeed` and returned. */
+  shuffle(ctx: ShuffleContext, seed = this.seedText.trim() || randomSeed()): string {
+    this.pushUndo();
+    this.lastSeed = seed;
+    this.randomize({
+      randomness: this.randomness,
+      curve: this.curve,
+      maxLen: this.maxLen,
+      bpm: ctx.bpm,
+      snap: this.snap,
+      root: ctx.root,
+      scale: ctx.scale,
+      seed,
+    });
+    return seed;
+  }
+
+  /** Back to the default starting sound, pushing an undo step. */
+  reset(): void {
+    this.pushUndo();
+    this.resetToDefault();
+  }
+
+  canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  /** Step back to the state before the last shuffle/reset. False if there is none. */
+  undo(): boolean {
+    const prev = this.undoStack.pop();
+    if (!prev) return false;
+    this.restore(prev);
+    return true;
+  }
+
+  private pushUndo(): void {
+    this.undoStack.push(this.capture());
+    if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
   }
 
   /** Randomise ("Shuffle") every randomisable param at once (Volume and ChokeGroup
@@ -331,18 +434,20 @@ export class DrumParameters {
       runaway FM sidebands, treble-launched pitch envelopes, folded/crushed high
       tones, whistling combs, piercing noise colours, hard-panned bass). The app
       adds a closed loop on top: it renders the result offline and stores a
-      loudness makeup gain on the node (see App.normalizeVoice).
+      loudness makeup gain on the node (see App.normalizeLoop).
 
       `maxLen` (seconds, 0 = off) caps the estimated audible length at `bpm`: FX
-      tails are trimmed first (echo, then reverb), then the amp body, to fit. */
-  randomize(opts: ShuffleOptions): void {
+      tails are trimmed first (echo, then reverb), then the amp body, to fit.
+
+      Private: {@link shuffle} is the way in, so a roll always leaves an undo step. */
+  private randomize(opts: ShuffleOptions): void {
     const randomness = Math.min(1, Math.max(0, opts.randomness));
     const curve = opts.curve ?? FreqCurve.Linear;
     if (opts.seed) rand = seededRng(opts.seed);
     try {
       for (let i = 0; i < NUM_PARAMS; i++) {
         const id = i as ParamId;
-        const s = getParamSpec(this.drum, id);
+        const s = baseSpec(id);
         if (!s.randomizable) continue;
         const r = baseRange(id);
         if (isDiscrete(s)) {
@@ -620,7 +725,7 @@ export class DrumParameters {
       e.g. ["Square","159","Pink","Punchy","Ring","Comb","0.8s"]. */
   describe(): string[] {
     const tokens: string[] = [];
-    tokens.push(getParamSpec(this.drum, ParamId.Waveform).choices![Math.round(this.get(ParamId.Waveform))]);
+    tokens.push(baseSpec(ParamId.Waveform).choices![Math.round(this.get(ParamId.Waveform))]);
     tokens.push(String(Math.round(this.get(ParamId.Pitch))));
     if (this.get(ParamId.NoiseLevel) > 0.05) tokens.push(NOISE_TYPES[Math.round(this.get(ParamId.NoiseType))]);
     const decShape = this.get(ParamId.AmpDecayShape);
@@ -666,7 +771,7 @@ export class DrumParameters {
         if (fit === 0) this.set(ParamId.EchoMix, 0);
         else if (ECHO_SYNC_BEATS[sync] * beatSec > maxTime) this.set(ParamId.EchoSync, fit);
       } else {
-        const minTime = getParamSpec(this.drum, ParamId.EchoTime).min;
+        const minTime = baseSpec(ParamId.EchoTime).min;
         if (maxTime < minTime) this.set(ParamId.EchoMix, 0);
         else if (this.get(ParamId.EchoTime) > maxTime) this.set(ParamId.EchoTime, maxTime);
       }
@@ -783,62 +888,5 @@ export class DrumParameters {
       if (seen.has(t)) this.set(id, NONE);
       else seen.add(t);
     }
-  }
-}
-
-const MAX_UNDO = 20;
-
-// One undo entry captures the full editable state (values) so undoing a shuffle or
-// reset is exact.
-interface UndoState { values: number[]; }
-
-export class DrumKit {
-  private params = new Map<DrumType, DrumParameters>();
-  private undo = new Map<DrumType, UndoState[]>(); // per-drum undo stack
-
-  constructor(drums: DrumType[]) {
-    for (const d of drums) this.params.set(d, new DrumParameters(d));
-  }
-
-  get(drum: DrumType): DrumParameters {
-    return this.params.get(drum)!;
-  }
-
-  /** Live Pitch range for melody mapping (the full base Pitch range). */
-  pitchRange(drum: DrumType): [number, number] {
-    const p = this.get(drum);
-    return [p.loOf(ParamId.Pitch), p.hiOf(ParamId.Pitch)];
-  }
-
-  private pushUndo(drum: DrumType): void {
-    const stack = this.undo.get(drum) ?? [];
-    stack.push({ values: this.get(drum).capture() });
-    if (stack.length > MAX_UNDO) stack.shift();
-    this.undo.set(drum, stack);
-  }
-
-  shuffleAll(drum: DrumType, opts: ShuffleOptions): void {
-    this.pushUndo(drum);
-    this.get(drum).randomize(opts);
-  }
-
-  /** Reset a drum to the default starting sound. */
-  resetAll(drum: DrumType): void {
-    this.pushUndo(drum);
-    this.get(drum).resetToDefault();
-  }
-
-  canBack(drum: DrumType): boolean {
-    const stack = this.undo.get(drum);
-    return !!stack && stack.length > 0;
-  }
-
-  /** Step one drum back to its previous state. Returns false if nothing to undo. */
-  backAll(drum: DrumType): boolean {
-    const stack = this.undo.get(drum);
-    if (!stack || stack.length === 0) return false;
-    const s = stack.pop()!;
-    this.get(drum).restore(s.values);
-    return true;
   }
 }

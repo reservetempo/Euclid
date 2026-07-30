@@ -16,16 +16,15 @@
 import { EngineHost, EngineSound, Playhead } from "../audio/engineHost";
 import { measureLoudness, makeupGain } from "../audio/loudness";
 import { encodeWavFromBuffer } from "../audio/wav";
-import { DRUMS, DrumType } from "../model/drums";
 import { ParamId, NUM_PARAMS, PITCH_DRAW_BASE, PITCH_DRAW_SLOTS } from "../model/params";
-import { baseSpec, getParamSpec, PITCH_SHAPE_DRAWN } from "../model/paramSpec";
+import { baseSpec, PITCH_SHAPE_DRAWN } from "../model/paramSpec";
 import {
   SOUND_TRACES, TraceSpec, TraceCtx, ParamGet, traceAxisSeconds, snapshotAxisSeconds,
   traceDomain, traceParts, hzToNorm, normToHz,
 } from "../model/soundTraces";
 import { openDrawOverlay } from "./drawOverlay";
 import { openPathOverlay } from "./pathOverlay";
-import { DrumKit, estimateLength } from "../model/drumKit";
+import { SoundDraft, estimateLength, randomSeed } from "../model/sound";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { reportCount, exportReports, clearReports } from "../model/soundReports";
 import {
@@ -43,20 +42,16 @@ import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../mo
 import { EuclidView, RingState } from "./euclidView";
 import { helpButton, HelpItem } from "./soundHelp";
 import {
-  defaultShuffleSettings, shuffleOptions, randomSeed, MAXLEN_OPTIONS, CURVE_OPTIONS, VoiceEditor,
+  MAXLEN_OPTIONS, CURVE_OPTIONS, curveOptionIndex, maxLenOptionIndex,
 } from "./controls";
 
 // Storage key kept from the app's working title so existing saves keep loading.
 const PROJECT_KEY = "msq010.project";
 
-// Every loop's inline shuffle editor drives a single-drum DrumKit; the reference drum
-// only picks parameter specs — Full Range opens all ranges so any character is reachable.
-const REF_DRUM = DrumType.Kick;
-
-// Default "Max len" (the shuffle's audible-length cap) per voice row, as an index into
-// MAXLEN_OPTIONS. Every row defaults to "Off" (no trimming) — a shuffled sound keeps its
-// full length unless the user picks a Max len in the sound-graph toolbar.
-const ROW_MAXLEN_IDX = [0, 0, 0, 0, 0, 0];
+// Default "Max len" (the shuffle's audible-length cap) per voice row, in SECONDS. Every
+// row defaults to 0 = off (no trimming) — a shuffled sound keeps its full length unless
+// the user picks a Max len in the sound-graph toolbar.
+const ROW_MAXLEN_SEC = [0, 0, 0, 0, 0, 0];
 
 // Overview timeline wraps to a new row ("line") every this many bars, so a long track
 // stays legible; the playhead loops back at each wrap and a badge names the active line.
@@ -74,7 +69,7 @@ type RhythmField = "hits" | "steps" | "rotation" | "split";
 /** What a sound-graph panel edits: the kit + shuffle settings, and where edits land.
     Two hosts exist — a loop's OWN sound, and a transition's TRANSFORMED sound. */
 interface SoundGraphHost {
-  ed: VoiceEditor;
+  draft: SoundDraft;
   color: string;
   title: string;
   write: () => void;                   // push the kit into the model, live (per scrub tick)
@@ -93,8 +88,6 @@ export class App {
   private engine = new EngineHost();
   private arr = new LineArrangement();       // COMPILED lanes (engine source of truth)
   private track = new Track();               // the authoring model
-  private kit = new DrumKit(DRUMS.map((d) => d.type)); // background editor kit (serialised)
-  private drumTypes = DRUMS.map((d) => d.type);
   private saveTimer = 0;
 
   private view: View = "track";
@@ -124,20 +117,17 @@ export class App {
   // later pages = the inactive ones).
   private graphTrace: string | null = null;
   private graphPage = 0;
-  // Transition editor state: the open transition, its tab, its Effects sub-tab, and one
-  // param editor (kit + shuffle settings) per transition — the target snapshot's
-  // editing surface, shuffle included.
+  // Transition editor state: the open transition and its tabs. The editing state for a
+  // transition's transformed sound is the draft on the transition itself (see
+  // model/sound.ts), so there is no side map here any more.
   private editTransition: LoopTransition | null = null;
   private transTab: "bars" | "graph" | "effects" | "speed" = "graph";
-  private transitionKits = new Map<LoopTransition, VoiceEditor>();
   // Debounced looping preview of the transition being edited (offline render): hear the
   // whole TRANSITION over a loop of a chosen length, or just the transformed RESULT.
   private previewTimer = 0;
   private previewToken = 0;
   private transPreviewMode: "transition" | "result" = "transition";
   private transPreviewBars = 4;
-  private selectedDrum: DrumType = DrumType.Kick;
-  private soundName = "";
   private playing = false;
   private tempo = 120;
   // Play-range loop region (1-indexed bars, inclusive); 0/0 = loop the whole track. A
@@ -147,10 +137,6 @@ export class App {
   private nextSoundId = 0;             // monotonic id for loop sounds
 
   private mixerReturn: View = "track"; // where the mixer's Back returns to
-
-  // Per-loop inline shuffle editors, keyed by loop identity. Rebuilt from a loop's saved
-  // snapshot/ranges/preset; dropped when the loop is removed.
-  private voiceEditors = new Map<Loop, VoiceEditor>();
 
   private root: HTMLElement;
   private viewRoot!: HTMLElement;
@@ -175,7 +161,7 @@ export class App {
     // No start gate: boot straight into the app. The browser won't let audio run
     // until a user gesture, so the engine starts lazily on the FIRST interaction
     // anywhere (and the shuffle / graph-tap audition paths await it — see withAudio).
-    if (!this.loadFromStorage()) this.applyRandomDefault();
+    this.loadFromStorage();
     this.render();
     const unlock = () => { void this.ensureAudioStarted(); };
     document.addEventListener("pointerdown", unlock, { once: true, capture: true });
@@ -326,7 +312,7 @@ export class App {
         if (!audible) snap[ParamId.Volume] = 0;
         else if (l.gain && l.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * l.gain;
         sounds.push({
-          id: l.soundId, snap, lo: l.pitch[0], hi: l.pitch[1],
+          id: l.soundId, snap,
           tail: estimateLength(snap, this.tempo),
           span: snapshotAxisSeconds(snap, this.tempo),
         });
@@ -363,7 +349,7 @@ export class App {
     clearTimeout(this.saveTimer);
     this.saveTimer = window.setTimeout(() => {
       try {
-        const json = serialize(this.track, this.kit, this.tempo, this.drumTypes, this.soundName);
+        const json = serialize(this.track, this.tempo);
         localStorage.setItem(PROJECT_KEY, JSON.stringify(json));
       } catch { /* ignore quota errors */ }
     }, 300);
@@ -374,8 +360,7 @@ export class App {
       const raw = localStorage.getItem(PROJECT_KEY);
       if (!raw) return false;
       const json = JSON.parse(raw) as ProjectJSON;
-      this.tempo = deserialize(json, this.track, this.kit, this.drumTypes);
-      this.soundName = json.soundName ?? this.soundName;
+      this.tempo = deserialize(json, this.track);
       this.resetIds();
       return true;
     } catch {
@@ -384,7 +369,7 @@ export class App {
   }
 
   private saveToFile(): void {
-    const json = serialize(this.track, this.kit, this.tempo, this.drumTypes, this.soundName);
+    const json = serialize(this.track, this.tempo);
     const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -431,8 +416,7 @@ export class App {
     reader.onload = () => {
       try {
         const json = JSON.parse(String(reader.result)) as ProjectJSON;
-        this.tempo = deserialize(json, this.track, this.kit, this.drumTypes);
-        this.soundName = json.soundName ?? "";
+        this.tempo = deserialize(json, this.track);
         this.resetIds();
         this.afterProjectChange();
       } catch {
@@ -444,11 +428,7 @@ export class App {
 
   private newProject(): void {
     this.track = new Track();
-    this.kit = new DrumKit(this.drumTypes);
-    this.applyRandomDefault();
     this.tempo = 120;
-    this.voiceEditors.clear();
-    this.transitionKits.clear();
     this.editTransition = null;
     this.nextSoundId = 0;
     this.editLoop = null;
@@ -462,10 +442,9 @@ export class App {
   }
 
   /** After load/new: bump the id counter past every loaded loop id so new sounds never
-      collide, and clear cached editors. */
+      collide. Editing state needs no clearing — a draft lives on its loop, and a load
+      builds new loops. */
   private resetIds(): void {
-    this.voiceEditors.clear();
-    this.transitionKits.clear();
     this.editTransition = null;
     let maxId = -1;
     for (const c of this.track.colors) {
@@ -480,13 +459,6 @@ export class App {
     if (this.playing) { this.playing = false; this.engine.stop(); }
     this.pushAll();
     this.render();
-  }
-
-  /** Seed the (background) editor kit with a fresh random sound, so a new/loaded
-      project still serialises a valid drum kit. */
-  private applyRandomDefault(): void {
-    this.kit.shuffleAll(this.selectedDrum, { randomness: 1.0 });
-    this.soundName = "";
   }
 
   // --- main render ------------------------------------------------------
@@ -1191,9 +1163,8 @@ export class App {
     const loops = this.track.colors[c].loops;
     const [removed] = loops.splice(i, 1);
     if (removed) {
-      this.voiceEditors.delete(removed);
+      // The drafts go with the loop and its transitions — nothing to evict.
       for (const tr of removed.transitions ?? []) {
-        this.transitionKits.delete(tr);
         if (this.editTransition === tr) { this.editTransition = null; this.stopPreview(); }
       }
     }
@@ -1856,9 +1827,9 @@ export class App {
   /** A sound-graph panel host: the two graphs (a loop's own sound, and a transition's
       TRANSFORMED sound) share the whole surface — only where edits land differs. */
   private graphHostForLoop(loop: Loop, rerender: () => void): SoundGraphHost {
-    const ed = this.voiceEditorFor(loop);
+    const draft = this.draftFor(loop);
     return {
-      ed,
+      draft,
       color: loop.soundId >= 0 ? loop.color : "#4a5064",
       title: "Every setting as a function of time",
       write: () => this.writeLoopFromEditor(loop),
@@ -1870,20 +1841,20 @@ export class App {
         rerender();
       },
       resetTitle: "Reset to the preset",
-      reset: () => ed.kit.resetAll(REF_DRUM),
+      reset: () => draft.reset(),
     };
   }
 
   private graphHostForTransition(loop: Loop, tr: LoopTransition, rerender: () => void): SoundGraphHost {
-    const ed = this.transitionKitFor(loop, tr);
+    const draft = this.transitionDraftFor(loop, tr);
+    // The draft writes through to tr.snapshot, so this is just the rest of the path.
     const write = () => {
-      tr.snapshot = ed.kit.get(REF_DRUM).capture();
       this.recompile();
       this.schedulePreview(loop, tr);
     };
     // The ⧉ "copy transformed sound as a new loop" action lives in the popup header.
     return {
-      ed,
+      draft,
       color: loop.soundId >= 0 ? loop.color : "#4a5064",
       title: "The transformed sound — the transition's end values",
       write,
@@ -1893,7 +1864,7 @@ export class App {
         rerender();
       },
       resetTitle: "Reset to the untransformed sound (no change)",
-      reset: () => ed.kit.get(REF_DRUM).restore(loop.snapshot),
+      reset: () => draft.restore(loop.snapshot),
     };
   }
 
@@ -1904,8 +1875,7 @@ export class App {
       through the inactive ones) or, when a trace is tapped, its EQUATION with the
       values inline. Hosted by a loop's own sound OR a transition's transformed sound. */
   private soundGraphPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
-    const ed = host.ed;
-    const p = ed.kit.get(REF_DRUM);
+    const p = host.draft;
     const get: ParamGet = (id) => p.get(id);
 
     const wrap = document.createElement("div");
@@ -1931,8 +1901,8 @@ export class App {
     for (const el of host.extraCorner ?? []) bar.append(el);
     bar.append(
       mkTool("↩", "Back to the previous sound", () => {
-        if (ed.kit.backAll(REF_DRUM)) void host.replace();
-      }, "", !ed.kit.canBack(REF_DRUM)),
+        if (p.undo()) void host.replace();
+      }, "", !p.canUndo()),
       mkTool("↺", host.resetTitle, () => {
         host.reset();
         void host.replace();
@@ -1968,15 +1938,15 @@ export class App {
     bar.append(this.graphCornerSelect("max len",
       "Max length — a shuffled sound is trimmed to at most this long (applies to the next 🎲)",
       MAXLEN_OPTIONS.map((o) => o.label),
-      () => ed.maxLenIdx,
-      (i) => { ed.maxLenIdx = i; },
+      () => maxLenOptionIndex(p.maxLen),
+      (i) => { p.maxLen = MAXLEN_OPTIONS[i].seconds; },
     ));
     // SPREAD: how the shuffle distributes pitch/cutoff draws across the range.
     bar.append(this.graphCornerSelect("spread",
       "Spread — how the shuffle spreads pitch & filter draws (applies to the next 🎲)",
       CURVE_OPTIONS.map((o) => o.label),
-      () => ed.curveIdx,
-      (i) => { ed.curveIdx = i; },
+      () => curveOptionIndex(p.curve),
+      (i) => { p.curve = CURVE_OPTIONS[i].curve; },
     ));
     const help = helpButton("The sound graph", App.SOUND_GRAPH_HELP);
     help.classList.add("graph-tool-help");
@@ -1988,13 +1958,11 @@ export class App {
     box.className = "sound-graph-box";
     const svg = this.soundGraphSvg(get, sel);
     svg.classList.add("graph-tappable");
-    svg.addEventListener("click", () => this.auditionEditor(ed));
+    svg.addEventListener("click", () => this.auditionDraft(p));
     box.append(svg);
     // The Shuffle sits on the graph's top-right corner and stands out (voice colour).
     const dice = mkTool("🎲", "Shuffle a new sound", () => {
-      const seed = ed.seedText.trim() || randomSeed();
-      ed.lastSeed = seed;
-      ed.kit.shuffleAll(REF_DRUM, shuffleOptions(ed, this.shuffleContext(), seed));
+      p.shuffle(this.shuffleContext());
       void host.replace();
     }, "graph-tool-dice graph-dice-corner");
     box.append(dice);
@@ -2187,7 +2155,7 @@ export class App {
       bound params live (an inactive setting comes to life the moment its level does);
       the type row switches the function's discrete flavour (LFO wave, noise colour…). */
   private traceEditor(host: SoundGraphHost, spec: TraceSpec, rerender: () => void): HTMLElement {
-    const p = host.ed.kit.get(REF_DRUM);
+    const p = host.draft;
     const get: ParamGet = (id) => p.get(id);
     const ctx: TraceCtx = { bpm: this.tempo };
     const card = document.createElement("div");
@@ -2273,7 +2241,7 @@ export class App {
     // The function's discrete types (an LFO gets Wave + Dest + Sync; noise its colour,
     // the echo its beat-sync and ping-pong, …) — each a segmented row of real choices.
     for (const ty of spec.types ?? []) {
-      const ps = getParamSpec(REF_DRUM, ty.param);
+      const ps = baseSpec(ty.param);
       if (!ps.choices || !ps.choices.length) continue;
       const seg = document.createElement("div");
       seg.className = "placement-seg fade-modes";
@@ -2356,7 +2324,6 @@ export class App {
       rm.onclick = (e) => {
         e.stopPropagation();
         trs.splice(i, 1);
-        this.transitionKits.delete(tr);
         if (this.editTransition === tr) { this.editTransition = null; this.stopPreview(); }
         this.recompile();
         rerender();
@@ -2901,7 +2868,7 @@ export class App {
       exactly where it was drawn, yet still transposes with Pitch, follows the key, and rides
       pitchTrack. The contour spans traceAxisSeconds, which is why the x caption names it. */
   private openPitchDraw(host: SoundGraphHost, rerender: () => void): void {
-    const p = host.ed.kit.get(REF_DRUM);
+    const p = host.draft;
     const get: ParamGet = (id) => p.get(id);
     const ctx: TraceCtx = { bpm: this.tempo };
     const span = traceAxisSeconds(get, ctx);
@@ -2975,9 +2942,8 @@ export class App {
       seedHistory: [],
     };
     this.track.colors[c].loops.push(clone);
-    // Name it from its own sound (a fresh editor restores the transformed snapshot).
-    const ed = this.voiceEditorFor(clone);
-    clone.name = ed.kit.get(REF_DRUM).describe().join(" · ");
+    // Name it from its own sound (a fresh draft over the copied snapshot).
+    clone.name = this.draftFor(clone).describe().join(" · ");
     this.pushSounds();
     this.recompile();
     void this.normalizeLoop(clone);
@@ -3043,18 +3009,15 @@ export class App {
     return wrap;
   }
 
-  /** The per-transition param editor (kit + shuffle settings): the surface the Effects
-      tab edits, seeded from the transition's target snapshot (falling back to the
-      loop's own sound). */
-  private transitionKitFor(loop: Loop, tr: LoopTransition): VoiceEditor {
-    let ed = this.transitionKits.get(tr);
-    if (ed) return ed;
-    const kit = new DrumKit([REF_DRUM]);
-    const p = kit.get(REF_DRUM);
-    p.restore(tr.snapshot.length ? tr.snapshot : loop.snapshot);
-    ed = { kit, ...defaultShuffleSettings() };
-    this.transitionKits.set(tr, ed);
-    return ed;
+  /** The transition's editing state — the surface the Effects tab edits, writing through
+      to the transition's TARGET snapshot. A transition that has no snapshot of its own yet
+      starts from the loop's sound. */
+  private transitionDraftFor(loop: Loop, tr: LoopTransition): SoundDraft {
+    if (!tr.draft) {
+      if (!tr.snapshot.length) tr.snapshot = loop.snapshot.slice();
+      tr.draft = new SoundDraft(tr.snapshot);
+    }
+    return tr.draft;
   }
 
   // --- transition preview (the shortened 4-bar loop) ---------------------
@@ -3096,7 +3059,7 @@ export class App {
     const target = tr.snapshot.length ? tr.snapshot : loop.snapshot;
     // In result-only mode the node's own sound (id 0) IS the transformed sound.
     const sounds: EngineSound[] = [
-      { id: 0, snap: withGain(resultOnly ? target : loop.snapshot), lo: loop.pitch[0], hi: loop.pitch[1], tail: estimateLength(resultOnly ? target : loop.snapshot, this.tempo), span: snapshotAxisSeconds(resultOnly ? target : loop.snapshot, this.tempo) },
+      { id: 0, snap: withGain(resultOnly ? target : loop.snapshot), tail: estimateLength(resultOnly ? target : loop.snapshot, this.tempo), span: snapshotAxisSeconds(resultOnly ? target : loop.snapshot, this.tempo) },
     ];
     // The morph window spans the whole preview loop, carrying the transition's blend
     // function verbatim (mirroring loopTransitionWindows — Volume as a ratio of the
@@ -3581,32 +3544,29 @@ export class App {
     this.recompile();
   }
 
-  // --- loop sound editing (shuffle menu + sound view) -------------------
-  private voiceEditorFor(loop: Loop): VoiceEditor {
-    let ed = this.voiceEditors.get(loop);
-    if (ed) return ed;
-    const kit = new DrumKit([REF_DRUM]);
-    const p = kit.get(REF_DRUM);
-    if (loop.snapshot.length) p.restore(loop.snapshot);
-    ed = { kit, ...defaultShuffleSettings() };
-    ed.maxLenIdx = ROW_MAXLEN_IDX[this.colorOf(loop)] ?? 0; // per-row default sound-length cap
-    this.voiceEditors.set(loop, ed);
-    return ed;
+  // --- loop sound editing (the sound graph) ------------------------------
+  /** The loop's editing state, made on first use and kept for the life of the loop. The
+      draft writes THROUGH to `loop.snapshot` (see model/sound.ts), so there is nothing to
+      copy back — only the rest of the write path, in writeLoopFromEditor. */
+  private draftFor(loop: Loop): SoundDraft {
+    if (!loop.draft) {
+      loop.draft = new SoundDraft(loop.snapshot);
+      loop.draft.maxLen = ROW_MAXLEN_SEC[this.colorOf(loop)] ?? 0; // per-row default cap
+    }
+    return loop.draft;
   }
 
-  /** Write a loop's editor state back into the loop, resend the sound table, persist. */
+  /** Finish an edit to a loop's sound: the draft has already written the values into
+      `loop.snapshot`, so what is left is the rest of the write path — mint the sound id on
+      the first edit, refresh the description, resend the sound table, recompile, persist. */
   private writeLoopFromEditor(loop: Loop): void {
-    const ed = this.voiceEditorFor(loop);
-    const p = ed.kit.get(REF_DRUM);
+    const draft = this.draftFor(loop);
     if (loop.soundId < 0) {
       loop.soundId = this.nextSoundId++;
       loop.color = VOICE_COLORS[this.colorOf(loop) % VOICE_COLORS.length];
       if (loop.steps < 1) { loop.steps = 16; loop.hits = 1; loop.rotation = 0; }
     }
-    loop.snapshot = p.capture();
-    loop.name = p.describe().join(" · ");
-    const pr = ed.kit.pitchRange(REF_DRUM);
-    loop.pitch = [pr[0], pr[1]];
+    loop.name = draft.describe().join(" · ");
     this.pushSounds();
     this.recompile();
     if (!this.playing) this.refreshRings();
@@ -3621,18 +3581,17 @@ export class App {
 
   private auditionLoop(loop: Loop): void {
     this.withAudio(() => {
-      const p = this.voiceEditorFor(loop).kit.get(REF_DRUM);
-      const snap = p.capture();
+      const snap = loop.snapshot.slice();
       if (loop.gain && loop.gain !== 1) snap[ParamId.Volume] = (snap[ParamId.Volume] ?? 0.85) * loop.gain;
       this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo), snapshotAxisSeconds(snap, this.tempo));
     });
   }
 
-  /** One-shot audition of whatever sound an editor kit currently holds (a loop's own
-      sound, or a transition's transformed sound) — used by the graph tap-to-play. */
-  private auditionEditor(ed: VoiceEditor): void {
+  /** One-shot audition of whatever sound a draft currently holds (a loop's own sound, or
+      a transition's transformed sound) — used by the graph tap-to-play. */
+  private auditionDraft(draft: SoundDraft): void {
     this.withAudio(() => {
-      const snap = ed.kit.get(REF_DRUM).capture();
+      const snap = draft.capture();
       this.engine.audition(snap, Math.round(this.engine.sampleRate * 0.4), estimateLength(snap, this.tempo), snapshotAxisSeconds(snap, this.tempo));
     });
   }
@@ -3641,7 +3600,10 @@ export class App {
       the makeup gain that lands it at the reference loudness (best-effort). */
   private async normalizeLoop(loop: Loop): Promise<void> {
     if (loop.soundId < 0 || !loop.snapshot.length) return;
-    const token = loop.snapshot;
+    // The draft writes through, so the snapshot array's identity never changes — its
+    // REVISION is what says whether this measurement is still about the sound on screen.
+    const draft = this.draftFor(loop);
+    const token = draft.rev;
     const meas = loop.snapshot.slice();
     meas[ParamId.Volume] = 1;
     meas[ParamId.HitChance] = 1;
@@ -3651,12 +3613,12 @@ export class App {
       const tail = Math.min(1.6, Math.max(0.4, estimateLength(meas, this.tempo)));
       const buffer = await this.engine.renderToBuffer({
         lines: [{ nodes: [{ soundId: 0, steps: 1, lenSteps: STEPS_PER_BAR, waitSteps: 0, pattern: [1] }] }],
-        sounds: [{ id: 0, snap: meas, lo: loop.pitch[0], hi: loop.pitch[1], tail: 0, span: snapshotAxisSeconds(meas, this.tempo) }],
+        sounds: [{ id: 0, snap: meas, tail: 0, span: snapshotAxisSeconds(meas, this.tempo) }],
         tempo: this.tempo,
         maxSteps: 1,
         tailSec: tail,
       });
-      if (loop.snapshot !== token) return;
+      if (draft.rev !== token) return;
       loop.gain = makeupGain(measureLoudness(buffer));
       this.pushSounds();
       this.persist();
@@ -3668,10 +3630,9 @@ export class App {
     await this.normalizeLoop(loop);
   }
 
-  /** Mint an audible sound for a fresh loop by shuffling a new editor and writing it. */
+  /** Mint an audible sound for a fresh loop by shuffling its draft and writing it. */
   private mintLoopSound(loop: Loop): void {
-    const ed = this.voiceEditorFor(loop);
-    ed.kit.shuffleAll(REF_DRUM, shuffleOptions(ed, this.shuffleContext(), randomSeed()));
+    this.draftFor(loop).shuffle(this.shuffleContext(), randomSeed());
     this.writeLoopFromEditor(loop);
     void this.normalizeLoop(loop);
   }

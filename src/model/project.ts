@@ -1,26 +1,30 @@
-// Whole-project save/load: the procedural TRACK (six colours of loops + a bar limit),
-// every drum's sound, and tempo. Plain JSON, used for both localStorage autosave and
-// files.
+// Whole-project save/load: the procedural TRACK (six colours of loops, each carrying its
+// own sound) plus a bar limit and tempo. Plain JSON, used for both localStorage autosave
+// and files.
 //
-// The project is serialized as version 14: a procedural placement model (see track.ts)
+// The project is serialized as version 15: a procedural placement model (see track.ts)
 // where each colour is an ordered list of loops carrying a placement rule. Only version
-// 14 loads; any other version loads with a BLANK track (tempo is still restored). The
+// 15 loads; any other version loads with a BLANK track (tempo is still restored). The
 // format is not back-compatible with earlier generations of the app.
+//
+// v15 (from v14) dropped three fields that no longer had a reader: the `drums` blob (a
+// background DrumKit that survived the removal of the preset system and was serialized
+// without ever being shown), `soundName` (that kit's name), and each loop's `pitch` range
+// (always the base Pitch range — a constant, and unread by the DSP since the melody
+// section went). A v14 file is otherwise readable, and refusing it is a deliberate clean
+// break rather than a necessity — see docs/adr/0002.
 //
 // v14 (from v13) regrouped the parameter table in params.ts — each layer's own decay moved
 // up beside the level it fades, Gate joined the per-hit Life block, and the physical-model
 // resonators split out of the Filter group. Parameter INDICES moved with them, so a v13
-// snapshot no longer lines up. The drum kit is therefore only restored for v14; older files
-// fall back to the default kit (their sound snapshots would otherwise be scrambled by the
-// index shift). v13 had done the same for the envelope-SHAPE params it inserted.
+// snapshot no longer lines up. v13 had done the same for the envelope-SHAPE params it
+// inserted.
 //
 // Params APPENDED to the end of ParamId are the one kind of contract change that does NOT
-// need a bump, because they shift no existing index — a older file is simply short, and
+// need a bump, because they shift no existing index — an older file is simply short, and
 // padSnapshot below fills the tail with defaults. The drawn pitch contour's 32 slots were
-// added that way on purpose, which is why this is still version 14.
+// added that way on purpose, which is why they arrived while the format stayed at 14.
 
-import { DrumType } from "./drums";
-import { DrumKit } from "./drumKit";
 import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS } from "./lines";
 import { NUM_PARAMS, PARAMS, RealParamId } from "./params";
 import {
@@ -83,7 +87,6 @@ export interface LoopJSON {
   color: string;
   name: string;
   label?: string;
-  pitch: [number, number];
   hits: number;
   steps: number;
   rotation: number;
@@ -122,14 +125,12 @@ export interface ColorJSON {
 }
 
 export interface ProjectJSON {
-  version: number; // 14 = current format; anything else loads blank
+  version: number; // 15 = current format; anything else loads blank
   tempo: number;
   barLimit?: number;
   root?: number;
   scale?: number;
   colors?: ColorJSON[];
-  drums?: Record<number, number[]>;
-  soundName?: string;
 }
 
 const cloneTransition = (t: LoopTransition): LoopTransitionJSON => ({
@@ -142,7 +143,7 @@ const cloneTransition = (t: LoopTransition): LoopTransitionJSON => ({
 
 const cloneLoop = (l: Loop): LoopJSON => ({
   soundId: l.soundId, snapshot: l.snapshot.slice(), color: l.color, name: l.name, label: l.label,
-  pitch: [l.pitch[0], l.pitch[1]], hits: l.hits, steps: l.steps, rotation: l.rotation,
+  hits: l.hits, steps: l.steps, rotation: l.rotation,
   split: l.split, patternOv: l.patternOv ? l.patternOv.slice() : undefined,
   gain: l.gain,
   transitions: l.transitions && l.transitions.length ? l.transitions.map(cloneTransition) : undefined,
@@ -166,15 +167,9 @@ const cloneSweep = (s: RowSweep): RowSweepJSON => ({
   from: s.from, to: s.to, curve: s.curve, dir: s.dir, shape: s.shape, cycles: s.cycles, rate: s.rate,
 });
 
-export function serialize(
-  track: Track, kit: DrumKit, tempo: number, drums: DrumType[], soundName: string
-): ProjectJSON {
-  const drumSnaps: Record<number, number[]> = {};
-  for (const d of drums) {
-    drumSnaps[d] = kit.get(d).capture();
-  }
+export function serialize(track: Track, tempo: number): ProjectJSON {
   return {
-    version: 14,
+    version: 15,
     tempo,
     barLimit: track.barLimit,
     root: track.root,
@@ -184,8 +179,6 @@ export function serialize(
       sweeps: c.sweeps && c.sweeps.length ? c.sweeps.map(cloneSweep) : undefined,
       loops: c.loops.map(cloneLoop),
     })),
-    drums: drumSnaps,
-    soundName,
   };
 }
 
@@ -408,7 +401,6 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     color: typeof s.color === "string" ? s.color : VOICE_COLORS[colorIndex % VOICE_COLORS.length],
     name: String(s.name ?? ""),
     label: typeof s.label === "string" && s.label ? s.label : undefined,
-    pitch: Array.isArray(s.pitch) && s.pitch.length === 2 ? [s.pitch[0], s.pitch[1]] : [60, 1000],
     hits: s.hits ?? 0,
     steps: s.steps ?? 0,
     rotation: s.rotation ?? 0,
@@ -425,11 +417,9 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
   };
 }
 
-/** Apply a loaded project into the live track + kit. Returns the tempo. A non-v12 file
-    loads a BLANK track (tempo + kit still restored). */
-export function deserialize(
-  json: ProjectJSON, track: Track, kit: DrumKit, drums: DrumType[]
-): number {
+/** Apply a loaded project into the live track. Returns the tempo. A file of any other
+    version loads a BLANK track — only the tempo is restored. */
+export function deserialize(json: ProjectJSON, track: Track): number {
   // Reset to a blank track so partial / legacy loads leave a sane state.
   track.colors = Array.from({ length: NUM_LINES }, () => ({ loops: [] as Loop[] }));
   track.barLimit = DEFAULT_BAR_LIMIT;
@@ -437,7 +427,7 @@ export function deserialize(
   track.scale = 0;
 
   const v = json && json.version;
-  if (json && typeof v === "number" && v === 14) {
+  if (json && typeof v === "number" && v === 15) {
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
         if (ci >= NUM_LINES || !cj) return;
@@ -452,17 +442,9 @@ export function deserialize(
     track.root = typeof json.root === "number" ? ((json.root % 12) + 12) % 12 : 0;
     track.scale = typeof json.scale === "number" ? json.scale : 0;
   }
-  // (Any other version: track left blank on purpose — only the tempo below is restored.)
-
-  // The drum kit is only restored for the current version: v14 shifted the snapshot
-  // indices (the parameter regrouping), so an older kit snapshot would map onto the wrong
-  // params. Older files keep the default kit rather than a scrambled one.
-  if (v === 14) {
-    for (const d of drums) {
-      const snap = json.drums?.[d];
-      if (snap) kit.get(d).restore(snap);
-    }
-  }
+  // (Any other version: track left blank on purpose — only the tempo below is restored.
+  // v14 is refused along with the rest, though nothing about the snapshot layout moved —
+  // a deliberate clean break, see docs/adr/0002.)
 
   return typeof json.tempo === "number" ? json.tempo : 120;
 }

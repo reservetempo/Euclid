@@ -2,6 +2,18 @@
 // the worklet node, and exposes a small message API. The DSP itself lives in
 // public/worklet/engine.js (served verbatim — see that file's header).
 
+import { ParamId } from "../model/params";
+import { baseRange } from "../model/paramSpec";
+
+// The engine's sound table carries a pitch RANGE per sound (`lo`/`hi`) for the key/scale
+// mapping a sung phrase would need — the seam ADR-0001 parked. Nothing in the app varies
+// it: it has always been the base Pitch range, so it is filled in here at the wire rather
+// than stored on every loop and in every save file. engine.js is untouched.
+function withPitchRange(sounds: EngineSound[]): unknown[] {
+  const { min, max } = baseRange(ParamId.Pitch);
+  return sounds.map((s) => ({ ...s, lo: min, hi: max }));
+}
+
 /** The parameter-table stamp compiled into this bundle, injected by the euclidParams
     plugin (build/euclidParams.ts). The processor compares it against the one the worklet
     actually loaded, so a stale cached engine-params.js is reported rather than silently
@@ -34,8 +46,6 @@ export interface Playhead {
 export interface EngineSound {
   id: number;
   snap: number[];
-  lo: number; // Pitch range low (for the key/scale mapping)
-  hi: number; // Pitch range high
   tail: number; // estimated audible length, seconds
   /** Seconds the sound's Sound-Graph x axis spans (traceAxisSeconds). Derived from the
       snapshot, recomputed on every push — it is NOT stored in the snapshot, because it is a
@@ -127,7 +137,7 @@ export class EngineHost {
   /** Replace the sound table (every painted sound across all grids). The engine binds
       each id to a pool channel on demand and steals idle channels under pressure. */
   setSounds(sounds: EngineSound[]): void {
-    this.node?.port.postMessage({ type: "setSounds", sounds });
+    this.node?.port.postMessage({ type: "setSounds", sounds: withPitchRange(sounds) });
   }
 
   /** Preview a sound once now (editor voice or a lane), on the reserved audition
@@ -214,7 +224,7 @@ export class EngineHost {
       processorOptions: {
         paramsStamp: PARAMS_STAMP,
         render: true,
-        sounds: opts.sounds,
+        sounds: withPitchRange(opts.sounds),
         lines: opts.lines,
         tempo: opts.tempo,
         maxSteps: opts.maxSteps,

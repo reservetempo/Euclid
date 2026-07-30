@@ -364,7 +364,6 @@ export interface VoiceNode {
   snapshot: number[];
   color: string;
   name: string;
-  pitch: [number, number];
   hits: number;
   steps: number;
   rotation: number;
@@ -400,7 +399,7 @@ export interface VoiceNode {
 export function emptyNode(): VoiceNode {
   const d = VOICE_DEFAULT;
   return {
-    soundId: EMPTY, snapshot: [], color: "#888888", name: "", pitch: [60, 1000],
+    soundId: EMPTY, snapshot: [], color: "#888888", name: "",
     hits: d.hits, steps: d.steps, rotation: d.rotation, reps: 1,
   };
 }

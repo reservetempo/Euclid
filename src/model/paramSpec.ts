@@ -1,13 +1,12 @@
 // Reading helpers over the parameter registry in params.ts — nothing is declared twice here.
 // Every sound is a generic full-range sound: there is no per-drum "character" and no preset
-// system, so `getParamSpec` just returns the base spec. `baseRange` gives the widest range a
-// value may take (manual entry is clamped to it, and shuffle draws from it).
+// system, so a parameter has exactly ONE spec — `baseSpec`. `baseRange` gives the widest
+// range a value may take (manual entry is clamped to it, and shuffle draws from it).
 //
 // A ParamSpec is one registry row flattened for the UI: the choice list arrives as plain
 // labels, because a control only ever renders the label — what an index MEANS to the DSP is
 // the worklet's business and reaches it through the generated engine-params.js.
 
-import { DrumType } from "./drums";
 import { ParamId, NUM_PARAMS, PARAMS, RealParamId, ENGINE_TABLES, choiceLabels } from "./params";
 
 export interface ParamSpec {
@@ -39,24 +38,11 @@ export function baseSpec(id: ParamId): ParamSpec {
   return SPECS[id];
 }
 
-// Every sound is generic full-range now — no per-drum character. The `drum` arg is kept
-// only so existing callers (which pass a reference DrumType) stay unchanged.
-export function getParamSpec(_drum: DrumType, id: ParamId): ParamSpec {
-  return SPECS[id];
-}
-
 /** The widest range a parameter may take. Manual numeric entry is clamped to this, and
     shuffle draws from it. */
 export function baseRange(id: ParamId): { min: number; max: number } {
   const s = SPECS[id];
   return { min: s.min, max: s.max };
-}
-
-/** Build the default snapshot for a drum (the array the worklet expects). */
-export function defaultSnapshot(_drum: DrumType): number[] {
-  const snap: number[] = new Array(NUM_PARAMS);
-  for (let i = 0; i < NUM_PARAMS; i++) snap[i] = SPECS[i].def;
-  return snap;
 }
 
 export function isDiscrete(s: ParamSpec): boolean {

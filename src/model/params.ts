@@ -3,13 +3,13 @@
 // A sound is a flat `number[]` of NUM_PARAMS values. The numeric order of ParamId IS the
 // index into that array, and the AudioWorklet reads the same indices. Historically both
 // sides declared those indices by hand, along with nine lookup tables copied between
-// paramSpec.ts, soundTraces.ts, drumKit.ts and engine.js. Now there is one table here, and
+// paramSpec.ts, soundTraces.ts, sound.ts and engine.js. Now there is one table here, and
 // public/worklet/engine-params.js is GENERATED from it at build time (see the euclidParams
 // plugin in vite.config.ts). Nothing downstream re-types a table.
 //
 // This file must stay import-free: vite.config.ts imports it to run the generator, so it
-// cannot reach anything browser-only (that is why the choice LISTS live here rather than in
-// paramSpec.ts, which pulls in drums.ts).
+// cannot reach anything browser-only (that is why the choice LISTS live here rather than
+// further down the chain).
 //
 // Adding a parameter is one enum member plus one PARAMS row. The Record type is exhaustive,
 // so a missing row is a compile error — the check the old comments only promised. Reordering
@@ -226,7 +226,7 @@ function p(
 
 /** One sample of the drawn pitch contour, in octaves relative to the base Pitch. Never
     randomizable: 32 independent draws would be white noise, not a curve, so the drawn
-    contour is author-only (PitchEnvShape's shuffle skips it — see drumKit.ts). */
+    contour is author-only (PitchEnvShape's shuffle skips it — see sound.ts). */
 const pd = (i: number): ParamEntry => p(`Draw ${i}`, -4, 4, 0, 1, 0.01, "oct", false);
 
 /** One row per parameter. Exhaustive by type: a missing row fails the build. */
@@ -237,7 +237,7 @@ export const PARAMS: Record<RealParamId, ParamEntry> = {
   // (reverse-cymbal swells, zap risers); positive is the classic drop-from-above.
   [ParamId.PitchEnvAmount]: p("Pitch Env", -2, 5, 0, 1, 0.05, "x"),
   // Max reaches 2s so a pitch sweep can span a long note (the shuffle keeps ordinary
-  // draws short — see PITCH_DECAY_SHUFFLE_CAP in drumKit.ts — and only its occasional
+  // draws short — see PITCH_DECAY_SHUFFLE_CAP in sound.ts — and only its occasional
   // "evolve to the end" pass uses the top of this range).
   [ParamId.PitchEnvDecay]: p("Pitch Dec", 0.005, 2.0, 0.06, 0.3, 0.005, "s"),
   // Pitch-sweep contour: Exp (default) = the classic exponential drop/rise; Line +
@@ -245,7 +245,7 @@ export const PARAMS: Record<RealParamId, ParamEntry> = {
   // s-curve / parabola / oscillating (sine/cos/triangle/wobble) motion over the decay.
   // "Drawn" is the odd one out: it ignores Env/Dec/Curve/Cycles entirely and plays the
   // freehand curve in the PitchDraw* slots across the whole graph. The shuffle stops one
-  // index short of it (see drumKit.ts) — a random 32-point contour is just noise.
+  // index short of it (see sound.ts) — a random 32-point contour is just noise.
   [ParamId.PitchEnvShape]: p("Pitch Shape", 0, PITCH_SHAPE_CHOICES.length - 1, 0, 1, 1, "", true, PITCH_SHAPE_CHOICES),
   [ParamId.PitchEnvCurve]: p("Pitch Curve", 0, 1, 0, 1, 0.01, ""),
   [ParamId.PitchEnvCycles]: p("Pitch Cycles", 0.25, 8, 1, 0.5, 0.25, "x"),
