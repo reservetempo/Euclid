@@ -879,6 +879,15 @@ export class App {
       };
       cols.append(col);
 
+      // The voice's own button first — it's the one you reach for blind, so it gets the
+      // width and the height — then its loops as chips underneath it.
+      const gridBtn = document.createElement("button");
+      gridBtn.className = "track-grid-btn";
+      gridBtn.textContent = "▦";
+      gridBtn.title = `All of voice ${c + 1}'s loops`;
+      gridBtn.onclick = () => this.openGrid(c);
+      foot.append(gridBtn);
+
       // The loop chips: the same shade ramp as the blocks, so a chip reads as the paint it
       // stands for. They're the reliable way in when a loop's placement is too thin to hit.
       const chips = document.createElement("div");
@@ -898,13 +907,6 @@ export class App {
         chips.append(chip);
       });
       foot.append(chips);
-
-      const gridBtn = document.createElement("button");
-      gridBtn.className = "track-grid-btn";
-      gridBtn.textContent = "▦";
-      gridBtn.title = `All of voice ${c + 1}'s loops`;
-      gridBtn.onclick = () => this.openGrid(c);
-      foot.append(gridBtn);
 
       foots.append(foot);
     }
@@ -1212,6 +1214,19 @@ export class App {
     const head = document.createElement("div");
     head.className = "voice-sheet-head win-title";
     const loopName = loop.label || loop.name || "Loop";
+    // The title bar's ✕ box, in the right corner of every page of the sheet — the same
+    // little raised square the help panel and the numpad close with. It shuts the sheet
+    // outright, wherever you are in it (a transition editor included), which the
+    // breadcrumb's leftmost segment can't say as plainly.
+    const closeBox = () => {
+      const b = document.createElement("button");
+      b.className = "sheet-close";
+      b.textContent = "✕";
+      b.title = "Close";
+      b.setAttribute("aria-label", "Close");
+      b.onclick = () => this.closePlacement();
+      return b;
+    };
     if (openTr) {
       // Breadcrumb: close › name (back to the transition list) › Transition N.
       const crumb = document.createElement("nav");
@@ -1245,7 +1260,7 @@ export class App {
       copy.textContent = "⧉";
       copy.title = "New loop from this transformed sound, placed after the transition";
       copy.onclick = () => this.copyTransformedSound(loop, openTr);
-      head.append(copy);
+      head.append(copy, closeBox());
       sheet.append(head);
     } else {
       const back = document.createElement("button");
@@ -1266,6 +1281,7 @@ export class App {
         dice.onclick = () => { loop.label = generateName(); this.persist(); rerender(); };
         head.append(dice);
       }
+      head.append(closeBox());
       sheet.append(head);
       // The sound description under the coined name, for reference.
       if (loop.label && loop.name) {

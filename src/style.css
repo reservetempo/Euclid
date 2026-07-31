@@ -447,12 +447,15 @@ select:focus { outline: none; }
   border: none; border-radius: 0; box-shadow: var(--btn-out);
 }
 .track-chip:active { box-shadow: var(--btn-in); }
+/* The voice's main button: it sits directly under the column and is the one hit blind,
+   so it takes the full width and a comfortable target height. */
 .track-grid-btn {
-  width: 100%; padding: 4px 0; line-height: 1; font-size: 12px;
+  width: 100%; padding: 10px 0; line-height: 1; font-size: 20px;
   background: var(--panel); color: var(--text);
-  border: none; border-radius: 0; box-shadow: var(--btn-out);
+  border: none; border-top: 3px solid var(--vc); border-radius: 0;
+  box-shadow: var(--btn-out);
 }
-.track-grid-btn:active { box-shadow: var(--btn-in); padding: 5px 0 3px 2px; }
+.track-grid-btn:active { box-shadow: var(--btn-in); padding: 11px 0 9px 2px; }
 /* One block = barLimit/16 bars, painted as equal slices by a gradient set in app.ts. An
    empty block keeps the plain sunken field. */
 .track-block {
@@ -655,14 +658,16 @@ select:focus { outline: none; }
    ✕, which is a proper little raised box. */
 .win-title button { background: transparent; box-shadow: none; color: #ffffff; padding: 2px 4px; }
 .win-title .help-close,
-.win-title .tr-cancel {
+.win-title .tr-cancel,
+.win-title .sheet-close {
   flex: none; width: 18px; height: 16px; min-width: 18px; padding: 0;
   display: flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 700; line-height: 1;
   color: #000000; background: var(--panel); box-shadow: var(--btn-out);
 }
 .win-title .help-close:active,
-.win-title .tr-cancel:active { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
+.win-title .tr-cancel:active,
+.win-title .sheet-close:active { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
 
 .voice-sheet-head { display: flex; align-items: center; gap: 10px; }
 /* Nested-folder breadcrumb shown while a transition editor is open: Loops › name › Transition N. */
