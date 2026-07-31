@@ -39,7 +39,6 @@ import {
 } from "../model/track";
 import { generateName, reshuffleNames } from "../model/name";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
-import { EuclidView, RingState } from "./euclidView";
 import { helpButton, HelpItem } from "./soundHelp";
 import {
   MAXLEN_OPTIONS, CURVE_OPTIONS, curveOptionIndex, maxLenOptionIndex,
@@ -53,9 +52,14 @@ const PROJECT_KEY = "msq010.project";
 // the user picks a Max len in the sound-graph toolbar.
 const ROW_MAXLEN_SEC = [0, 0, 0, 0, 0, 0];
 
-// Overview timeline wraps to a new row ("line") every this many bars, so a long track
-// stays legible; the playhead loops back at each wrap and a badge names the active line.
+// The colour panel's timeline wraps to a new row ("line") every this many bars, so a long
+// track stays legible.
 const BARS_PER_ROW = 32;
+
+// The track overview draws each colour as a column of this many blocks, ALWAYS — a block
+// covers barLimit/OVERVIEW_BLOCKS bars, so the whole track fits one screenful at any
+// length (and at the 256-bar default a block is exactly 16 bars).
+const OVERVIEW_BLOCKS = 16;
 
 type View = "track" | "color" | "mixer";
 
@@ -140,14 +144,8 @@ export class App {
 
   private root: HTMLElement;
   private viewRoot!: HTMLElement;
-  private euclidView = new EuclidView();
   private loopTimeEl: HTMLElement | null = null;
   private trackPlayheadEl: HTMLElement | null = null; // overview playback line
-  private trackOverviewEl: HTMLElement | null = null; // overview container (dims inactive lines while playing)
-  private trackSegEl: HTMLElement | null = null;      // "Line n / N" badge
-  private segRows: HTMLElement[] = [];                 // overview lane sub-rows, tagged by their wrap segment
-  private overviewSegCount = 1;                        // how many 32-bar lines the track wraps into
-  private overviewRowBars = BARS_PER_ROW;              // bars per overview line (= barLimit when it fits in one)
   // Channel -> flash LED (mixer) and sound id -> loop-row button (colour panel).
   private mixerLeds: Map<number, HTMLElement> | null = null;
   private voiceBtns: Map<number, HTMLElement> | null = null;
@@ -162,6 +160,11 @@ export class App {
     // until a user gesture, so the engine starts lazily on the FIRST interaction
     // anywhere (and the shuffle / graph-tap audition paths await it — see withAudio).
     this.loadFromStorage();
+    // Compile before the first render: the track overview draws the COMPILED lanes, so
+    // without this the app boots showing six empty columns until the first edit happens
+    // to recompile. (The engine calls are safe pre-gesture — EngineHost holds the state
+    // and re-pushes it when the context actually starts.)
+    this.pushAll();
     this.render();
     const unlock = () => { void this.ensureAudioStarted(); };
     document.addEventListener("pointerdown", unlock, { once: true, capture: true });
@@ -206,41 +209,21 @@ export class App {
   // --- playhead ----------------------------------------------------------
   private handlePlayhead(p: Playhead): void {
     if (!p.lines) {
-      this.refreshRings();
       this.trackPlayheadEl?.classList.remove("live");
-      this.trackOverviewEl?.classList.remove("playing");
-      for (const row of this.segRows) row.classList.remove("seg-live");
       this.lightPatternStep(-1);
       return;
     }
-    // Overview: sweep the playback line to the current position — it loops back at each
-    // 32-bar wrap — highlight the active wrapped line, and name it in the badge.
+    // Overview: slide the horizontal playback line down the columns. The columns show the
+    // WHOLE track at once (16 blocks, no wrapping), so this is one straight sweep.
     if (this.trackPlayheadEl) {
       const loopLen = this.arr.loopSteps();
       if (loopLen > 0) {
         const bar = (p.pos % loopLen) / STEPS_PER_BAR;
-        const rowBars = this.overviewRowBars;
-        const seg = Math.floor(bar / rowBars);
-        this.trackPlayheadEl.style.setProperty("--ph", String((bar % rowBars) / rowBars));
+        const barLimit = Math.max(1, this.track.barLimit);
+        this.trackPlayheadEl.style.setProperty("--ph", String(Math.min(1, bar / barLimit)));
         this.trackPlayheadEl.classList.add("live");
-        this.trackOverviewEl?.classList.add("playing");
-        for (const row of this.segRows) row.classList.toggle("seg-live", Number(row.dataset.seg) === seg);
-        if (this.trackSegEl) this.trackSegEl.textContent = `Line ${seg + 1} / ${this.overviewSegCount}`;
       }
     }
-    // Rings show ONLY what's audibly playing, aggregated to the six colours: for each
-    // colour, whichever of its lanes is sounding this step lights its ring.
-    const states: RingState[] = Array.from({ length: NUM_LINES }, () => ({ node: null, step: -1 }) as RingState);
-    this.arr.lines.forEach((lane, li) => {
-      const st = p.lines![li];
-      const c = lane.color ?? -1;
-      if (c < 0 || c >= NUM_LINES) return;
-      if (st && st.node >= 0 && st.step >= 0 && this.colorAudible(c)) {
-        states[c] = { node: lane.nodes[st.node] ?? null, step: st.step };
-      }
-    });
-    this.euclidView.setRings(states);
-    this.euclidView.pulse(p.fired);
     // Light the open Loop-tab pattern grid's currently-sounding step (nothing when the
     // edited loop isn't sounding this instant).
     if (this.patternPlayCells && this.editLoop && this.editLoop.soundId >= 0) {
@@ -275,19 +258,6 @@ export class App {
         btn.classList.add("hit-flash");
       }
     }
-  }
-
-  /** Point the rings at a preview of each colour (its open loop, else its first sound). */
-  private refreshRings(): void {
-    const states: RingState[] = Array.from({ length: NUM_LINES }, () => ({ node: null, step: -1 }) as RingState);
-    for (let c = 0; c < NUM_LINES; c++) {
-      const loops = this.track.colors[c].loops;
-      let show: Loop | undefined;
-      if (this.editLoop && loops.includes(this.editLoop)) show = this.editLoop;
-      else show = loops.find((l) => l.soundId >= 0);
-      if (show) states[c] = { node: loopToNode(show), step: -1 };
-    }
-    this.euclidView.setRings(states);
   }
 
   // --- engine sync ------------------------------------------------------
@@ -474,15 +444,17 @@ export class App {
     this.root.innerHTML = "";
     this.loopTimeEl = null;
     this.trackPlayheadEl = null;
-    this.trackOverviewEl = null;
-    this.trackSegEl = null;
-    this.segRows = [];
     this.mixerLeds = null;
     this.voiceBtns = null;
 
     const bar = document.createElement("header");
     bar.className = "topbar";
-    bar.append(this.topLeftControl(), this.transport(), this.menu());
+    // The Play-range and Mixer buttons used to float over the rings visualizer; with the
+    // rings gone they live in the top bar, on the track view only (the colour and mixer
+    // views place their own).
+    bar.append(this.topLeftControl(), this.transport());
+    if (this.view === "track") bar.append(this.playRangeOpenBtn(), this.mixerOpenBtn("track"));
+    bar.append(this.menu());
     this.root.append(bar);
 
     this.viewRoot = document.createElement("main");
@@ -496,7 +468,6 @@ export class App {
     else this.renderTrackPanel();
 
     this.updateLoopTime();
-    if (!this.playing) this.refreshRings();
 
     // An open placement popup floats above everything (appended to root, so it survives
     // the panel re-render below it).
@@ -580,7 +551,6 @@ export class App {
       } else {
         this.playing = false;
         this.engine.stop();
-        this.refreshRings();
       }
       syncPlay();
     };
@@ -843,58 +813,65 @@ export class App {
 
   private renderTrackPanel(): void {
     const v = this.viewRoot;
-    const rings = document.createElement("div");
-    rings.className = "loop-rings";
-    // Play-range button (top-left) + Mixer button (top-right) float over the rings; the
-    // track length lives in the top bar's top-left control (see topLeftControl).
-    rings.append(this.euclidView.canvas, this.playRangeOpenBtn(), this.mixerOpenBtn("track"));
-    v.append(rings);
-    this.euclidView.layout();
-    requestAnimationFrame(() => this.euclidView.layout());
-
-    // Whole-track overview: every colour's compiled lanes laid out across the full bar
-    // limit (zoomed out — the entire loop at once). Tap a colour to open its loop list.
+    // Whole-track overview: one VERTICAL COLUMN per colour, the whole timeline at once and
+    // in one screenful whatever the track length. Each column is OVERVIEW_BLOCKS blocks
+    // tall; a block covers barLimit/OVERVIEW_BLOCKS bars (exactly 16 at the 256-bar
+    // default) and paints those bars as slices, so its fill shows both how many bars sound
+    // and where they sit. No numbers anywhere — the column is a shape, not a table.
+    // Tap a column to open that colour's loop list.
     this.voiceBtns = new Map();
     const barLimit = Math.max(1, this.track.barLimit);
-    this.overviewSegCount = Math.max(1, Math.ceil(barLimit / BARS_PER_ROW));
-    this.overviewRowBars = this.overviewSegCount > 1 ? BARS_PER_ROW : barLimit;
 
     const overview = document.createElement("div");
     overview.className = "track-overview";
-    this.trackOverviewEl = overview;
-    // A vertical line that sweeps to the current playback position and loops back at each
-    // 32-bar wrap (see handlePlayhead).
+    // A horizontal line that slides down the columns as the track plays (see handlePlayhead).
     this.trackPlayheadEl = document.createElement("div");
     this.trackPlayheadEl.className = "track-playhead";
     overview.append(this.trackPlayheadEl);
-    // "Line n / N" badge — which wrapped line is playing (only when the track wraps).
-    if (this.overviewSegCount > 1) {
-      this.trackSegEl = document.createElement("div");
-      this.trackSegEl.className = "track-line-indicator";
-      this.trackSegEl.textContent = `Line 1 / ${this.overviewSegCount}`;
-      overview.append(this.trackSegEl);
-    }
-    overview.append(this.barRuler(this.overviewRowBars));
+
     for (let c = 0; c < NUM_LINES; c++) {
       const ct = this.track.colors[c];
-      const row = document.createElement("button");
-      row.className = "track-color-row";
-      row.style.setProperty("--vc", VOICE_COLORS[c]);
-      row.title = `Voice ${c + 1}`;
+      const col = document.createElement("button");
+      col.className = "track-color-col";
+      col.style.setProperty("--vc", VOICE_COLORS[c]);
+      col.title = `Voice ${c + 1}`;
 
-      // No "Voice n / n loops" header — the row is just its lane timeline, identified by
-      // its colour (the left border + lane hue), so the rows stay skinny. An empty row
-      // still shows one faint lane strip (a tap target to add loops).
-      const strip = document.createElement("div");
-      strip.className = "track-color-lanes";
-      this.appendLanes(strip, this.colorLaneNumbers(c), c, this.segRows);
-      row.append(strip);
-      for (const l of ct.loops) if (l.soundId >= 0) this.voiceBtns.set(l.soundId, row);
+      const bars = this.colorBarNumbers(c);
+      for (let i = 0; i < OVERVIEW_BLOCKS; i++) {
+        // Split by rounded boundaries rather than a fixed block size, so the blocks always
+        // tile the track exactly even when barLimit isn't a multiple of OVERVIEW_BLOCKS.
+        const from = Math.round((i * barLimit) / OVERVIEW_BLOCKS);
+        const to = Math.round(((i + 1) * barLimit) / OVERVIEW_BLOCKS);
+        col.append(this.overviewBlock(bars.slice(from, Math.max(from + 1, to)), c));
+      }
+      for (const l of ct.loops) if (l.soundId >= 0) this.voiceBtns.set(l.soundId, col);
 
-      row.onclick = () => { this.openColor = c; this.view = "color"; this.editLoop = null; this.render(); };
-      overview.append(row);
+      col.onclick = () => { this.openColor = c; this.view = "color"; this.editLoop = null; this.render(); };
+      overview.append(col);
     }
     v.append(overview);
+  }
+
+  /** One block of a colour's column: `cells` (one entry per bar it covers, 0 = empty, >0 =
+      the sounding loop's number) drawn as equal vertical slices. It's a single element with
+      a hard-stop gradient rather than a span per bar — six columns of sixteen blocks is 96
+      elements this way, against 1536 at one per bar on a 256-bar track. */
+  private overviewBlock(cells: number[], c: number): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "track-block";
+    if (!cells.some((n) => n > 0)) return el; // wholly empty: the plain field background
+    const stops: string[] = [];
+    for (let i = 0; i < cells.length; i++) {
+      // Loop 1 = the base colour, each later loop a shade lighter (as the colour panel's
+      // timeline cells), so a colour's loops still tell apart inside one block.
+      const n = cells[i];
+      const col = n > 0 ? this.shade(VOICE_COLORS[c], Math.min(0.9, 0.5 + (n - 1) * 0.16)) : "transparent";
+      const a = ((i / cells.length) * 100).toFixed(4);
+      const b = (((i + 1) / cells.length) * 100).toFixed(4);
+      stops.push(`${col} ${a}% ${b}%`);
+    }
+    el.style.backgroundImage = `linear-gradient(to bottom, ${stops.join(", ")})`;
+    return el;
   }
 
   // --- colour view (loop list) ------------------------------------------
@@ -1039,6 +1016,15 @@ export class App {
     });
   }
 
+  /** Per-bar coverage of a colour as ONE `barLimit`-wide array (0 = empty, >0 = the
+      sounding loop's number). A colour compiles to exactly one lane — its loops resolve by
+      priority rather than stacking (see track.ts resolveLane) — so this is the whole truth
+      about the colour, which is what lets one narrow column stand for it. */
+  private colorBarNumbers(c: number): number[] {
+    const lanes = this.colorLaneNumbers(c);
+    return lanes[0] ?? new Array(Math.max(1, this.track.barLimit)).fill(0);
+  }
+
   /** A shade of `hex` at t∈[0,1]: 0 = darkest, 0.5 = the colour itself, 1 = lightest.
       Used to give each loop of a colour its own tint so they're distinct at a glance. */
   private shade(hex: string, t: number): string {
@@ -1078,9 +1064,9 @@ export class App {
   }
 
   /** Append a colour's lanes to `parent` as timeline rows, wrapping every BARS_PER_ROW
-      bars into stacked "line" sub-rows (each tagged data-seg). When `collect` is given,
-      each sub-row is pushed onto it (so the playhead can highlight the active line). */
-  private appendLanes(parent: HTMLElement, lanes: number[][], c: number, collect: HTMLElement[] | null): void {
+      bars into stacked "line" sub-rows. Used by the colour panel's preview; the track
+      overview draws its own block columns instead (see renderTrackPanel). */
+  private appendLanes(parent: HTMLElement, lanes: number[][], c: number): void {
     const barLimit = Math.max(1, this.track.barLimit);
     const segCount = Math.max(1, Math.ceil(barLimit / BARS_PER_ROW));
     const rowBars = segCount > 1 ? BARS_PER_ROW : barLimit;
@@ -1092,10 +1078,7 @@ export class App {
           const bar = s * rowBars + i;
           segCells.push(bar < barLimit ? cells[bar] : -1); // -1 pads a short final line
         }
-        const rowEl = this.laneCells(segCells, c, s * rowBars);
-        rowEl.dataset.seg = String(s);
-        collect?.push(rowEl);
-        parent.append(rowEl);
+        parent.append(this.laneCells(segCells, c, s * rowBars));
       }
     }
   }
@@ -1105,22 +1088,8 @@ export class App {
     const wrap = document.createElement("div");
     wrap.className = "color-preview";
     wrap.style.setProperty("--vc", VOICE_COLORS[c]);
-    this.appendLanes(wrap, this.colorLaneNumbers(c), c, null);
+    this.appendLanes(wrap, this.colorLaneNumbers(c), c);
     return wrap;
-  }
-
-  /** A bar-number ruler `width` cells wide, aligned with the timeline cells (labels every
-      4 bars). Numbers are the bar position WITHIN a line (1, 5, 9…) since lines wrap. */
-  private barRuler(width: number): HTMLElement {
-    const row = document.createElement("div");
-    row.className = "bar-ruler";
-    for (let b = 0; b < width; b++) {
-      const cell = document.createElement("span");
-      cell.className = "bar-ruler-tick";
-      if (b % 4 === 0) cell.textContent = String(b + 1);
-      row.append(cell);
-    }
-    return row;
   }
 
   /** A one-line description of a loop's placement rule. */
@@ -1138,7 +1107,7 @@ export class App {
     else every = `${Math.round(r.every.weight * 100)}% chance`;
     const lens = ruleLengths(r);
     const forB = lens.length > 1 ? `${lens.join("/")} bars` : (r.forBars === 1 ? "1 bar" : `${r.forBars} bars`);
-    return `${every} · for ${forB} · ${r.mode}${r.retrigger ? " · re-fade" : ""}`;
+    return `${every} · for ${forB}${r.retrigger ? " · re-fade" : ""}`;
   }
 
   private addLoop(c: number): void {
@@ -2937,7 +2906,6 @@ export class App {
     clone.rule = {
       every: { kind: "at", bars },
       forBars: 1,
-      mode: loop.rule.mode,
       seed: newSeed(),
       seedHistory: [],
     };
@@ -3101,7 +3069,7 @@ export class App {
     this.engine.stopPreview();
   }
 
-  /** The rule editor block: Repeat-every (three-way), For-n-bars, overlap/solo. */
+  /** The rule editor block: Repeat-every (three-way) and For-n-bars. */
   private placementControls(loop: Loop, rerender: () => void): HTMLElement {
     const r = loop.rule;
     const wrap = document.createElement("div");
@@ -3278,24 +3246,8 @@ export class App {
       wrap.append(hint);
     }
 
-    // Overlap / Solo.
-    const modeRow = document.createElement("div");
-    modeRow.className = "placement-row";
-    const modeLbl = document.createElement("span");
-    modeLbl.className = "placement-lbl";
-    modeLbl.textContent = "When it clashes";
-    const modeSeg = document.createElement("div");
-    modeSeg.className = "placement-seg";
-    const mkMode = (m: "solo" | "overlap", text: string) => {
-      const b = document.createElement("button");
-      b.className = "seg-btn" + (r.mode === m ? " on" : "");
-      b.textContent = text;
-      b.onclick = () => { if (r.mode !== m) { r.mode = m; this.recompile(); rerender(); } };
-      return b;
-    };
-    modeSeg.append(mkMode("solo", "Solo"), mkMode("overlap", "Overlap"));
-    modeRow.append(modeLbl, modeSeg);
-    wrap.append(modeRow);
+    // No clash control: a colour's loops always resolve by list priority (the earlier loop
+    // wins the bar), so a colour compiles to one lane — see track.ts resolveLane.
     return wrap;
   }
 
@@ -3569,7 +3521,6 @@ export class App {
     loop.name = draft.describe().join(" · ");
     this.pushSounds();
     this.recompile();
-    if (!this.playing) this.refreshRings();
   }
 
   private colorOf(loop: Loop): number {

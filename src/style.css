@@ -218,11 +218,13 @@ select {
 select:focus { outline: none; }
 
 /* --- top bar ---------------------------------------------------------------- */
+/* Six items ride the bar on the track view (length, ▶, BPM, play-range, mixer, menu), so
+   the gap is tight and the BPM tile is the one allowed to give ground. */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 6px;
   /* The max() clamps the bar's content to the same centred column as the views. */
   padding: 10px max(14px, calc((100% - 760px) / 2));
   position: sticky;
@@ -237,7 +239,7 @@ select:focus { outline: none; }
    toolbar is grey, always) — it survives as the GLYPH colour, which is what still
    tells the four buttons apart at a glance. */
 .play-btn, .menu-btn, .loop-view-btn, .mixer-open-btn {
-  width: 40px; height: 40px; padding: 0; flex: none;
+  width: 34px; height: 40px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center;
   border-radius: 0;
   border: none;
@@ -277,11 +279,11 @@ select:focus { outline: none; }
   .menu-panel button:not(:disabled):hover { background: #000080; color: #ffffff; }
 }
 
-.transport { display: flex; align-items: center; gap: 4px; }
+.transport { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .play-btn { --bc: #008000; font-size: 15px; }
 /* The BPM button: a raised tile that opens the numpad. */
 .tempo-btn {
-  height: 40px; padding: 0 14px; border-radius: 0;
+  height: 40px; padding: 0 10px; border-radius: 0; flex: none; white-space: nowrap;
   font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
   color: var(--text); background: var(--panel);
   border: none; box-shadow: var(--btn-out);
@@ -308,34 +310,30 @@ select:focus { outline: none; }
 
 /* Track view's top-left control: the track length (scrub/tap to edit) as a compact pill,
    with the loop's total seconds beside it in small muted type. */
-.loop-meta { display: flex; align-items: center; gap: 6px; }
+.loop-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .loop-meta-bars {
-  width: auto; padding: 4px 8px; border-radius: 0; text-align: center;
+  width: auto; min-width: 0; padding: 4px 6px; border-radius: 0; text-align: center;
   background: var(--field); border: none; box-shadow: var(--field-in);
   color: var(--text); font: inherit; font-size: 12px; font-weight: 700;
   font-variant-numeric: tabular-nums; cursor: ns-resize; touch-action: none;
 }
 .loop-meta-secs { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-
-/* Rings visualizer (the sequencer's canvas, centred) with the Play-range button at its
-   top-left and the Mixer button at its top-right, floating on a soft glow. */
-/* The rings sit in a sunken white well — the app's one "canvas document" area. */
-.loop-rings {
-  position: relative; display: flex; justify-content: center;
-  max-width: 232px; margin: 0 auto;
-  background: var(--field); box-shadow: var(--field-in), inset 0 0 0 2px var(--field);
+/* Six items share the bar on the track view. On a phone the loop's seconds readout is the
+   one piece that can go — the BPM tile must never clip. */
+@media (max-width: 480px) {
+  .loop-meta-secs { display: none; }
 }
-.loop-rings .mixer-open-btn { position: absolute; top: 0; right: 0; z-index: 2; }
-.loop-rings .playrange-open-btn {
-  position: absolute; top: 0; left: 0; z-index: 2;
-  width: 36px; height: 36px; padding: 0; flex: none;
+
+/* Play-range button — it used to float over the rings visualizer; with the rings gone it
+   sits in the top bar beside the Mixer button (track view only). */
+.topbar .playrange-open-btn {
+  width: 32px; height: 32px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center; border-radius: 0;
   color: #000080; border: none;
   background: var(--panel); box-shadow: var(--btn-out);
 }
-.loop-rings .playrange-open-btn.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
+.topbar .playrange-open-btn.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
 .playrange-open-btn svg { display: block; }
-.euclid-canvas { display: inline-block; max-width: 380px; position: relative; }
 
 /* Play-range popup: the drag strip in a centred window. */
 .playrange-overlay {
@@ -407,42 +405,44 @@ select:focus { outline: none; }
 .sweep-bars-head .play-range-readout { flex: none; color: var(--vc); }
 .sweep-card .play-range-strip { height: 22px; }
 
-/* Whole-track overview: a bar ruler + per-colour lane timelines. */
-.track-overview { position: relative; display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
-.bar-ruler { display: flex; gap: 2px; padding: 0 14px 0 18px; }
-.bar-ruler-tick { flex: 1; min-width: 0; font-size: 9px; line-height: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
-
-.track-color-row {
+/* Whole-track overview: six vertical columns, one per colour, each 16 blocks tall. Time
+   runs DOWNWARD — bar 1 at the top of the first block, the last bar at the foot of the
+   last — so the whole track is one screenful whatever its length. */
+.track-overview {
+  position: relative; display: flex; flex-direction: row; align-items: stretch;
+  gap: 6px; margin-top: 4px; min-height: 60vh;
+}
+.track-color-col {
   --vc: var(--accent);
-  display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%;
-  padding: 8px 10px 8px 12px; text-align: left;
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 4px; text-align: left;
   color: var(--text);
   background: var(--panel);
-  border: none; border-left: 6px solid var(--vc);
+  /* The identity stripe rotates with the layout: it caps the column instead of edging a row. */
+  border: none; border-top: 6px solid var(--vc);
   border-radius: 0;
   box-shadow: var(--btn-out);
 }
-.track-color-row:active { box-shadow: var(--btn-in); padding: 9px 9px 7px 13px; }
-.track-color-lanes { display: flex; flex-direction: column; gap: 3px; }
+.track-color-col:active { box-shadow: var(--btn-in); padding: 5px 3px 3px 5px; }
+/* One block = barLimit/16 bars, painted as equal slices by a gradient set in app.ts. An
+   empty block keeps the plain sunken field. */
+.track-block {
+  flex: 1; min-height: 14px; border-radius: 0;
+  background-color: #ffffff; box-shadow: inset 0 0 0 1px #dfdfdf;
+}
 
-/* Overview playback line: sweeps to the playing bar, looping at each wrap. */
+/* Overview playback line: slides down the columns as the track plays. */
 .track-playhead {
-  position: absolute; top: 0; bottom: 0; width: 2px; z-index: 5;
-  left: calc(18px + var(--ph, 0) * (100% - 32px));
+  position: absolute; left: 0; right: 0; height: 2px; z-index: 5;
+  top: calc(var(--ph, 0) * 100%);
   background: #000000;
   pointer-events: none;
   opacity: 0;
 }
 .track-playhead.live { opacity: 0.9; }
-/* "Line n / N" badge — which wrapped line is playing. */
-.track-line-indicator {
-  align-self: flex-end; font-size: 11px; font-weight: 600; color: var(--muted);
-  font-variant-numeric: tabular-nums; padding: 0 14px 2px 0;
-}
-.track-overview.playing .color-preview-lane { opacity: 0.35; transition: opacity 0.12s; }
-.track-overview.playing .color-preview-lane.seg-live { opacity: 1; }
 
-/* Timeline cells (shared by the overview and the colour panel preview). */
+/* Timeline cells (the colour panel's preview). */
 .color-preview {
   --vc: var(--accent);
   display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 8px;
@@ -450,9 +450,6 @@ select:focus { outline: none; }
   border: none; border-radius: 0;
   box-shadow: var(--field-in);
 }
-.track-color-row .color-preview,
-.track-color-row .track-color-lanes { margin-top: 0; }
-.track-overview .color-preview-lane,
 .color-preview-lane { display: flex; gap: 2px; }
 .color-preview-cell {
   flex: 1; height: 13px; border-radius: 0;
@@ -466,8 +463,6 @@ select:focus { outline: none; }
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 .color-preview-cell.pad { visibility: hidden; }
-/* The overview lanes sit inside the row cards, so no extra well around them. */
-.track-color-lanes .color-preview-lane { gap: 2px; }
 
 /* --- colour view (loop list) --------------------------------------------------- */
 .loop-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }

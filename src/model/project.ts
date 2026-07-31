@@ -2,10 +2,15 @@
 // own sound) plus a bar limit and tempo. Plain JSON, used for both localStorage autosave
 // and files.
 //
-// The project is serialized as version 15: a procedural placement model (see track.ts)
+// The project is serialized as version 16: a procedural placement model (see track.ts)
 // where each colour is an ordered list of loops carrying a placement rule. Only version
-// 15 loads; any other version loads with a BLANK track (tempo is still restored). The
+// 16 loads; any other version loads with a BLANK track (tempo is still restored). The
 // format is not back-compatible with earlier generations of the app.
+//
+// v16 (from v15) dropped each rule's `mode` ("overlap" | "solo"). A colour no longer
+// stacks loops onto simultaneous lanes at all: it compiles to exactly one lane, priority
+// resolved, which is what the track overview's one-column-per-colour view shows. A v15
+// file that used "overlap" would silently sound different, so it is refused like the rest.
 //
 // v15 (from v14) dropped three fields that no longer had a reader: the `drums` blob (a
 // background DrumKit that survived the removal of the preset system and was serialized
@@ -58,7 +63,6 @@ export interface RuleJSON {
   forBars: number;
   lengths?: number[];
   retrigger?: boolean;
-  mode: "overlap" | "solo";
   seed: number;
   seedHistory: number[];
 }
@@ -125,7 +129,7 @@ export interface ColorJSON {
 }
 
 export interface ProjectJSON {
-  version: number; // 15 = current format; anything else loads blank
+  version: number; // 16 = current format; anything else loads blank
   tempo: number;
   barLimit?: number;
   root?: number;
@@ -156,7 +160,6 @@ const cloneLoop = (l: Loop): LoopJSON => ({
     forBars: l.rule.forBars,
     lengths: l.rule.lengths ? l.rule.lengths.slice() : undefined,
     retrigger: l.rule.retrigger,
-    mode: l.rule.mode,
     seed: l.rule.seed,
     seedHistory: l.rule.seedHistory.slice(),
   },
@@ -169,7 +172,7 @@ const cloneSweep = (s: RowSweep): RowSweepJSON => ({
 
 export function serialize(track: Track, tempo: number): ProjectJSON {
   return {
-    version: 15,
+    version: 16,
     tempo,
     barLimit: track.barLimit,
     root: track.root,
@@ -304,7 +307,6 @@ function readRule(rv: unknown): PlacementRule {
     forBars,
     lengths: lens.length > 1 ? lens : undefined, // a single length is just forBars
     retrigger: r.retrigger === true ? true : undefined,
-    mode: r.mode === "overlap" ? "overlap" : "solo",
     seed: typeof r.seed === "number" ? (r.seed >>> 0) : randomSeed(),
     seedHistory: hist,
   };
@@ -442,7 +444,7 @@ export function deserialize(json: ProjectJSON, track: Track): number {
   track.scale = 0;
 
   const v = json && json.version;
-  if (json && typeof v === "number" && v === 15) {
+  if (json && typeof v === "number" && v === 16) {
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
         if (ci >= NUM_LINES || !cj) return;
@@ -458,8 +460,8 @@ export function deserialize(json: ProjectJSON, track: Track): number {
     track.scale = typeof json.scale === "number" ? json.scale : 0;
   }
   // (Any other version: track left blank on purpose — only the tempo below is restored.
-  // v14 is refused along with the rest, though nothing about the snapshot layout moved —
-  // a deliberate clean break, see docs/adr/0002.)
+  // v14 and v15 are refused along with the rest, though nothing about the snapshot layout
+  // moved — a deliberate clean break, see docs/adr/0002.)
 
   return typeof json.tempo === "number" ? json.tempo : 120;
 }
