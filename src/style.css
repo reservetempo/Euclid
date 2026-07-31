@@ -407,10 +407,20 @@ select:focus { outline: none; }
 
 /* Whole-track overview: six vertical columns, one per colour, each 16 blocks tall. Time
    runs DOWNWARD — bar 1 at the top of the first block, the last bar at the foot of the
-   last — so the whole track is one screenful whatever its length. */
-.track-overview {
-  position: relative; display: flex; flex-direction: row; align-items: stretch;
-  gap: 6px; margin-top: 4px; min-height: 60vh;
+   last — so the whole track is one screenful whatever its length. Under each column sit
+   that voice's loop chips and its ▦ grid button, so the column itself stays pure paint. */
+.track-overview { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+/* The paint row and the footer row line up column for column (same flex layout, same gap).
+   They're separate rows so the playhead — positioned against .track-cols — measures the
+   TRACK's height only, not the buttons underneath. */
+.track-cols, .track-foots {
+  display: flex; flex-direction: row; align-items: stretch; gap: 6px;
+}
+.track-cols { position: relative; min-height: 60vh; }
+.track-foot {
+  --vc: var(--accent);
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
 }
 .track-color-col {
   --vc: var(--accent);
@@ -425,6 +435,24 @@ select:focus { outline: none; }
   box-shadow: var(--btn-out);
 }
 .track-color-col:active { box-shadow: var(--btn-in); padding: 5px 3px 3px 5px; }
+
+/* The voice's loops as chips, in the shade the column paints each of them (set inline).
+   Tapping one opens that loop's page — the reliable way in when its bars are too thin to
+   hit up on the column. */
+.track-chips { display: flex; flex-wrap: wrap; gap: 2px; }
+.track-chip {
+  --ls: var(--vc);
+  flex: 1 1 auto; min-width: 10px; height: 14px; padding: 0;
+  background: var(--ls);
+  border: none; border-radius: 0; box-shadow: var(--btn-out);
+}
+.track-chip:active { box-shadow: var(--btn-in); }
+.track-grid-btn {
+  width: 100%; padding: 4px 0; line-height: 1; font-size: 12px;
+  background: var(--panel); color: var(--text);
+  border: none; border-radius: 0; box-shadow: var(--btn-out);
+}
+.track-grid-btn:active { box-shadow: var(--btn-in); padding: 5px 0 3px 2px; }
 /* One block = barLimit/16 bars, painted as equal slices by a gradient set in app.ts. An
    empty block keeps the plain sunken field. */
 .track-block {
@@ -442,30 +470,29 @@ select:focus { outline: none; }
 }
 .track-playhead.live { opacity: 0.9; }
 
-/* Timeline cells (the colour panel's preview). */
-.color-preview {
-  --vc: var(--accent);
-  display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 8px;
-  background: var(--field);
-  border: none; border-radius: 0;
-  box-shadow: var(--field-in);
+/* --- grid view (one voice, all its loops) --------------------------------------- */
+/* The picker: which loop of the voice the grid below is editing. Each chip carries that
+   loop's own shade (--ls, set inline) as a swatch, so a chip, its squares in the grid and
+   its paint on the track column are all visibly the same loop. */
+.loop-picker { --vc: var(--accent); display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
+.loop-picker-chip {
+  --ls: var(--vc);
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; font-size: 12px;
+  background: var(--panel); color: var(--text);
+  border: none; border-radius: 0; box-shadow: var(--btn-out);
+  max-width: 100%;
 }
-.color-preview-lane { display: flex; gap: 2px; }
-.color-preview-cell {
-  flex: 1; height: 13px; border-radius: 0;
-  background: #ffffff; box-shadow: inset 0 0 0 1px #dfdfdf;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 9px; font-weight: 700; line-height: 1; color: #ffffff;
-  font-variant-numeric: tabular-nums; overflow: hidden;
-}
-.color-preview-cell.on {
-  background: var(--vc);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
-}
-.color-preview-cell.pad { visibility: hidden; }
+.loop-picker-chip.on { box-shadow: var(--btn-in); font-weight: 700; }
+.loop-picker-chip.on .loop-picker-name { text-decoration: underline; }
+.loop-picker-chip:active { box-shadow: var(--btn-in); }
+.loop-picker-dot { width: 12px; height: 12px; flex: none; background: var(--ls); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4); }
+.loop-picker-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loop-picker-add { font-weight: 700; }
+/* What the row of actions acts on is the picked chip. */
+.loop-picker-actions { display: flex; gap: 8px; margin-top: 8px; margin-bottom: 12px; }
+.loop-picker-actions .loop-action-btn:disabled { opacity: 0.4; }
 
-/* --- colour view (loop list) --------------------------------------------------- */
-.loop-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .loop-row {
   --vc: var(--accent);
   display: flex; align-items: stretch; gap: 8px;
@@ -474,35 +501,6 @@ select:focus { outline: none; }
   border-radius: 0; overflow: hidden;
   box-shadow: var(--btn-out);
 }
-/* A loop-list card stacks: the strip, then its Sound / Loop / Transitions tabs. The plain
-   .loop-row stays a horizontal strip — the transition list reuses it as one. */
-.loop-row-tabs { flex-direction: column; align-items: stretch; gap: 0; }
-.loop-row-head { display: flex; align-items: stretch; gap: 8px; }
-/* The tabs read as a foot to the card, not as three buttons floating on it: flat, full
-   width, divided by hairlines off the card's own tint. */
-.loop-nav {
-  gap: 2px; flex-wrap: nowrap;
-  padding: 2px 2px 0;
-  box-shadow: inset 0 1px 0 #808080;
-}
-.loop-nav .seg-btn {
-  flex: 1 1 0; min-width: 0; text-align: center;
-  padding: 6px 6px; font-size: 12px;
-  background: var(--panel); color: var(--text);
-  border: none; border-radius: 0; box-shadow: var(--btn-out);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.loop-nav .seg-btn.on { box-shadow: var(--btn-in); font-weight: 700; }
-.loop-nav .seg-btn:active { padding: 7px 5px 5px 7px; }
-
-.loop-order { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding-left: 6px; }
-.loop-move {
-  width: 26px; height: 20px; padding: 0; line-height: 1;
-  background: transparent; border: none; box-shadow: none;
-  color: var(--muted); font-size: 10px;
-}
-.loop-move:disabled { opacity: 0.25; }
-.loop-move:active:not(:disabled) { color: var(--text); }
 .loop-body {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 12px 8px;
   text-align: left; background: transparent; border: none; box-shadow: none; color: var(--text);
@@ -525,17 +523,18 @@ select:focus { outline: none; }
 /* "Copy to another row" — the same button, one step down the visual hierarchy. */
 .copy-loop-btn { margin-top: 4px; font-weight: 400; }
 
-/* Loop-tab action row: three small buttons (Options / Accents / Copy) under the grid. */
-.loop-actions { display: flex; gap: 8px; margin-top: 12px; }
+/* The loop page's action row under the sound graph: where you go from the loop
+   (Transitions / Options / Accents / Copy). Wraps — four of them don't fit a phone. */
+.loop-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .loop-action-btn {
-  flex: 1 1 0; min-width: 0; padding: 7px 6px; font-size: 12px; font-weight: 600;
+  flex: 1 1 0; min-width: 5.5em; padding: 7px 6px; font-size: 12px; font-weight: 600;
   background: var(--panel); color: var(--text);
   border: none; border-radius: 0; box-shadow: var(--btn-out);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .loop-action-btn:active { box-shadow: var(--btn-in); padding: 8px 5px 6px 7px; }
 
-/* Loop-tab sub-panel back header (⚙ Options / Accents). */
+/* Sub-panel back header (⚙ Options / Accents / the transition list). */
 .loop-sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .loop-sub-head .mixer-back { padding: 4px 2px; }
 

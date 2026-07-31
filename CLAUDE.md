@@ -18,6 +18,16 @@ The track view shows each voice as a **vertical column of 16 blocks**: a block c
 `barLimit / 16` bars (exactly 16 at the 256-bar default) and paints them as slices, so the
 whole track reads as six shapes in one screenful, at any length and with no numbers.
 
+There are three views, and only three: the **track**, one voice's **grid**, and the
+**mixer**. Tapping a painted part of a column opens THAT loop's page directly (the paint is
+hit-tested per bar, and each loop of a colour has its own shade); under each column sit that
+voice's loop chips — the same shades, for placements too thin to hit — and a ▦ button onto
+the voice's **all-loops grid**, which is the bar-square placement grid with a loop picker,
+every loop of the colour showing at once. A loop's page is the whole loop, top to bottom:
+rhythm circles, sequencer grid, the sound graph, then the buttons off it (Transitions,
+Options, Accents, Copy). There is no loop LIST any more — picking a loop happens on the
+column or in the grid's picker.
+
 ## Tech stack & commands
 
 - **Language:** TypeScript (strict mode), no framework — the UI is hand-rolled DOM.
@@ -129,9 +139,10 @@ src/
                         the step that turns a drawing into a fixed-length storable block
     rng.ts              shared seeded RNG (xorshift32, matches engine.js makeRng)
   ui/                   all DOM/rendering
-    app.ts              App shell — owns engine + track + UI state; switches views; hosts the
-                        Sound Graph editor (the only sound-editing surface, drawn from
-                        soundTraces.ts); recompile() is the hub (track -> lanes -> engine).
+    app.ts              App shell — owns engine + track + UI state; switches the three views
+                        (track / grid / mixer); hosts the loop popup and the Sound Graph
+                        editor (the only sound-editing surface, drawn from soundTraces.ts);
+                        recompile() is the hub (track -> lanes -> engine).
                         BY FAR the largest file.
     controls.ts         shared UI pieces + the shuffle option lists (label ↔ value maps)
     drawShell.ts        the chrome both sketch screens wear (modal card, canvas sizing, axis

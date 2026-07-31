@@ -52,20 +52,22 @@ const PROJECT_KEY = "msq010.project";
 // the user picks a Max len in the sound-graph toolbar.
 const ROW_MAXLEN_SEC = [0, 0, 0, 0, 0, 0];
 
-// The colour panel's timeline wraps to a new row ("line") every this many bars, so a long
-// track stays legible.
-const BARS_PER_ROW = 32;
-
 // The track overview draws each colour as a column of this many blocks, ALWAYS — a block
 // covers barLimit/OVERVIEW_BLOCKS bars, so the whole track fits one screenful at any
 // length (and at the 256-bar default a block is exactly 16 bars).
 const OVERVIEW_BLOCKS = 16;
 
-type View = "track" | "color" | "mixer";
+// The lightest a loop's shade goes in the overview / picker ramp: loop 1 is the base
+// colour, each later loop a step lighter, capped so the last one stays legible.
+const LOOP_SHADE_CAP = 0.9;
+const LOOP_SHADE_STEP = 0.16;
 
-// The loop editor's three pages. Named because the tabs that pick them live out on the
-// loop rows now, so the type crosses between the list and the popup.
-type PlacementTab = "sound" | "loop" | "transition";
+type View = "track" | "grid" | "mixer";
+
+// The loop editor's two pages. The sound page carries the whole loop (rhythm above the
+// graph, the action buttons below it); Transitions is the one page that takes the sheet
+// for itself.
+type PlacementTab = "sound" | "transition";
 
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
 type RhythmField = "hits" | "steps" | "rotation" | "split";
@@ -96,11 +98,14 @@ export class App {
 
   private view: View = "track";
   private lastViewKey = "";             // view identity at the previous render (scroll-preserve guard)
-  private openColor = 0;               // which colour panel is open
+  private openColor = 0;               // which voice the grid view is showing
+  // Which loop of that voice the grid view is editing. An INDEX, not the loop itself:
+  // loops are removed and reordered under it, so it's clamped on every render.
+  private gridLoopIdx = 0;
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private placementTab: PlacementTab = "sound"; // which sub-page of the loop popup
-  // Loop tab sub-view: the main page (default), or the panels the action buttons open.
-  private loopSub: "grid" | "options" | "life" = "grid";
+  // Sound-page sub-view: null = the page itself, else one of the panels its buttons open.
+  private loopSub: "options" | "life" | null = null;
   // Loop-tab drag grid: rows shown. A view preference — the grid auto-grows past it so
   // the whole track always fits.
   private placeGridRows = 8;
@@ -109,7 +114,7 @@ export class App {
   private patternPlayCells: HTMLElement[] | null = null;
   private patternPlaySteps = 0;
   // Bar-square grids (loop placement / transition bars / the play range): how many bars
-  // one square is worth (1 / 2 / 4), and the armed Start→End pick (start 0 = awaiting
+  // one square is worth (1 / 2 / 4 / 8), and the armed Start→End pick (start 0 = awaiting
   // the start square).
   private gridSpan: Record<"place" | "trans" | "range", number> = { place: 2, trans: 2, range: 2 };
   private gridPick: { key: "place" | "trans" | "range"; start: number } | null = null;
@@ -463,15 +468,16 @@ export class App {
     this.viewRoot.className = "viewroot" + (sameView ? "" : " view-enter");
     this.root.append(this.viewRoot);
 
-    if (this.view === "color") this.renderColorPanel();
+    if (this.view === "grid") this.renderGridPanel();
     else if (this.view === "mixer") this.renderMixer();
     else this.renderTrackPanel();
 
     this.updateLoopTime();
 
     // An open placement popup floats above everything (appended to root, so it survives
-    // the panel re-render below it).
-    if (this.view === "color" && this.editLoop) this.openPlacement(this.editLoop);
+    // the panel re-render below it). It rides over BOTH the track view and the grid view —
+    // a loop opens straight off its column — but never over the mixer.
+    if (this.view !== "mixer" && this.editLoop) this.openPlacement(this.editLoop);
     if (sameView) this.viewRoot.scrollTop = savedScroll;
   }
 
@@ -818,19 +824,34 @@ export class App {
     // tall; a block covers barLimit/OVERVIEW_BLOCKS bars (exactly 16 at the 256-bar
     // default) and paints those bars as slices, so its fill shows both how many bars sound
     // and where they sit. No numbers anywhere — the column is a shape, not a table.
-    // Tap a column to open that colour's loop list.
+    // Tapping a painted part of a column opens THAT loop's sound page directly (the shade
+    // you touch is the loop you get); under each column sit its loop chips and the ▦
+    // button onto the voice's all-loops grid.
     this.voiceBtns = new Map();
     const barLimit = Math.max(1, this.track.barLimit);
 
     const overview = document.createElement("div");
     overview.className = "track-overview";
-    // A horizontal line that slides down the columns as the track plays (see handlePlayhead).
+
+    // Two rows that line up column for column: the paint, then the per-voice footers. They
+    // are SEPARATE rows because the playhead is positioned against the first one — inside a
+    // single stacked wrapper the footers would stretch it past the end of the track, and
+    // `--ph` = 1 would land the line somewhere under the buttons.
+    const cols = document.createElement("div");
+    cols.className = "track-cols";
     this.trackPlayheadEl = document.createElement("div");
     this.trackPlayheadEl.className = "track-playhead";
-    overview.append(this.trackPlayheadEl);
+    cols.append(this.trackPlayheadEl);
+    const foots = document.createElement("div");
+    foots.className = "track-foots";
+    overview.append(cols, foots);
 
     for (let c = 0; c < NUM_LINES; c++) {
       const ct = this.track.colors[c];
+      const foot = document.createElement("div");
+      foot.className = "track-foot";
+      foot.style.setProperty("--vc", VOICE_COLORS[c]);
+
       const col = document.createElement("button");
       col.className = "track-color-col";
       col.style.setProperty("--vc", VOICE_COLORS[c]);
@@ -844,12 +865,66 @@ export class App {
         const to = Math.round(((i + 1) * barLimit) / OVERVIEW_BLOCKS);
         col.append(this.overviewBlock(bars.slice(from, Math.max(from + 1, to)), c));
       }
-      for (const l of ct.loops) if (l.soundId >= 0) this.voiceBtns.set(l.soundId, col);
 
-      col.onclick = () => { this.openColor = c; this.view = "color"; this.editLoop = null; this.render(); };
-      overview.append(col);
+      // Where the tap landed, in bars, read off the same per-bar numbers the blocks are
+      // shaded from — so the loop that opens is always the one under the finger. Bare
+      // field falls through to the grid, which is where you'd go to place something there.
+      col.onclick = (e) => {
+        const r = col.getBoundingClientRect();
+        const t = Math.min(0.999, Math.max(0, (e.clientY - r.top) / Math.max(1, r.height)));
+        const n = bars[Math.floor(t * barLimit)] ?? 0; // 1-based loop number, 0 = silence
+        const loop = n > 0 ? ct.loops[n - 1] : null;
+        if (loop) this.openPlacement(loop, "sound");
+        else this.openGrid(c);
+      };
+      cols.append(col);
+
+      // The loop chips: the same shade ramp as the blocks, so a chip reads as the paint it
+      // stands for. They're the reliable way in when a loop's placement is too thin to hit.
+      const chips = document.createElement("div");
+      chips.className = "track-chips";
+      ct.loops.forEach((loop, i) => {
+        const chip = document.createElement("button");
+        chip.className = "track-chip";
+        // The shade rides on a custom property, not on `style.background`: an inline
+        // background would outrank .hit-flash and the chip would never light on a hit.
+        chip.style.setProperty("--ls", this.loopShade(c, i + 1));
+        chip.title = loop.label || loop.name || `Loop ${i + 1}`;
+        chip.setAttribute("aria-label", chip.title);
+        chip.onclick = () => this.openPlacement(loop, "sound");
+        // The playhead flashes the chip rather than the whole column, so a hit shows which
+        // loop played it.
+        if (loop.soundId >= 0) this.voiceBtns!.set(loop.soundId, chip);
+        chips.append(chip);
+      });
+      foot.append(chips);
+
+      const gridBtn = document.createElement("button");
+      gridBtn.className = "track-grid-btn";
+      gridBtn.textContent = "▦";
+      gridBtn.title = `All of voice ${c + 1}'s loops`;
+      gridBtn.onclick = () => this.openGrid(c);
+      foot.append(gridBtn);
+
+      foots.append(foot);
     }
     v.append(overview);
+  }
+
+  /** Open a voice's all-loops grid, landing on its first loop. */
+  private openGrid(c: number): void {
+    this.openColor = c;
+    this.gridLoopIdx = 0;
+    this.view = "grid";
+    this.editLoop = null;
+    this.render();
+  }
+
+  /** The shade a colour's `num`-th loop (1-based) is drawn in, everywhere it's drawn: the
+      overview blocks, the track chips, the grid's underlay and its loop picker. Loop 1 is
+      the base colour, each later loop a step lighter. */
+  private loopShade(c: number, num: number): string {
+    return this.shade(VOICE_COLORS[c], Math.min(LOOP_SHADE_CAP, 0.5 + (num - 1) * LOOP_SHADE_STEP));
   }
 
   /** One block of a colour's column: `cells` (one entry per bar it covers, 0 = empty, >0 =
@@ -865,7 +940,7 @@ export class App {
       // Loop 1 = the base colour, each later loop a shade lighter (as the colour panel's
       // timeline cells), so a colour's loops still tell apart inside one block.
       const n = cells[i];
-      const col = n > 0 ? this.shade(VOICE_COLORS[c], Math.min(0.9, 0.5 + (n - 1) * 0.16)) : "transparent";
+      const col = n > 0 ? this.loopShade(c, n) : "transparent";
       const a = ((i / cells.length) * 100).toFixed(4);
       const b = (((i + 1) / cells.length) * 100).toFixed(4);
       stops.push(`${col} ${a}% ${b}%`);
@@ -874,11 +949,22 @@ export class App {
     return el;
   }
 
-  // --- colour view (loop list) ------------------------------------------
-  private renderColorPanel(): void {
+  // --- grid view (one voice, all its loops) -----------------------------
+  /** A voice's ALL-LOOPS GRID: the bar-square placement grid with every loop of the colour
+      painted in its own shade, and a picker saying which one your drag edits. It replaced
+      the old loop list — the list only existed to pick a loop and launch its pages, and
+      both of those now happen out on the track column — so add / remove / reorder live in
+      the picker's action row instead. */
+  private renderGridPanel(): void {
     const v = this.viewRoot;
     const c = this.openColor;
+    const loops = this.track.colors[c].loops;
     this.voiceBtns = new Map();
+    // Loops come and go under the index (removed, reordered), so clamp it here rather than
+    // trusting whatever set it.
+    this.gridLoopIdx = Math.min(Math.max(0, this.gridLoopIdx), Math.max(0, loops.length - 1));
+    const i = this.gridLoopIdx;
+    const picked: Loop | undefined = loops[i];
 
     const head = document.createElement("div");
     head.className = "mixer-head";
@@ -893,105 +979,63 @@ export class App {
     head.append(back, title);
     v.append(head);
 
-    // Just the loop list — mixing lives in the main-menu mixer, transitions in each
-    // voice's own settings, so the old Transition / Mixer sub-tabs are gone.
-    const loops = this.track.colors[c].loops;
-
-    // Read-only timeline: the colour's compiled lanes across the whole track, so the
-    // procedural placement is visible (one row per lane; a bar is lit where it sounds).
-    if (loops.some((l) => l.soundId >= 0)) v.append(this.colorPreview(c));
-
-    const list = document.createElement("div");
-    list.className = "loop-list";
-    loops.forEach((loop, i) => list.append(this.loopRow(loop, i)));
-    v.append(list);
-
+    // The picker: one chip per loop in priority order, in the shade the grid paints it.
+    const picker = document.createElement("div");
+    picker.className = "loop-picker";
+    picker.style.setProperty("--vc", VOICE_COLORS[c]);
+    loops.forEach((loop, n) => {
+      const chip = document.createElement("button");
+      chip.className = "loop-picker-chip" + (n === i ? " on" : "");
+      chip.style.setProperty("--ls", this.loopShade(c, n + 1));
+      const swatch = document.createElement("span");
+      swatch.className = "loop-picker-dot";
+      const name = document.createElement("span");
+      name.className = "loop-picker-name";
+      name.textContent = loop.label || loop.name || `Loop ${n + 1}`;
+      chip.append(swatch, name);
+      chip.title = this.ruleSummary(loop);
+      if (loop.soundId >= 0) this.voiceBtns!.set(loop.soundId, chip);
+      chip.onclick = () => { this.gridLoopIdx = n; this.render(); };
+      picker.append(chip);
+    });
     const add = document.createElement("button");
-    add.className = "loop-add";
-    add.textContent = "＋ Add loop";
-    add.onclick = () => this.addLoop(c);
-    v.append(add);
-  }
+    add.className = "loop-picker-chip loop-picker-add";
+    add.textContent = "＋";
+    add.title = "Add a loop to this voice";
+    add.onclick = () => { this.gridLoopIdx = loops.length; this.addLoop(c); };
+    picker.append(add);
+    v.append(picker);
 
-  /** The row's Transition tab: a LIST of overarching FX sweeps, each across its own bar
-      range of the whole row (see RowSweep / the engine's line sweeps). Cards may overlap —
-      the engine composes them, each morphing the result of the previous. */
-  /** One row-transition card: On/Off + remove, a draggable placement strip (the same
-      gesture as the play range), a MULTI-SELECT style row (active styles are lit and
-      sweep together), direction into/out of the effect, and the ramp curve + preview. */
-  /** Toggle one style in a transition's multi-select set. Every style stacks — "speed"
-      included (it warps the timing while the tonal styles morph the tone) — and the last
-      active style can't be removed. */
-  /** One row in a colour's loop list: priority reorder (solo), name + rule summary,
-      remove, and — across the card's foot — the loop's own Sound / Loop / Transitions tabs.
-      The tabs live HERE rather than inside the popup so any of the three pages is one tap
-      away from the list, and so the popup itself doesn't spend a row on navigation. */
-  private loopRow(loop: Loop, i: number): HTMLElement {
-    const c = this.openColor;
-    const loops = this.track.colors[c].loops;
-    const row = document.createElement("div");
-    // .loop-row-tabs stacks the card: the strip below, then the tab nav. (Plain .loop-row
-    // stays a horizontal strip — the transition list reuses it as one.)
-    row.className = "loop-row loop-row-tabs";
-    row.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
+    if (!picked) {
+      const empty = document.createElement("p");
+      empty.className = "voice-sheet-sub";
+      empty.textContent = "No loops on this voice yet — ＋ adds one.";
+      v.append(empty);
+      return;
+    }
 
-    // Reorder controls (priority for solo loops; list order in general).
-    const order = document.createElement("div");
-    order.className = "loop-order";
-    const up = document.createElement("button");
-    up.className = "loop-move";
-    up.textContent = "▲";
-    up.title = "Higher priority";
-    up.disabled = i === 0;
-    up.onclick = (e) => { e.stopPropagation(); this.moveLoop(c, i, -1); };
-    const down = document.createElement("button");
-    down.className = "loop-move";
-    down.textContent = "▼";
-    down.title = "Lower priority";
-    down.disabled = i === loops.length - 1;
-    down.onclick = (e) => { e.stopPropagation(); this.moveLoop(c, i, 1); };
-    order.append(up, down);
-
-    const body = document.createElement("button");
-    body.className = "loop-body";
-    if (loop.soundId >= 0) this.voiceBtns!.set(loop.soundId, body);
-    const nm = document.createElement("span");
-    nm.className = "loop-name";
-    // The coined voice name (label); falls back to the sound description on older loops.
-    nm.textContent = loop.label || loop.name || (loop.soundId >= 0 ? `Loop ${i + 1}` : "Empty loop");
-    if (loop.label && loop.name) body.title = loop.name; // keep the sound description in reach
-    const sum = document.createElement("span");
-    sum.className = "loop-summary";
-    sum.textContent = this.ruleSummary(loop);
-    body.append(nm, sum);
-    body.onclick = () => this.openPlacement(loop);
-
-    const rm = document.createElement("button");
-    rm.className = "loop-remove";
-    rm.textContent = "×";
-    rm.title = "Remove this loop";
-    rm.onclick = (e) => { e.stopPropagation(); this.removeLoop(c, i); };
-
-    const head = document.createElement("div");
-    head.className = "loop-row-head";
-    head.append(order, body, rm);
-
-    // The three pages of this loop's editor, each opening the popup straight onto it.
-    const nav = document.createElement("div");
-    nav.className = "placement-seg loop-nav";
-    const mkTab = (tab: PlacementTab, text: string) => {
+    // What the actions do to the PICKED loop. Reorder follows it, so the chip you're
+    // editing stays the chip that's lit.
+    const actions = document.createElement("div");
+    actions.className = "loop-picker-actions";
+    const mkAction = (text: string, titleText: string, disabled: boolean, fn: () => void) => {
       const b = document.createElement("button");
-      b.className = "seg-btn";
+      b.className = "loop-action-btn";
       b.textContent = text;
-      // No lit state: the popup covers the page, so this row is never visible while one of
-      // its tabs is active — these are launchers, not a display of where you are.
-      b.onclick = (e) => { e.stopPropagation(); this.openPlacement(loop, tab); };
+      b.title = titleText;
+      b.disabled = disabled;
+      b.onclick = fn;
       return b;
     };
-    nav.append(mkTab("sound", "Sound"), mkTab("loop", "Loop"), mkTab("transition", "Transitions"));
+    actions.append(
+      mkAction("▲", "Higher priority", i === 0, () => { this.gridLoopIdx = i - 1; this.moveLoop(c, i, -1); }),
+      mkAction("▼", "Lower priority", i === loops.length - 1, () => { this.gridLoopIdx = i + 1; this.moveLoop(c, i, 1); }),
+      mkAction("♪ Sound", "Open this loop's sound", false, () => this.openPlacement(picked, "sound")),
+      mkAction("× Remove", "Remove this loop", false, () => this.removeLoop(c, i)),
+    );
+    v.append(actions);
 
-    row.append(head, nav);
-    return row;
+    v.append(this.placementGrid(picked, () => this.render()));
   }
 
   /** Per-bar coverage of a colour's compiled lanes: one number[] per lane, `barLimit`
@@ -1036,62 +1080,6 @@ export class App {
     return `#${to2(mix(r))}${to2(mix(g))}${to2(mix(b))}`;
   }
 
-  /** A row of timeline cells for one lane segment starting at absolute bar `startBar`.
-      Cell value: -1 = pad (off the track), 0 = empty bar, >0 = a loop number. Each filled
-      cell shows the BAR NUMBER it sits on; its shade encodes WHICH loop of the colour it is
-      (the first is the base colour, each successive loop a shade lighter) so same-row loops
-      still read apart. */
-  private laneCells(cells: number[], c: number, startBar = 0): HTMLElement {
-    const row = document.createElement("div");
-    row.className = "color-preview-lane";
-    for (let b = 0; b < cells.length; b++) {
-      const cell = document.createElement("span");
-      const num = cells[b];
-      cell.className = "color-preview-cell" + (num > 0 ? " on" : num < 0 ? " pad" : "");
-      if (num > 0) {
-        // Loop 1 = the base colour, each later loop a shade lighter (capped so it stays legible).
-        const t = Math.min(0.9, 0.5 + (num - 1) * 0.16);
-        const bg = this.shade(VOICE_COLORS[c], t);
-        cell.style.background = bg;
-        // Dark text on light shades, light text on dark shades.
-        const lum = 0.299 * parseInt(bg.slice(1, 3), 16) + 0.587 * parseInt(bg.slice(3, 5), 16) + 0.114 * parseInt(bg.slice(5, 7), 16);
-        cell.style.color = lum > 150 ? "#000" : "#fff";
-        cell.textContent = String(startBar + b + 1); // the bar this square sits on
-      }
-      row.append(cell);
-    }
-    return row;
-  }
-
-  /** Append a colour's lanes to `parent` as timeline rows, wrapping every BARS_PER_ROW
-      bars into stacked "line" sub-rows. Used by the colour panel's preview; the track
-      overview draws its own block columns instead (see renderTrackPanel). */
-  private appendLanes(parent: HTMLElement, lanes: number[][], c: number): void {
-    const barLimit = Math.max(1, this.track.barLimit);
-    const segCount = Math.max(1, Math.ceil(barLimit / BARS_PER_ROW));
-    const rowBars = segCount > 1 ? BARS_PER_ROW : barLimit;
-    const laneList = lanes.length ? lanes : [new Array(barLimit).fill(0)];
-    for (const cells of laneList) {
-      for (let s = 0; s < segCount; s++) {
-        const segCells: number[] = [];
-        for (let i = 0; i < rowBars; i++) {
-          const bar = s * rowBars + i;
-          segCells.push(bar < barLimit ? cells[bar] : -1); // -1 pads a short final line
-        }
-        parent.append(this.laneCells(segCells, c, s * rowBars));
-      }
-    }
-  }
-
-  /** A read-only timeline of one colour's compiled lanes (used on the colour panel). */
-  private colorPreview(c: number): HTMLElement {
-    const wrap = document.createElement("div");
-    wrap.className = "color-preview";
-    wrap.style.setProperty("--vc", VOICE_COLORS[c]);
-    this.appendLanes(wrap, this.colorLaneNumbers(c), c);
-    return wrap;
-  }
-
   /** A one-line description of a loop's placement rule. */
   private ruleSummary(loop: Loop): string {
     const r = loop.rule;
@@ -1116,7 +1104,7 @@ export class App {
     this.track.colors[c].loops.push(loop);
     this.mintLoopSound(loop);
     this.render();
-    this.openPlacement(loop);
+    this.openPlacement(loop, "sound");
   }
 
   private moveLoop(c: number, i: number, dir: -1 | 1): void {
@@ -1154,31 +1142,33 @@ export class App {
     this.render();
   }
 
-  /** The placement popup for `loop`, showing ONE of its three pages — Sound = the FULL
-      parameter editor, embedded; Loop = the rhythm circles + sequencer pattern grid + the
-      placement squares; Transitions = the loop's transition list (each opening its Bars /
-      Graph / Effects / Speed editor). Which one is chosen out in the list, by the tabs on
-      the loop's own row, and passed in as `tab`; the popup carries no nav of its own, so
-      each page gets the whole sheet.
+  /** The editor popup for `loop`. Its main page is the WHOLE loop, top to bottom: the
+      rhythm circles, the sequencer pattern grid, the full sound graph, then the buttons
+      that lead off it (⇄ Transitions, ⚙ Options, ◔ Accents, ⧉ Copy). Placement isn't here —
+      it lives out on the voice's all-loops grid, where a loop's bars can be seen against
+      its neighbours'.
+      Transitions is the one page that takes the sheet for itself (a list, each opening its
+      Bars / Graph / Effects / Speed editor); ⚙ Options and ◔ Accents open over the main
+      page and come back to it.
       Omitting `tab` means "rebuild where we are": that's how every in-place re-render goes
       through here without resetting the page you're on.
       Rebuilt in place on any change (it's appended to the root, so it survives a panel
-      re-render). */
+      re-render below it — the track view or the grid view). */
   private openPlacement(loop: Loop, tab?: PlacementTab): void {
     // The sheet is rebuilt from scratch on every change, which would snap its scroll
     // back to the top — capture it before the old overlay goes, restore it below when
     // the rebuild is IN-PLACE (same tab/sub-page; a genuine navigation starts at top).
     const prevScroll = document.querySelector<HTMLElement>(".placement-overlay .voice-sheet")?.scrollTop ?? 0;
     document.querySelector(".placement-overlay")?.remove();
-    // Stale cell refs from a previous Loop-tab render; patternGrid re-sets them if shown.
+    // Stale cell refs from a previous render; patternGrid re-sets them if shown.
     this.patternPlayCells = null;
     // A genuine open: a different loop, or the same one re-entered through a tab.
     const opening = this.editLoop !== loop || tab !== undefined;
     if (opening) {
-      // Land on the page the row's tab asked for (Sound when opened by the name alone) and
+      // Land on the page asked for (the main sound page unless Transitions was named) and
       // reset every sub-state the popup carries.
       this.placementTab = tab ?? "sound";
-      this.loopSub = "grid";
+      this.loopSub = null;
       this.gridPick = null;
       this.editTransition = null;
       this.transTab = "graph";
@@ -1189,7 +1179,7 @@ export class App {
     this.editLoop = loop;
     // The popup's view identity: scroll only survives while it's unchanged.
     const viewKey = [
-      this.placementTab, this.loopSub,
+      this.placementTab, this.loopSub ?? "",
       this.editTransition ? (loop.transitions ?? []).indexOf(this.editTransition) : -1,
       this.transTab,
       `g:${this.graphTrace ?? ""}:${this.graphPage}`,
@@ -1211,9 +1201,9 @@ export class App {
     sheet.className = "voice-sheet placement-sheet";
     sheet.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
 
-    // While a transition's editor is open it takes the whole page — the popup's own
-    // Sound / Loop / Transitions nav hides, and its back button folds into the header's
-    // breadcrumb (Loops › name › Transition N) instead of a second row.
+    // While a transition's editor is open it takes the whole page, and the back button
+    // folds into the header's breadcrumb (close › name › Transition N) rather than
+    // spending a second row.
     const trs = loop.transitions ?? (loop.transitions = []);
     const openTr = this.placementTab === "transition" && this.editTransition && trs.includes(this.editTransition)
       ? this.editTransition
@@ -1223,7 +1213,7 @@ export class App {
     head.className = "voice-sheet-head win-title";
     const loopName = loop.label || loop.name || "Loop";
     if (openTr) {
-      // Breadcrumb: Loops (close) › name (back to the transition list) › Transition N.
+      // Breadcrumb: close › name (back to the transition list) › Transition N.
       const crumb = document.createElement("nav");
       crumb.className = "sheet-crumb";
       const seg = (text: string, onclick: () => void) => {
@@ -1243,7 +1233,7 @@ export class App {
       cur.className = "crumb-current";
       cur.textContent = `Transition ${trs.indexOf(openTr) + 1}`;
       crumb.append(
-        seg("‹ Loops", () => this.closePlacement()), sep(),
+        seg("‹ Close", () => this.closePlacement()), sep(),
         seg(loopName, () => { this.stopPreview(); this.editTransition = null; this.gridPick = null; rerender(); }), sep(),
         cur,
       );
@@ -1260,7 +1250,8 @@ export class App {
     } else {
       const back = document.createElement("button");
       back.className = "mixer-back";
-      back.textContent = "‹ Loops";
+      // Closes onto whichever view is underneath — the track columns or the voice's grid.
+      back.textContent = "‹ Back";
       back.onclick = () => this.closePlacement();
       const title = document.createElement("h2");
       title.className = "voice-sheet-title";
@@ -1285,24 +1276,27 @@ export class App {
       }
     }
 
-    // No tab nav here — the pages are picked by the tabs on the loop's row, and ‹ Loops
-    // goes back to them.
-    if (this.placementTab === "sound") {
-      // The sound graph IS the sound panel.
-      sheet.append(this.soundGraphPanel(this.graphHostForLoop(loop, rerender), rerender));
-    } else if (this.placementTab === "transition") {
+    // No tab nav here: the main page IS the loop, and everything else opens off it.
+    if (this.placementTab === "transition") {
       if (openTr) sheet.append(this.transitionEditor(loop, openTr, rerender));
-      else { this.editTransition = null; sheet.append(this.transitionList(loop, rerender)); }
+      else {
+        this.editTransition = null;
+        // Nothing sits behind the popup to come back through any more, so the list carries
+        // its own way back to the sound page.
+        sheet.append(this.subPanelHead("Transitions", () => { this.placementTab = "sound"; rerender(); }));
+        sheet.append(this.transitionList(loop, rerender));
+      }
     } else if (this.loopSub === "options") {
       // Procedural placement options (behind the ⚙ button): the Repeat-every rule.
-      sheet.append(this.subPanelHead("Placement options", () => { this.loopSub = "grid"; rerender(); }));
+      sheet.append(this.subPanelHead("Placement options", () => { this.loopSub = null; rerender(); }));
       sheet.append(this.placementControls(loop, rerender));
     } else if (this.loopSub === "life") {
-      sheet.append(this.subPanelHead("Accents & Ghosts", () => { this.loopSub = "grid"; rerender(); }));
+      sheet.append(this.subPanelHead("Accents & Ghosts", () => { this.loopSub = null; rerender(); }));
       sheet.append(this.lifeControls(loop, rerender));
     } else {
-      // Default Loop view: the rhythm circles up front, the sequencer pattern grid always
-      // shown below them, the placement squares, then a row of small actions.
+      // The whole loop on one page: what it plays (the rhythm circles and the sequencer
+      // grid), then WHAT it sounds like (the graph), then where you go from here. Rhythm
+      // reads above the sound because it's what the graph is drawn for.
       const rhythmRow = document.createElement("div");
       rhythmRow.className = "loop-rhythm";
       const detail = document.createElement("div");
@@ -1312,7 +1306,8 @@ export class App {
       sheet.append(rhythmRow);
       sheet.append(this.patternGrid(loop, rerender));
 
-      sheet.append(this.placementGrid(loop, rerender));
+      // The sound graph IS the sound panel.
+      sheet.append(this.soundGraphPanel(this.graphHostForLoop(loop, rerender), rerender));
 
       const actions = document.createElement("div");
       actions.className = "loop-actions";
@@ -1324,7 +1319,10 @@ export class App {
         b.onclick = fn;
         return b;
       };
+      const trCount = trs.length;
       actions.append(
+        mkAction(trCount ? `⇄ Transitions (${trCount})` : "⇄ Transitions", "This loop's transitions",
+          () => { this.placementTab = "transition"; rerender(); }),
         mkAction("⚙ Options", "Repeat rule", () => { this.loopSub = "options"; rerender(); }),
         mkAction("◔ Accents", "Accents & ghosts", () => { this.loopSub = "life"; rerender(); }),
         mkAction("⧉ Copy", "Copy this loop to another row", () => this.openCopyLoopMenu(loop)),
@@ -1426,14 +1424,16 @@ export class App {
     }
   }
 
-  /** The shared bar-SQUARE grid (8 squares per row): the Loop tab's placement editor and
-      a transition's Bars tab both use it. Each square is worth 1 / 2 / 4 bars (the
+  /** The shared bar-SQUARE grid (8 squares per row): the voice's all-loops grid and a
+      transition's Bars tab both use it. Each square is worth 1 / 2 / 4 / 8 bars (the
       per-grid squares picker). Tap toggles a square; drag paints a contiguous run on/off;
       the ⇱⇲ button arms a Start→End pick — the FIRST tap resets the grid and marks the
       start, the SECOND fills straight through to the end. Squares in `occupied` carry the
       faint stripe (context: other loops' bars, or — on a transition — where this loop
-      itself sounds). With `grow`, painting past the track lengthens it (loop placement
-      only); otherwise the grid is clamped to the track. */
+      itself sounds), and `underlay` may additionally PAINT an unselected square in another
+      loop's own shade, which is what makes the voice grid show all its loops at once.
+      With `grow`, painting past the track lengthens it (loop placement only); otherwise
+      the grid is clamped to the track. */
   private barGrid(cfg: {
     key: "place" | "trans" | "range";
     color: string;
@@ -1442,6 +1442,9 @@ export class App {
     commit: () => void;              // on release → full popup rebuild
     occupied: Set<number>;
     grow: boolean;
+    /** Colour for a square this grid doesn't own, by its first bar (1-based). Called from
+        paint(), which runs on every pointermove — index a precomputed table, don't walk. */
+    underlay?: (barStart: number, span: number) => string | null;
   }): HTMLElement {
     const COLS = 8;
     const SPAN = Math.max(1, this.gridSpan[cfg.key]);
@@ -1484,7 +1487,7 @@ export class App {
     head.append(lbl, readout, clear);
     wrap.append(head);
 
-    // Tool row: the squares' bar worth (1 / 2 / 4), the Start→End pick, the row stepper.
+    // Tool row: the squares' bar worth (1 / 2 / 4 / 8), the Start→End pick, the row stepper.
     const tools = document.createElement("div");
     tools.className = "place-grid-tools";
     const spanCtl = document.createElement("span");
@@ -1493,7 +1496,7 @@ export class App {
     spanLbl.className = "place-grid-rowsn";
     spanLbl.textContent = "square =";
     spanCtl.append(spanLbl);
-    for (const s of [1, 2, 4]) {
+    for (const s of [1, 2, 4, 8]) {
       const b = document.createElement("button");
       b.className = "place-grid-rowbtn span-btn" + (SPAN === s ? " on" : "");
       b.textContent = String(s);
@@ -1561,6 +1564,12 @@ export class App {
         for (let b = first; b < first + SPAN; b++) if (set.has(b)) cnt++;
         cells[i].classList.toggle("sel", cnt === SPAN);
         cells[i].classList.toggle("part", cnt > 0 && cnt < SPAN);
+        // A square this grid doesn't own shows whoever does own it (the voice grid's other
+        // loops); one it does own goes back to the plain field under its own fill.
+        if (cfg.underlay) {
+          const other = cnt === 0 ? cfg.underlay(first, SPAN) : null;
+          cells[i].style.backgroundColor = other ?? "";
+        }
       }
     };
     paint(new Set(cfg.read()));
@@ -1649,10 +1658,13 @@ export class App {
     return wrap;
   }
 
-  /** The Loop tab's placement grid: this loop's bars across the track. Editing sets the
-      rule to "At bars" (seeded from the current placement, so switching from an
-      algorithmic rule keeps its bars); painting past the track end GROWS the track.
-      Squares covered by ANOTHER loop of this colour carry the clash stripe. */
+  /** The voice's ALL-LOOPS grid, from the picked loop's point of view: its own bars are
+      the selection you paint, and every OTHER loop of the colour shows underneath in its
+      own shade (the same ramp as the track column, so the grid and the column read as the
+      same picture). Editing sets the rule to "At bars" (seeded from the current placement,
+      so switching from an algorithmic rule keeps its bars); painting past the track end
+      GROWS the track. Squares another loop covers also carry the clash stripe, which is
+      what shows when the picked loop is painted over one of them. */
   private placementGrid(loop: Loop, rerender: () => void): HTMLElement {
     const barLimit = Math.max(1, this.track.barLimit);
     const c = this.colorOf(loop);
@@ -1663,19 +1675,32 @@ export class App {
       ? (loop.rule.every as { bars: number[] }).bars.slice()
       : placementsFor(loop, barLimit).map((iv) => iv.startBar + 1);
 
-    // Bars where ANOTHER loop of this colour sounds (covered bars) — a clash hint.
+    // One walk over the siblings fills both: the clash stripe set, and the per-bar shade
+    // table the underlay indexes. Earliest loop wins a bar (list order = priority, as
+    // resolveLane resolves it), so the grid shows what will actually sound.
     const occupied = new Set<number>();
-    for (const other of this.track.colors[c]?.loops ?? []) {
-      if (other === loop || other.soundId < 0) continue;
+    const shades: (string | null)[] = new Array(barLimit + 1).fill(null);
+    (this.track.colors[c]?.loops ?? []).forEach((other, n) => {
+      if (other === loop || other.soundId < 0) return;
+      const shade = this.loopShade(c, n + 1);
       for (const iv of placementsFor(other, barLimit)) {
-        for (let b = iv.startBar; b < iv.startBar + iv.forBars && b < barLimit; b++) occupied.add(b + 1);
+        for (let b = iv.startBar; b < iv.startBar + iv.forBars && b < barLimit; b++) {
+          occupied.add(b + 1);
+          if (shades[b + 1] === null) shades[b + 1] = shade;
+        }
       }
-    }
+    });
 
     return this.barGrid({
       key: "place",
       color: loop.soundId >= 0 ? loop.color : "#808080",
       read: ownList,
+      // A square shows the first sibling anywhere inside it — at square = 8 bars a loop on
+      // one bar of the eight still has to be visible.
+      underlay: (first, span) => {
+        for (let b = first; b < first + span && b <= barLimit; b++) if (shades[b]) return shades[b];
+        return null;
+      },
       write: (bars) => {
         // Painting past the track grows it to fit the furthest placed bar.
         const max = bars.length ? bars[bars.length - 1] : 0;
@@ -3777,7 +3802,7 @@ export class App {
     head.className = "mixer-head";
     const back = document.createElement("button");
     back.className = "mixer-back";
-    back.textContent = this.mixerReturn === "color" ? "‹ Loops" : "‹ Track";
+    back.textContent = this.mixerReturn === "grid" ? "‹ Loops" : "‹ Track";
     back.onclick = () => { this.view = this.mixerReturn; this.render(); };
     const title = document.createElement("h2");
     title.className = "mixer-title";
