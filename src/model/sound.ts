@@ -188,6 +188,49 @@ function sparsityBudget(): number {
   return 12;
 }
 
+// --- Module families -----------------------------------------------------------
+// The modules are not interchangeable: several of them compete for the same job, and
+// a flat pool that treats all ~21 alike lands on combinations that cancel each other
+// out (five oscillator colours at once = mush; three space FX and no timbre). So each
+// module carries a FAMILY and the shuffle enforces a per-family cap BEFORE the global
+// budget, plus a keep-WEIGHT that biases which survivors the budget picks.
+//
+//  - "osc"   the oscillator's colour: Unison / wavetable / Fold / FM-Ring / Modal.
+//            They all rewrite the same spectrum, so at most two, usually one.
+//  - "lfo"   the three LFO slots. Motion was losing the flat draw far too often (3
+//            entries in 21 against a median budget of 4), so these are weighted up —
+//            but capped at two, since three simultaneous LFOs read as wobble, not motion.
+//  - "space" echo / reverb / mod-FX: the send stage. Given its own cap so the wet
+//            stage cannot eat the whole budget and leave the sound with no timbre.
+//  - "core"  everything else, competing on the global budget as before.
+type ModuleFamily = "osc" | "lfo" | "space" | "core";
+
+/** How many of a family a shuffle may leave on. `Infinity` = only the global budget
+    constrains it. Drawn per shuffle where the count itself should vary. */
+function familyCap(family: ModuleFamily): number {
+  if (family === "osc") return rand() < 0.7 ? 1 : 2;
+  if (family === "lfo") return 2;
+  // Usually at most two of the three space FX, but all three together is a legitimate
+  // (if washy) result, so leave it on the table a quarter of the time.
+  if (family === "space") return rand() < 0.75 ? 2 : 3;
+  return Infinity;
+}
+
+// Keep-weight multipliers. A module's odds of surviving the global budget scale with
+// its weight (see the weighted draw in applySparsity).
+const LFO_KEEP_WEIGHT = 2.5;   // the fix for LFOs rarely reaching the finished sound
+// The family cap has already decided WHICH colour this sound wears; without a matching
+// weight the global budget then culls it back out and most sounds end up with a bare
+// oscillator, which is a worse failure than the mush the cap was fixing.
+const OSC_KEEP_WEIGHT = 2.5;
+const CLICK_MASKED_WEIGHT = 0.15; // click under percussive noise: same job, so mostly yield
+// Amp bodies shuffle to a median of ~1.1s, so this keeps the comb to the shortest
+// third of draws — "only where it makes sense" without making it extinct.
+const COMB_BODY_MAX = 0.8;     // s; above this amp body a comb resonator just muddies
+const COMB_CROWD_WEIGHT = 0.5; // comb wants a clean exciter, so it yields in a busy sound
+const NOISE_MASKS_CLICK = 0.3; // noise level above which a percussive noise layer IS the click
+const NOISE_PERCUSSIVE = 0.25; // s; noise decaying faster than this occupies the transient
+
 // A standard-normal sample via Box–Muller.
 function randNormal(): number {
   const u1 = rand() || 1e-9; // avoid log(0)
@@ -425,9 +468,11 @@ export class SoundDraft {
       semitone or to a key, and tunes the musical companions (Osc2Detune, CombTune,
       OscModRatio) to consonant steps. `seed` makes the whole draw deterministic.
 
-      After the draw, {@link applySparsity} switches off a random subset of the
-      effect/filter modules so a sound is usually only doing 1-3 things at once
-      instead of everything at full tilt — the count itself varies per shuffle.
+      After the draw, {@link applySparsity} switches off a subset of the effect/filter
+      modules so a sound is usually only doing a few things at once instead of
+      everything at full tilt — the count itself varies per shuffle, and the modules
+      that survive are picked per FAMILY (see {@link ModuleFamily}) so the survivors
+      complement each other rather than competing for the same spectral job.
       {@link ensureAudibleLevel} then floors near-silent results (source levels,
       fundamental-killing filters, click-length layer decays) and
       {@link tameHarshness} caps stacked-extreme screech (scream-band resonance,
@@ -495,6 +540,8 @@ export class SoundDraft {
         // After sparsity (so an evolved pitch contour isn't immediately stripped) but
         // before tameHarshness (so the pitch-amount screech guard still applies to it).
         this.applyContourEvolution(randomness);
+        // Evolution can lengthen the sound under a module that only suits a short one.
+        this.dropUnfitModules(randomness);
         this.ensureAudibleLevel();
         this.tameHarshness();
       }
@@ -649,10 +696,17 @@ export class SoundDraft {
   }
 
   /** The toggleable effect/filter/modulation "modules" of the voice, each with its
-      display name (for the recap), whether it's currently audible, and how to switch
-      it off. The core tone (osc/pitch/wave/noise level) and the amp envelope are NOT
-      modules — they always define the sound. Listed in routing order. */
-  private soundModules(): { name: string; on: boolean; off: () => void }[] {
+      display name (for the recap), whether it's currently audible, how to switch it
+      off, and — for the shuffle — which {@link ModuleFamily} it competes in, how
+      strongly it should survive the budget (`weight`, default 1) and whether it makes
+      musical sense in this sound at all (`fits`, default true; a module that does not
+      fit is switched off outright rather than merely deprioritised).
+      The core tone (osc/pitch/wave/noise level) and the amp envelope are NOT modules —
+      they always define the sound. Listed in routing order. */
+  private soundModules(): {
+    name: string; on: boolean; off: () => void;
+    family: ModuleFamily; weight: number; fits: boolean;
+  }[] {
     const NONE = LFO_NONE;
     const g = (id: ParamId) => this.get(id);
     const round = (id: ParamId) => Math.round(g(id));
@@ -660,62 +714,134 @@ export class SoundDraft {
       name: LFO_TARGETS[round(t)],
       on: round(t) !== NONE && g(d) > 0.001,
       off: () => this.set(t, NONE),
+      family: "lfo" as const, weight: LFO_KEEP_WEIGHT, fits: true,
     });
+
+    // A percussive noise layer already IS the transient, so a click on top of it adds
+    // nothing but level. Only a noise layer that is BOTH loud and short masks the click:
+    // a click under a long noise tail is an ordinary drum, and stays worth drawing.
+    const noiseDec = g(ParamId.NoiseDecay);
+    const bodyDec = noiseDec > 0.004 ? noiseDec : g(ParamId.AmpDecay);
+    const clickMasked = g(ParamId.NoiseLevel) > NOISE_MASKS_CLICK && bodyDec < NOISE_PERCUSSIVE;
+
+    // A comb is a tuned delay: on a short hit it reads as a pitched resonance, but a
+    // long body just circulates through it into mud (and, tuned high, whistle — see
+    // COMB_WHISTLE_HZ in tameHarshness). It also wants a clean exciter, so it yields
+    // to whatever else the oscillator stage is already doing.
+    const ampBody = g(ParamId.AmpAttack) + g(ParamId.AmpDecay) + g(ParamId.AmpSustain) * g(ParamId.AmpRelease);
+    const combFits = ampBody < COMB_BODY_MAX;
+
+    // Weight defaults to the family's own (see OSC_KEEP_WEIGHT); pass one to override.
+    const FAMILY_WEIGHT: Record<ModuleFamily, number> = {
+      osc: OSC_KEEP_WEIGHT, lfo: LFO_KEEP_WEIGHT, space: 1, core: 1,
+    };
+    const mod = (
+      m: { name: string; on: boolean; off: () => void },
+      family: ModuleFamily = "core", weight = FAMILY_WEIGHT[family], fits = true,
+    ) => ({ ...m, family, weight, fits });
+
     return [
       lfo(ParamId.Lfo1Target, ParamId.Lfo1Depth),
       lfo(ParamId.Lfo2Target, ParamId.Lfo2Depth),
       lfo(ParamId.Lfo3Target, ParamId.Lfo3Depth),
-      { name: round(ParamId.Sync) >= 1 ? "Sync" : "Osc2",
-        on: g(ParamId.Osc2Mix) > 0.02, off: () => this.set(ParamId.Osc2Mix, 0) },
-      { name: "Unison", on: round(ParamId.Unison) > 0, off: () => this.set(ParamId.Unison, 0) },
-      { name: WAVETABLES[round(ParamId.WaveTable)],
-        on: round(ParamId.WaveTable) > 0, off: () => this.set(ParamId.WaveTable, 0) },
-      { name: "Fold", on: g(ParamId.Fold) > 0.02, off: () => this.set(ParamId.Fold, 0) },
-      { name: OSC_MOD_TYPES[round(ParamId.OscModType)],
+      // Osc2/Sync is a second SOURCE rather than a recolouring of the first, so it sits
+      // outside the "osc" family and competes on the general budget.
+      mod({ name: round(ParamId.Sync) >= 1 ? "Sync" : "Osc2",
+        on: g(ParamId.Osc2Mix) > 0.02, off: () => this.set(ParamId.Osc2Mix, 0) }),
+      mod({ name: "Unison", on: round(ParamId.Unison) > 0, off: () => this.set(ParamId.Unison, 0) }, "osc"),
+      mod({ name: WAVETABLES[round(ParamId.WaveTable)],
+        on: round(ParamId.WaveTable) > 0, off: () => this.set(ParamId.WaveTable, 0) }, "osc"),
+      mod({ name: "Fold", on: g(ParamId.Fold) > 0.02, off: () => this.set(ParamId.Fold, 0) }, "osc"),
+      mod({ name: OSC_MOD_TYPES[round(ParamId.OscModType)],
         on: round(ParamId.OscModType) !== 0 && g(ParamId.OscModAmount) > 0.02,
-        off: () => this.set(ParamId.OscModType, 0) },
-      { name: "Comb", on: g(ParamId.CombMix) > 0.02, off: () => this.set(ParamId.CombMix, 0) },
-      { name: MODAL_MATERIALS[round(ParamId.ModalMaterial)],
-        on: g(ParamId.ModalMix) > 0.02, off: () => this.set(ParamId.ModalMix, 0) },
-      { name: "Crush", on: round(ParamId.Crush) > 0, off: () => this.set(ParamId.Crush, 0) },
-      { name: "Downsmpl", on: round(ParamId.Downsample) > 0, off: () => this.set(ParamId.Downsample, 0) },
-      { name: CLICK_TYPES[round(ParamId.ClickType)],
+        off: () => this.set(ParamId.OscModType, 0) }, "osc"),
+      mod({ name: "Comb", on: g(ParamId.CombMix) > 0.02, off: () => this.set(ParamId.CombMix, 0) },
+        "core", COMB_CROWD_WEIGHT, combFits),
+      mod({ name: MODAL_MATERIALS[round(ParamId.ModalMaterial)],
+        on: g(ParamId.ModalMix) > 0.02, off: () => this.set(ParamId.ModalMix, 0) }, "osc"),
+      mod({ name: "Crush", on: round(ParamId.Crush) > 0, off: () => this.set(ParamId.Crush, 0) }),
+      mod({ name: "Downsmpl", on: round(ParamId.Downsample) > 0, off: () => this.set(ParamId.Downsample, 0) }),
+      mod({ name: CLICK_TYPES[round(ParamId.ClickType)],
         on: g(ParamId.ClickLevel) > 0.02, off: () => this.set(ParamId.ClickLevel, 0) },
-      { name: "Drive", on: g(ParamId.Drive) > 0.05, off: () => this.set(ParamId.Drive, 0) },
+        "core", clickMasked ? CLICK_MASKED_WEIGHT : 1),
+      mod({ name: "Drive", on: g(ParamId.Drive) > 0.05, off: () => this.set(ParamId.Drive, 0) }),
       // The pitch envelope is bipolar: positive drops from above (punch), negative
       // rises into the note (a reverse-ish swell).
-      { name: g(ParamId.PitchEnvAmount) >= 0 ? "Punch" : "Rise",
-        on: Math.abs(g(ParamId.PitchEnvAmount)) > 0.1, off: () => this.set(ParamId.PitchEnvAmount, 0) },
-      { name: "Echo", on: g(ParamId.EchoMix) > 0.03, off: () => this.set(ParamId.EchoMix, 0) },
-      { name: "Verb", on: g(ParamId.ReverbMix) > 0.05, off: () => this.set(ParamId.ReverbMix, 0) },
-      { name: MODFX_TYPES[round(ParamId.ModFxType)],
+      mod({ name: g(ParamId.PitchEnvAmount) >= 0 ? "Punch" : "Rise",
+        on: Math.abs(g(ParamId.PitchEnvAmount)) > 0.1, off: () => this.set(ParamId.PitchEnvAmount, 0) }),
+      mod({ name: "Echo", on: g(ParamId.EchoMix) > 0.03, off: () => this.set(ParamId.EchoMix, 0) }, "space"),
+      mod({ name: "Verb", on: g(ParamId.ReverbMix) > 0.05, off: () => this.set(ParamId.ReverbMix, 0) }, "space"),
+      mod({ name: MODFX_TYPES[round(ParamId.ModFxType)],
         on: round(ParamId.ModFxType) !== 0 && g(ParamId.ModFxMix) > 0.02,
-        off: () => this.set(ParamId.ModFxType, 0) },
+        off: () => this.set(ParamId.ModFxType, 0) }, "space"),
       // Per-hit Life modules — pattern-domain variation rather than timbre.
-      { name: "Accent", on: g(ParamId.AccentAmount) > 0.1, off: () => this.set(ParamId.AccentAmount, 0) },
-      { name: "Ghosts", on: g(ParamId.HitChance) < 0.95, off: () => this.set(ParamId.HitChance, 1) },
-      { name: "Ratchet", on: g(ParamId.Ratchet) > 0.05, off: () => this.set(ParamId.Ratchet, 0) },
+      mod({ name: "Accent", on: g(ParamId.AccentAmount) > 0.1, off: () => this.set(ParamId.AccentAmount, 0) }),
+      mod({ name: "Ghosts", on: g(ParamId.HitChance) < 0.95, off: () => this.set(ParamId.HitChance, 1) }),
+      mod({ name: "Ratchet", on: g(ParamId.Ratchet) > 0.05, off: () => this.set(ParamId.Ratchet, 0) }),
     ];
   }
 
-  /** Turn off a random subset of the active modules so only ~`sparsityBudget()` of
-      them stay on. Each disable happens with probability `randomness`, so a gentle
-      shuffle rarely strips a module while a full shuffle enforces the budget; at
-      randomness 0 (no-op shuffle) nothing is touched. */
+  /** Switch off every module whose `fits` says it makes no musical sense in this sound
+      (subject to the usual `randomness` gate). Run twice per shuffle: once at the top of
+      {@link applySparsity}, and again after {@link applyContourEvolution} — evolution can
+      STRETCH the amp decay window, which turns a short hit a comb suited into a long one
+      it only muddies, and the second pass is what catches that. */
+  private dropUnfitModules(randomness: number): void {
+    if (randomness <= 0) return;
+    for (const m of this.soundModules()) {
+      if (m.on && !m.fits && rand() < randomness) m.off();
+    }
+  }
+
+  /** Thin the active modules down to something coherent, in three passes:
+
+      1. modules that do not FIT this sound at all (a comb on a long body) switch off;
+      2. each {@link ModuleFamily} is cut to its {@link familyCap}, so the five
+         oscillator colours can't all run at once and the space FX can't crowd out the
+         timbre — the caps apply WITHIN a family, independently of each other;
+      3. whatever survives is cut to the global `sparsityBudget()`, which is unchanged,
+         so overall density stays where it was tuned — the families only redistribute it.
+
+      Passes 2 and 3 pick their survivors by WEIGHT rather than uniformly (LFOs weigh
+      more so motion reaches the finished sound; a masked click and a crowded comb weigh
+      less), using Efraimidis-Spirakis sampling: key = rand()^(1/weight), highest keys
+      win. Every disable is still gated on `randomness`, so a gentle shuffle rarely
+      strips a module while a full shuffle enforces the whole thing; at randomness 0
+      (no-op shuffle) nothing is touched. */
   private applySparsity(randomness: number): void {
     if (randomness <= 0) return;
+    type Mod = ReturnType<SoundDraft["soundModules"]>[number];
+
+    // Highest key last, so popping from the end takes the strongest survivor.
+    const byWeight = (mods: Mod[]): Mod[] =>
+      mods
+        .map((m) => ({ m, key: Math.pow(rand(), 1 / Math.max(0.01, m.weight)) }))
+        .sort((a, b) => a.key - b.key)
+        .map((e) => e.m);
+
+    // Disable the weakest `count` of `mods`, each subject to the randomness gate.
+    const cull = (mods: Mod[], count: number): void => {
+      const ranked = byWeight(mods);
+      for (let i = 0; i < ranked.length && count > 0; i++) {
+        if (rand() < randomness) { ranked[i].off(); count--; }
+      }
+    };
+
+    // 1. Ill-fitting modules go first, so they don't consume a family or budget slot.
+    this.dropUnfitModules(randomness);
+
+    // 2. Per-family caps.
+    const families: ModuleFamily[] = ["osc", "lfo", "space"];
+    for (const family of families) {
+      const active = this.soundModules().filter((m) => m.on && m.family === family);
+      const cap = familyCap(family);
+      if (active.length > cap) cull(active, active.length - cap);
+    }
+
+    // 3. The global budget over everything left.
     const active = this.soundModules().filter((m) => m.on);
     const budget = sparsityBudget();
-    if (active.length <= budget) return;
-    // Fisher-Yates shuffle so the kept subset is unbiased.
-    for (let i = active.length - 1; i > 0; i--) {
-      const j = Math.floor(rand() * (i + 1));
-      [active[i], active[j]] = [active[j], active[i]];
-    }
-    let toDisable = active.length - budget;
-    for (let i = 0; i < active.length && toDisable > 0; i++) {
-      if (rand() < randomness) { active[i].off(); toDisable--; }
-    }
+    if (active.length > budget) cull(active, active.length - budget);
   }
 
   /** Short list of the main settings shaping the current sound, for the recap line:
