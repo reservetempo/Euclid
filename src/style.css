@@ -463,10 +463,13 @@ select:focus { outline: none; }
   background-color: #ffffff; box-shadow: inset 0 0 0 1px #dfdfdf;
 }
 
-/* Overview playback line: slides down the columns as the track plays. */
+/* Overview playback line: slides down the columns as the track plays. `--phpx` is the
+   MEASURED offset of the bar being played (app.ts trackBarOffset), which counts the
+   column's border/padding and the gaps between blocks; `--ph`, the plain fraction of the
+   container, is only the fallback for a frame where the blocks can't be measured. */
 .track-playhead {
   position: absolute; left: 0; right: 0; height: 2px; z-index: 5;
-  top: calc(var(--ph, 0) * 100%);
+  top: var(--phpx, calc(var(--ph, 0) * 100%));
   background: #000000;
   pointer-events: none;
   opacity: 0;
@@ -869,6 +872,8 @@ select:focus { outline: none; }
 .euclid-num input::-webkit-inner-spin-button,
 .euclid-num input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .euclid-num input:disabled { opacity: 0.35; }
+/* A value that reads as a fraction rather than a number (Push: "−1/64") needs the room. */
+.euclid-num.wide input { width: 64px; font-size: 14px; }
 
 /* --- custom number pad (fixed overlay; the page behind stays put) ----------------- */
 .numpad-overlay {
@@ -1328,6 +1333,12 @@ select:focus { outline: none; }
 .formula-domain { color: var(--muted); font-size: 13px; }
 .trace-ed-head { position: relative; }
 .trace-ed-head .help-btn { margin-left: 0; }
+/* The Life trace's extra half: the per-loop accent/ghost PLACEMENT rows, ruled off from
+   the trace's own params above them. */
+.trace-life {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--muted);
+}
 
 /* Toolbar numbers/selects on the sound graph (gate / max len / spread): a tiny label
    over a compact scrub input or native select, matching the buttons' height. */
@@ -1344,3 +1355,33 @@ select:focus { outline: none; }
   font: inherit; font-size: 11px; font-weight: 700; color: var(--text);
   background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
 }
+
+/* --- The parameter sheet -----------------------------------------------------
+   The graph's alternative: ~85 settings as `name  value` rows, sized so a whole
+   sound fits a phone screen. A CSS column layout does the packing — blocks are
+   kept whole (break-inside), so widening the screen adds COLUMNS rather than
+   restacking the groups, and a setting keeps the same neighbours everywhere. */
+.ps-cols {
+  column-count: 2; column-gap: 10px;
+  font-size: 10.5px; line-height: 1.15;
+}
+@media (min-width: 430px) { .ps-cols { column-count: 3; } }
+@media (min-width: 660px) { .ps-cols { column-count: 4; } }
+
+.ps-block { break-inside: avoid; page-break-inside: avoid; margin-bottom: 2px; }
+.ps-head {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--vc, var(--muted)); height: 12px; line-height: 12px;
+  border-bottom: 1px solid var(--muted);
+}
+.ps-row { display: flex; align-items: center; gap: 4px; height: 13px; }
+/* The name gives way first: a value must never be the thing that gets ellipsed. */
+.ps-name { flex: 1 1 auto; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-val {
+  flex: 0 0 auto; width: 52px; padding: 1px 2px; text-align: right;
+  font: inherit; font-size: 10.5px; font-weight: 700; color: var(--text);
+  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
+  cursor: ns-resize; touch-action: none;
+}
+/* Still at its default — nothing has moved it, so it recedes. */
+.ps-val.ps-default { color: var(--muted); font-weight: 400; }

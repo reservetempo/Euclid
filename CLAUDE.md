@@ -24,9 +24,16 @@ hit-tested per bar, and each loop of a colour has its own shade); under each col
 voice's loop chips — the same shades, for placements too thin to hit — and a ▦ button onto
 the voice's **all-loops grid**, which is the bar-square placement grid with a loop picker,
 every loop of the colour showing at once. A loop's page is the whole loop, top to bottom:
-rhythm circles, sequencer grid, the sound graph, then the buttons off it (Transitions,
-Options, Accents, Copy). There is no loop LIST any more — picking a loop happens on the
-column or in the grid's picker.
+rhythm circles (Hits / Steps / Start / Split, and **Push** — the hits off the 16th grid by
+a fraction of a bar), sequencer grid, the sound panel, then the two buttons off it
+(Transitions, Copy). The sound panel has two LAYOUTS of the same draft, toggled on its
+toolbar (▤ / ∿): the **graph**, where every active setting is a coloured function of time,
+and the **sheet**, where every setting is a `name value` row packed into columns — no
+functions, nothing drawn, the whole engine in one screenful. Rows behave alike whatever the
+setting: hold-drag to scrub, tap for the numpad, and a choice list scrubs through its labels
+the way a number scrubs through its range, which is why the sheet needs no dropdowns. There is no loop LIST any more — picking a loop happens on the column
+or in the grid's picker; there is no rule editor either — a loop's bars are PAINTED on the
+grid, and its per-hit accents/ghosts live on the sound graph's Life trace.
 
 ## Tech stack & commands
 
@@ -140,8 +147,9 @@ src/
     rng.ts              shared seeded RNG (xorshift32, matches engine.js makeRng)
   ui/                   all DOM/rendering
     app.ts              App shell — owns engine + track + UI state; switches the three views
-                        (track / grid / mixer); hosts the loop popup and the Sound Graph
-                        editor (the only sound-editing surface, drawn from soundTraces.ts);
+                        (track / grid / mixer); hosts the loop popup and BOTH sound-editing
+                        layouts — the Sound Graph (drawn from soundTraces.ts) and the dense
+                        parameter Sheet — which share one toolbar and one SoundGraphHost;
                         recompile() is the hub (track -> lanes -> engine).
                         BY FAR the largest file.
     controls.ts         shared UI pieces + the shuffle option lists (label ↔ value maps)
@@ -218,6 +226,16 @@ src/
   rather than a necessity — see `docs/adr/0002`. Every field is validated on load
   (`read*` helpers) so malformed/partial saves degrade gracefully. `localStorage` key is
   `"msq010.project"` (kept from the working title so old saves keep loading).
+  A loop's `push` arrived INSIDE v16 without a bump: an added optional field costs an older
+  save nothing (it loads as 0), and bumping would have refused every project on disk —
+  the same reasoning as appending to `ParamId` (see the checklist below).
+- **Timing push** (`Loop.push` / `VoiceNode.push`): a loop's hits off the 16th grid by a
+  signed fraction of a step — negative lands them ahead of the bar. Authored on the rhythm
+  row in eighths of a step (`PUSH_UNIT`, = 1/128 of a bar) and capped at `MAX_PUSH`, just
+  under a whole step. The engine plays a LATE push as a start delay; an EARLY one has to be
+  fired from the previous step with the remainder as its delay, which is why `fireStep`
+  walks every line TWICE — once at the current position, once at the next — with a node's
+  push sign deciding which pass serves it (see `fireLineAt` in `engine.js`).
 
 ## Conventions & house style
 

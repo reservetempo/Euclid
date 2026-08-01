@@ -16,8 +16,10 @@
 import { EngineHost, EngineSound, Playhead } from "../audio/engineHost";
 import { measureLoudness, makeupGain } from "../audio/loudness";
 import { encodeWavFromBuffer } from "../audio/wav";
-import { ParamId, NUM_PARAMS, PITCH_DRAW_BASE, PITCH_DRAW_SLOTS } from "../model/params";
-import { baseSpec, PITCH_SHAPE_DRAWN } from "../model/paramSpec";
+import {
+  ParamId, NUM_PARAMS, PITCH_DRAW_BASE, PITCH_DRAW_SLOTS, getParamGroup, getParamGroupName,
+} from "../model/params";
+import { baseSpec, isDiscrete, formatValue, ParamSpec, PITCH_SHAPE_DRAWN } from "../model/paramSpec";
 import {
   SOUND_TRACES, TraceSpec, TraceCtx, ParamGet, traceAxisSeconds, snapshotAxisSeconds,
   traceDomain, traceParts, hzToNorm, normToHz,
@@ -28,12 +30,12 @@ import { SoundDraft, estimateLength, randomSeed } from "../model/sound";
 import { serialize, deserialize, ProjectJSON } from "../model/project";
 import { reportCount, exportReports, clearReports } from "../model/soundReports";
 import {
-  LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS,
+  LineArrangement, STEPS_PER_BAR, NUM_LINES, VOICE_COLORS, PUSH_UNIT, MAX_PUSH, PUSH_STEPS_PER_BAR,
   BLEND_SHAPES, blendShapeSpec, blendShape, blendShapeY, SweepWindow,
 } from "../model/lines";
 import { fitBlendShape, DRAWN_POINTS } from "../model/curveFit";
 import {
-  Track, Loop, EveryRule, LoopTransition, emptyLoop, cloneLoop, loopToNode,
+  Track, Loop, LoopTransition, emptyLoop, cloneLoop, loopToNode,
   randomSeed as newSeed, ruleLengths, defaultLoopTransition,
   placementsFor,
 } from "../model/track";
@@ -71,7 +73,49 @@ type View = "track" | "grid" | "mixer";
 type PlacementTab = "sound" | "transition";
 
 // The editable numeric fields of a loop's rhythm (its scrubbable number circles).
-type RhythmField = "hits" | "steps" | "rotation" | "split";
+type RhythmField = "hits" | "steps" | "rotation" | "split" | "push";
+
+// How the sound is READ. The graph draws each active setting as a function of time; the
+// sheet lists every setting as a number. Same draft, same edits — a preference, not a
+// mode, so it is App state rather than anything the model or the save format knows about.
+type SoundLayout = "graph" | "sheet";
+
+/** Where the parameter sheet starts a new titled block, and what to call it. The
+    registry's own groups (getParamGroup) are the fallback, but they are too coarse to
+    read down a narrow column: "Tone" alone is 32 rows, and the three LFOs plus the FX
+    chain repeat the same short names ("Rate", "Amt", "Mix", "FB") with nothing but a
+    heading to tell them apart. Each entry names the FIRST parameter of a block, so the
+    blocks are contiguous enum ranges and stay in registry order. */
+const SHEET_BLOCK_TITLES: Partial<Record<ParamId, string>> = {
+  [ParamId.Pitch]: "Pitch",
+  [ParamId.Waveform]: "Tone",
+  [ParamId.NoiseLevel]: "Noise",
+  [ParamId.OscModType]: "Osc Mod",
+  [ParamId.Osc2Mix]: "Osc 2",
+  [ParamId.Fold]: "Shape",
+  [ParamId.WaveTable]: "Wavetable",
+  [ParamId.ClickLevel]: "Click",
+  [ParamId.Lfo1Target]: "LFO 1",
+  [ParamId.Lfo2Target]: "LFO 2",
+  [ParamId.Lfo3Target]: "LFO 3",
+  [ParamId.ModFxType]: "Mod FX",
+  [ParamId.EchoTime]: "Echo",
+  [ParamId.ReverbSize]: "Reverb",
+};
+
+// How much one scrub tick moves a parameter on the sheet. The registry's own step is the
+// EDIT granularity, which for a wide range is far too fine to drag across (Pitch steps in
+// single hertz over 8 kHz — a screen-height drag would not clear the bass). So a range
+// that would take more than SHEET_SCRUB_TICKS ticks to cross scrubs in coarser multiples
+// of that step; the numpad is how you land on an exact value either way.
+const SHEET_SCRUB_TICKS = 200;
+function sheetStep(s: ParamSpec): number {
+  if (isDiscrete(s)) return 1;
+  const span = s.max - s.min;
+  const step = s.step > 0 ? s.step : span / SHEET_SCRUB_TICKS;
+  if (span / step <= SHEET_SCRUB_TICKS) return step;
+  return Math.max(step, Math.round(span / SHEET_SCRUB_TICKS / step) * step);
+}
 
 /** What a sound-graph panel edits: the kit + shuffle settings, and where edits land.
     Two hosts exist — a loop's OWN sound, and a transition's TRANSFORMED sound. */
@@ -85,6 +129,10 @@ interface SoundGraphHost {
   resetTitle: string;
   reset: () => void;                   // what ↺ restores (preset vs "no change")
   extraCorner?: HTMLElement[];         // host-specific corner buttons (the ⧉ copy)
+  // The loop whose per-hit accent/ghost PLACEMENT the Life trace edits (see lifeRow). Set
+  // for a loop's own sound only: a transition's transformed sound has no placement of its
+  // own — it rides the loop's.
+  lifeLoop?: Loop;
 }
 
 // The curve visualization evaluates the transition's blend FUNCTION via blendShape in
@@ -105,11 +153,11 @@ export class App {
   private gridLoopIdx = 0;
   private editLoop: Loop | null = null; // loop whose placement popup is open
   private placementTab: PlacementTab = "sound"; // which sub-page of the loop popup
-  // Sound-page sub-view: null = the page itself, else one of the panels its buttons open.
-  private loopSub: "options" | "life" | null = null;
-  // Loop-tab drag grid: rows shown. A view preference — the grid auto-grows past it so
-  // the whole track always fits.
-  private placeGridRows = 8;
+  // Bar-square grid: how many rows the user has added PAST the track's own end (the ± in
+  // the grid's tool row). Extra rather than absolute, so changing what a square is worth
+  // re-fits the grid to the track instead of holding it at a stale row count — at square =
+  // 8 a 256-bar track is 4 rows, not 8.
+  private placeGridExtraRows = 0;
   // The open Loop-tab pattern grid's step cells + step count, so the transport can light
   // the currently-sounding step while playing (cleared when the popup closes).
   private patternPlayCells: HTMLElement[] | null = null;
@@ -127,6 +175,8 @@ export class App {
   // the coloured trace buttons) and which button page shows (0 = active settings;
   // later pages = the inactive ones).
   private graphTrace: string | null = null;
+  // How the sound panel is read (graph vs sheet) — sticky across loops for the session.
+  private soundLayout: SoundLayout = "graph";
   private graphPage = 0;
   // Transition editor state: the open transition and its tabs. The editing state for a
   // transition's transformed sound is the draft on the transition itself (see
@@ -153,6 +203,11 @@ export class App {
   private viewRoot!: HTMLElement;
   private loopTimeEl: HTMLElement | null = null;
   private trackPlayheadEl: HTMLElement | null = null; // overview playback line
+  // Measured vertical geometry of one column's overview blocks, relative to .track-cols —
+  // what the playback line is positioned against and what a tap on a column reads. See
+  // trackBlockBoxes(). Cleared on every track render; also re-measured when the container
+  // height changes (there is no resize listener, and none is needed for this).
+  private trackGeom: { h: number; boxes: { top: number; height: number }[] } | null = null;
   // Channel -> flash LED (mixer) and sound id -> loop-row button (colour panel).
   private mixerLeds: Map<number, HTMLElement> | null = null;
   private voiceBtns: Map<number, HTMLElement> | null = null;
@@ -228,6 +283,12 @@ export class App {
         const bar = (p.pos % loopLen) / STEPS_PER_BAR;
         const barLimit = Math.max(1, this.track.barLimit);
         this.trackPlayheadEl.style.setProperty("--ph", String(Math.min(1, bar / barLimit)));
+        // Prefer the MEASURED position: the line rides the blocks, not the box around them
+        // (see trackBlockBoxes) — a fraction of the container reads early by the column's
+        // border and padding and drifts by the gaps between blocks.
+        const px = this.trackBarOffset(bar);
+        if (px === null) this.trackPlayheadEl.style.removeProperty("--phpx");
+        else this.trackPlayheadEl.style.setProperty("--phpx", `${px.toFixed(2)}px`);
         this.trackPlayheadEl.classList.add("live");
       }
     }
@@ -756,69 +817,6 @@ export class App {
       one faint cell per bar, ticked every 4, with a highlight band. Dragging sweeps a
       from–to bar range; `write` fires live (only when the range actually changes) so the
       engine can follow mid-drag. `read` returning null hides the band. */
-  /** A MULTI-select bar strip (the play-range gesture, but several bars/ranges at once):
-      tap a bar to toggle it; drag to paint a contiguous span on or off (the anchor bar's
-      starting state decides which). `read`/`write` are the 1-indexed selected bars; `write`
-      fires live during the drag (engine-only), and `commit` runs once on release for the
-      full re-render. Tinted by the container's `--vc`. */
-  private multiBarStrip(
-    barLimit: number,
-    read: () => number[],
-    write: (bars: number[]) => void,
-    commit: () => void,
-  ): HTMLElement {
-    const strip = document.createElement("div");
-    strip.className = "play-range-strip multi-bar-strip";
-    const cells: HTMLElement[] = [];
-    for (let b = 0; b < barLimit; b++) {
-      const cell = document.createElement("span");
-      cell.className = "play-range-cell" + (b % 4 === 0 ? " tick" : "");
-      cells.push(cell);
-      strip.append(cell);
-    }
-    const paint = (set: Set<number>) => {
-      for (let b = 0; b < barLimit; b++) cells[b].classList.toggle("sel", set.has(b + 1));
-    };
-    paint(new Set(read()));
-
-    const barAt = (clientX: number) => {
-      const rect = strip.getBoundingClientRect();
-      const frac = Math.max(0, Math.min(0.9999, (clientX - rect.left) / Math.max(1, rect.width)));
-      return Math.max(1, Math.min(barLimit, Math.floor(frac * barLimit) + 1));
-    };
-    // Each drag paints the swept span [anchor, bar] to `paintOn`, computed fresh from the
-    // pre-drag snapshot so sweeping back and forth doesn't accumulate.
-    let base = new Set<number>();
-    let anchor = 0, paintOn = true;
-    const applyTo = (bar: number): number[] => {
-      const lo = Math.min(anchor, bar), hi = Math.max(anchor, bar);
-      const next = new Set(base);
-      for (let i = lo; i <= hi; i++) { if (paintOn) next.add(i); else next.delete(i); }
-      paint(next);
-      return [...next].sort((a, b) => a - b);
-    };
-    const onMove = (e: PointerEvent) => write(applyTo(barAt(e.clientX)));
-    const onUp = (e: PointerEvent) => {
-      strip.removeEventListener("pointermove", onMove);
-      strip.removeEventListener("pointerup", onUp);
-      strip.removeEventListener("pointercancel", onUp);
-      try { strip.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
-      commit();
-    };
-    strip.onpointerdown = (e) => {
-      e.preventDefault();
-      base = new Set(read());
-      anchor = barAt(e.clientX);
-      paintOn = !base.has(anchor);
-      write(applyTo(anchor));
-      try { strip.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
-      strip.addEventListener("pointermove", onMove);
-      strip.addEventListener("pointerup", onUp);
-      strip.addEventListener("pointercancel", onUp);
-    };
-    return strip;
-  }
-
   private renderTrackPanel(): void {
     const v = this.viewRoot;
     // Whole-track overview: one VERTICAL COLUMN per colour, the whole timeline at once and
@@ -831,6 +829,7 @@ export class App {
     // button onto the voice's all-loops grid.
     this.voiceBtns = new Map();
     const barLimit = Math.max(1, this.track.barLimit);
+    this.trackGeom = null; // the blocks are about to be rebuilt — re-measure on first use
 
     const overview = document.createElement("div");
     overview.className = "track-overview";
@@ -863,18 +862,16 @@ export class App {
       for (let i = 0; i < OVERVIEW_BLOCKS; i++) {
         // Split by rounded boundaries rather than a fixed block size, so the blocks always
         // tile the track exactly even when barLimit isn't a multiple of OVERVIEW_BLOCKS.
-        const from = Math.round((i * barLimit) / OVERVIEW_BLOCKS);
-        const to = Math.round(((i + 1) * barLimit) / OVERVIEW_BLOCKS);
+        const { from, to } = this.blockRange(i, barLimit);
         col.append(this.overviewBlock(bars.slice(from, Math.max(from + 1, to)), c));
       }
 
       // Where the tap landed, in bars, read off the same per-bar numbers the blocks are
-      // shaded from — so the loop that opens is always the one under the finger. Bare
+      // shaded from — so the loop that opens is always the one under the finger. Measured
+      // against the BLOCKS (as the playhead is), not the padded column around them. Bare
       // field falls through to the grid, which is where you'd go to place something there.
       col.onclick = (e) => {
-        const r = col.getBoundingClientRect();
-        const t = Math.min(0.999, Math.max(0, (e.clientY - r.top) / Math.max(1, r.height)));
-        const n = bars[Math.floor(t * barLimit)] ?? 0; // 1-based loop number, 0 = silence
+        const n = bars[this.trackBarAtY(cols, e.clientY)] ?? 0; // 1-based loop number, 0 = silence
         const loop = n > 0 ? ct.loops[n - 1] : null;
         if (loop) this.openPlacement(loop, "sound");
         else this.openGrid(c);
@@ -951,6 +948,73 @@ export class App {
     }
     el.style.backgroundImage = `linear-gradient(to bottom, ${stops.join(", ")})`;
     return el;
+  }
+
+  /** The bar range block `i` covers, by ROUNDED boundaries so the blocks tile the track
+      exactly even when barLimit isn't a multiple of OVERVIEW_BLOCKS. The one definition
+      of where a block starts and ends — renderTrackPanel slices its cells by it, and the
+      playhead/tap mapping reads bars back out of it. */
+  private blockRange(i: number, barLimit: number): { from: number; to: number } {
+    return {
+      from: Math.round((i * barLimit) / OVERVIEW_BLOCKS),
+      to: Math.round(((i + 1) * barLimit) / OVERVIEW_BLOCKS),
+    };
+  }
+
+  /** Each overview block's top/height relative to `.track-cols` — the box the playhead is
+      positioned in. Time is painted by the BLOCKS, which sit inside the column's border
+      and padding and are separated by gaps that carry no time at all, so a fraction of the
+      CONTAINER lands several pixels off the bars it claims to mark. Measured once per
+      render (all six columns share the same vertical geometry), never per frame. */
+  private trackBlockBoxes(): { top: number; height: number }[] | null {
+    const cols = this.root.querySelector<HTMLElement>(".track-cols");
+    if (!cols) { this.trackGeom = null; return null; }
+    const h = cols.clientHeight;
+    if (this.trackGeom && this.trackGeom.h === h) return this.trackGeom.boxes;
+    const col = cols.querySelector<HTMLElement>(".track-color-col");
+    const blocks = col ? [...col.querySelectorAll<HTMLElement>(".track-block")] : [];
+    if (blocks.length !== OVERVIEW_BLOCKS) return null;
+    const base = cols.getBoundingClientRect().top;
+    const boxes = blocks.map((b) => {
+      const r = b.getBoundingClientRect();
+      return { top: r.top - base, height: r.height };
+    });
+    this.trackGeom = { h, boxes };
+    return boxes;
+  }
+
+  /** Where bar position `bar` (fractional, 0-based) sits in pixels down `.track-cols`, or
+      null when the overview isn't on screen to be measured. */
+  private trackBarOffset(bar: number): number | null {
+    const boxes = this.trackBlockBoxes();
+    if (!boxes) return null;
+    const barLimit = Math.max(1, this.track.barLimit);
+    const b = Math.max(0, Math.min(barLimit, bar));
+    let i = Math.min(OVERVIEW_BLOCKS - 1, Math.floor((b / barLimit) * OVERVIEW_BLOCKS));
+    // Rounded boundaries can put `b` in the neighbouring block on odd bar limits.
+    while (i > 0 && b < this.blockRange(i, barLimit).from) i--;
+    while (i < OVERVIEW_BLOCKS - 1 && b >= this.blockRange(i, barLimit).to) i++;
+    const { from, to } = this.blockRange(i, barLimit);
+    const f = to > from ? Math.max(0, Math.min(1, (b - from) / (to - from))) : 0;
+    return boxes[i].top + f * boxes[i].height;
+  }
+
+  /** The bar (0-based) under a tap at `clientY` on a column, read off the same block
+      geometry the playhead uses — the inverse of trackBarOffset, so the loop that opens is
+      the loop the line would be crossing. Falls back to the flat mapping when unmeasured. */
+  private trackBarAtY(cols: HTMLElement, clientY: number): number {
+    const barLimit = Math.max(1, this.track.barLimit);
+    const boxes = this.trackBlockBoxes();
+    const y = clientY - cols.getBoundingClientRect().top;
+    if (!boxes) {
+      const t = Math.min(0.999, Math.max(0, y / Math.max(1, cols.clientHeight)));
+      return Math.floor(t * barLimit);
+    }
+    let i = 0;
+    while (i < OVERVIEW_BLOCKS - 1 && y >= boxes[i].top + boxes[i].height) i++;
+    const { from, to } = this.blockRange(i, barLimit);
+    const f = Math.max(0, Math.min(0.999, (y - boxes[i].top) / Math.max(1, boxes[i].height)));
+    return Math.min(barLimit - 1, from + Math.floor(f * Math.max(1, to - from)));
   }
 
   // --- grid view (one voice, all its loops) -----------------------------
@@ -1147,13 +1211,13 @@ export class App {
   }
 
   /** The editor popup for `loop`. Its main page is the WHOLE loop, top to bottom: the
-      rhythm circles, the sequencer pattern grid, the full sound graph, then the buttons
-      that lead off it (⇄ Transitions, ⚙ Options, ◔ Accents, ⧉ Copy). Placement isn't here —
-      it lives out on the voice's all-loops grid, where a loop's bars can be seen against
-      its neighbours'.
-      Transitions is the one page that takes the sheet for itself (a list, each opening its
-      Bars / Graph / Effects / Speed editor); ⚙ Options and ◔ Accents open over the main
-      page and come back to it.
+      rhythm circles, the sequencer pattern grid, the full sound graph, then the two buttons
+      that lead off it (⇄ Transitions, ⧉ Copy). Placement isn't here — it lives out on the
+      voice's all-loops grid, where a loop's bars can be seen against its neighbours' — and
+      the per-hit accent/ghost placement lives on the graph's own Life trace, with the rest
+      of the per-hit settings.
+      ⇄ takes the sheet for itself and opens the transition's SOUND straight away (minting
+      the first transition if the loop has none); the list of them is a button off that.
       Omitting `tab` means "rebuild where we are": that's how every in-place re-render goes
       through here without resetting the page you're on.
       Rebuilt in place on any change (it's appended to the root, so it survives a panel
@@ -1172,7 +1236,6 @@ export class App {
       // Land on the page asked for (the main sound page unless Transitions was named) and
       // reset every sub-state the popup carries.
       this.placementTab = tab ?? "sound";
-      this.loopSub = null;
       this.gridPick = null;
       this.editTransition = null;
       this.transTab = "graph";
@@ -1183,7 +1246,7 @@ export class App {
     this.editLoop = loop;
     // The popup's view identity: scroll only survives while it's unchanged.
     const viewKey = [
-      this.placementTab, this.loopSub ?? "",
+      this.placementTab,
       this.editTransition ? (loop.transitions ?? []).indexOf(this.editTransition) : -1,
       this.transTab,
       `g:${this.graphTrace ?? ""}:${this.graphPage}`,
@@ -1313,13 +1376,6 @@ export class App {
         sheet.append(this.subPanelHead("Transitions", () => { this.placementTab = "sound"; rerender(); }));
         sheet.append(this.transitionList(loop, rerender));
       }
-    } else if (this.loopSub === "options") {
-      // Procedural placement options (behind the ⚙ button): the Repeat-every rule.
-      sheet.append(this.subPanelHead("Placement options", () => { this.loopSub = null; rerender(); }));
-      sheet.append(this.placementControls(loop, rerender));
-    } else if (this.loopSub === "life") {
-      sheet.append(this.subPanelHead("Accents & Ghosts", () => { this.loopSub = null; rerender(); }));
-      sheet.append(this.lifeControls(loop, rerender));
     } else {
       // The whole loop on one page: what it plays (the rhythm circles and the sequencer
       // grid), then WHAT it sounds like (the graph), then where you go from here. Rhythm
@@ -1333,8 +1389,8 @@ export class App {
       sheet.append(rhythmRow);
       sheet.append(this.patternGrid(loop, rerender));
 
-      // The sound graph IS the sound panel.
-      sheet.append(this.soundGraphPanel(this.graphHostForLoop(loop, rerender), rerender));
+      // The sound panel IS the sound — graph or sheet, whichever layout is selected.
+      sheet.append(this.soundPanel(this.graphHostForLoop(loop, rerender), rerender));
 
       const actions = document.createElement("div");
       actions.className = "loop-actions";
@@ -1348,10 +1404,23 @@ export class App {
       };
       const trCount = trs.length;
       actions.append(
-        mkAction(trCount ? `⇄ Transitions (${trCount})` : "⇄ Transitions", "This loop's transitions",
-          () => { this.placementTab = "transition"; rerender(); }),
-        mkAction("⚙ Options", "Repeat rule", () => { this.loopSub = "options"; rerender(); }),
-        mkAction("◔ Accents", "Accents & ghosts", () => { this.loopSub = "life"; rerender(); }),
+        // Straight to the transitioned SOUND — the thing you came for. A loop with no
+        // transition yet gets one minted here (an identity copy of its own sound, which is
+        // what the list's ＋ made anyway), so the empty list never stands in the way. The
+        // list is one button further in, for a second transition.
+        mkAction(trCount ? `⇄ Transitions (${trCount})` : "⇄ Transitions", "This loop's transitioned sound",
+          () => {
+            let tr = trs[0];
+            if (!tr) { tr = defaultLoopTransition(loop, this.track.barLimit); trs.push(tr); }
+            this.placementTab = "transition";
+            this.editTransition = tr;
+            this.transTab = "effects";
+            this.graphTrace = null;
+            this.graphPage = 0;
+            this.recompile();
+            this.schedulePreview(loop, tr);
+            rerender();
+          }),
         mkAction("⧉ Copy", "Copy this loop to another row", () => this.openCopyLoopMenu(loop)),
       );
       sheet.append(actions);
@@ -1479,7 +1548,9 @@ export class App {
     const barLimit = Math.max(1, this.track.barLimit);
     const needRows = Math.ceil(barLimit / barsPerRow); // rows the track itself fills
     const maxRows = cfg.grow ? Math.ceil(512 / barsPerRow) : needRows;
-    const rows = Math.min(maxRows, Math.max(needRows, cfg.grow ? this.placeGridRows : 1));
+    // The track's own rows, plus whatever the user added past its end (see
+    // placeGridExtraRows). A growable grid never shows FEWER rows than the track needs.
+    const rows = Math.min(maxRows, needRows + (cfg.grow ? this.placeGridExtraRows : 0));
     const total = rows * COLS;
     const picking = this.gridPick?.key === cfg.key ? this.gridPick : null;
 
@@ -1556,7 +1627,7 @@ export class App {
         b.textContent = txt;
         b.title = delta < 0 ? "Fewer rows" : "More rows";
         b.disabled = atLimit;
-        b.onclick = () => { this.placeGridRows = rows + delta; cfg.commit(); };
+        b.onclick = () => { this.placeGridExtraRows = Math.max(0, rows - needRows + delta); cfg.commit(); };
         return b;
       };
       const rowsLbl = document.createElement("span");
@@ -1860,6 +1931,37 @@ export class App {
       name: "Gate / Max len / Spread",
       desc: "Beside the buttons on the toolbar. GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it). MAX LEN — a shuffled sound is trimmed to at most this long, keeping hits punchy (Off = untrimmed). SPREAD — how the shuffle spreads its pitch & filter draws: linear, log, or weighted toward bass / mid / high. Max len and Spread shape the NEXT 🎲, not the current sound.",
     },
+    {
+      name: "▤ The parameter sheet",
+      desc: "The other way to read the same sound: no graph and no functions, every setting listed as a number instead. Use it when you know which setting you want and just want to reach it. ∿ comes back here.",
+    },
+  ];
+
+  private static readonly SOUND_SHEET_HELP: HelpItem[] = [
+    {
+      name: "The sheet",
+      desc: "Every setting of this sound as one row — the whole engine on one screen, in the order the signal runs through it. Nothing is hidden and nothing is drawn: this is the same sound the graph shows, read as numbers instead of curves. ∿ on the toolbar switches back to the graph.",
+    },
+    {
+      name: "Changing a value",
+      desc: "Hold a value and drag UP or DOWN to scrub it — the sound updates as you drag, and plays when you let go. Or tap it once to type an exact number on the keypad. Values are clamped to what the engine accepts, so you cannot type something it can't play.",
+    },
+    {
+      name: "Choices scrub too",
+      desc: "A setting that picks from a list (Wave, Noise Col, Material, Mod FX, an LFO's Dest…) works exactly like a number: drag through Sine / Square / Saw the way you drag through hertz. That's why there are no dropdowns — a list costs the same one row as everything else.",
+    },
+    {
+      name: "Dim values",
+      desc: "A value shown dim is still sitting at its default — nothing has moved it. The bright ones are what make this sound what it is, which is the quickest way to see what a shuffle actually did.",
+    },
+    {
+      name: "The blocks",
+      desc: "Rows are grouped by what they belong to (Pitch, Tone, Noise, the three LFOs, the FX chain, Per-Hit Life…) and the groups stay whole as the columns reflow, so the same setting sits in the same neighbourhood on any screen size.",
+    },
+    {
+      name: "The drawn pitch contour",
+      desc: "The one thing not on the sheet. Setting Pitch Shape to \"Drawn\" plays a curve you draw by hand rather than a formula, and its 32 stored points are samples of that drawing, not settings — they're authored by drawing, from the graph's Pitch trace.",
+    },
   ];
 
   /** A sound-graph panel host: the two graphs (a loop's own sound, and a transition's
@@ -1880,6 +1982,7 @@ export class App {
       },
       resetTitle: "Reset to the preset",
       reset: () => draft.reset(),
+      lifeLoop: loop,
     };
   }
 
@@ -1907,36 +2010,38 @@ export class App {
     };
   }
 
-  /** The sound-graph panel: a big graph (every ACTIVE setting drawn as its own coloured
-      time function; the x axis stretches to the longest one), the Shuffle / Back /
-      Reset column with the Gate / Max-len / Spread controls under it in the top-right
-      corner, and — below — either the coloured trace buttons (paged: active first, ‹ ›
-      through the inactive ones) or, when a trace is tapped, its EQUATION with the
-      values inline. Hosted by a loop's own sound OR a transition's transformed sound. */
-  private soundGraphPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
+  /** One toolbar button, in the corner-button footprint both sound layouts use. */
+  private toolBtn(glyph: string, title: string, fn: () => void, extra = "", disabled = false): HTMLButtonElement {
+    const b = document.createElement("button");
+    b.className = "graph-corner-btn" + (extra ? " " + extra : "");
+    b.textContent = glyph;
+    b.title = title;
+    b.disabled = disabled;
+    b.onclick = fn;
+    return b;
+  }
+
+  /** The SOUND panel, in whichever layout is selected: the graph (functions drawn over
+      time) or the sheet (every parameter as a row). Both edit the same draft through the
+      same host, so the choice is purely how you'd rather read and reach the values.
+      Hosted by a loop's own sound OR a transition's transformed sound. */
+  private soundPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
+    return this.soundLayout === "sheet"
+      ? this.soundSheetPanel(host, rerender)
+      : this.soundGraphPanel(host, rerender);
+  }
+
+  /** The line above either sound layout: host extras (the ⧉ copy), Back / Reset, the
+      shuffle settings (Volume / Gate / Max len / Spread), the layout toggle and the ?.
+      `withDice` puts the Shuffle here — the graph layout instead floats it on the
+      graph's own top-right corner, where there is a spare corner to put it. */
+  private soundToolbar(host: SoundGraphHost, rerender: () => void, withDice: boolean): HTMLElement {
     const p = host.draft;
     const get: ParamGet = (id) => p.get(id);
-
-    const wrap = document.createElement("div");
-    wrap.className = "sound-graph";
-    wrap.style.setProperty("--vc", host.color);
-
-    const sel = this.graphTrace ? SOUND_TRACES.find((t) => t.id === this.graphTrace) ?? null : null;
-
-    // One toolbar line above the graph (no title blurb): the Back / Reset buttons,
-    // then Gate / Max len / Spread, then the ?. The Shuffle lives on the graph's own
-    // top-right corner (built below). Any host extras (e.g. ⧉) lead.
     const bar = document.createElement("div");
     bar.className = "graph-toolbar";
-    const mkTool = (glyph: string, title2: string, fn: () => void, extra = "", disabled = false) => {
-      const b = document.createElement("button");
-      b.className = "graph-corner-btn" + (extra ? " " + extra : "");
-      b.textContent = glyph;
-      b.title = title2;
-      b.disabled = disabled;
-      b.onclick = fn;
-      return b;
-    };
+    const mkTool = (glyph: string, title2: string, fn: () => void, extra = "", disabled = false) =>
+      this.toolBtn(glyph, title2, fn, extra, disabled);
     for (const el of host.extraCorner ?? []) bar.append(el);
     bar.append(
       mkTool("↩", "Back to the previous sound", () => {
@@ -1947,6 +2052,12 @@ export class App {
         void host.replace();
       }),
     );
+    if (withDice) {
+      bar.append(mkTool("🎲", "Shuffle a new sound", () => {
+        p.shuffle(this.shuffleContext());
+        void host.replace();
+      }, "graph-tool-dice"));
+    }
     // VOL: the sound's overall level (0–100%). On a transition it's the morph target, so
     // dropping it fades the sound out (or up) across the transition.
     bar.append(this.graphCornerNum("vol", "Volume — the sound's overall level (drop it on a transition to fade)",
@@ -1987,10 +2098,44 @@ export class App {
       () => curveOptionIndex(p.curve),
       (i) => { p.curve = CURVE_OPTIONS[i].curve; },
     ));
-    const help = helpButton("The sound graph", App.SOUND_GRAPH_HELP);
+    // LAYOUT: the same sound, read either as functions over time or as a sheet of
+    // numbers. The toggle sits at the end of the settings, before the ?.
+    const onGraph = this.soundLayout === "graph";
+    bar.append(this.toolBtn(onGraph ? "▤" : "∿",
+      onGraph ? "Switch to the parameter sheet — every setting as a number"
+              : "Switch to the sound graph — every setting as a curve",
+      () => {
+        this.soundLayout = onGraph ? "sheet" : "graph";
+        this.graphTrace = null; // the graph always comes back on its buttons
+        rerender();
+      }));
+    const help = helpButton(
+      onGraph ? "The sound graph" : "The parameter sheet",
+      onGraph ? App.SOUND_GRAPH_HELP : App.SOUND_SHEET_HELP,
+    );
     help.classList.add("graph-tool-help");
     bar.append(help);
-    wrap.append(bar);
+    return bar;
+  }
+
+  /** The sound-graph panel: a big graph (every ACTIVE setting drawn as its own coloured
+      time function; the x axis stretches to the longest one), the Shuffle on its top-right
+      corner, and — below — either the coloured trace buttons (paged: active first, ‹ ›
+      through the inactive ones) or, when a trace is tapped, its EQUATION with the values
+      inline. */
+  private soundGraphPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
+    const p = host.draft;
+    const get: ParamGet = (id) => p.get(id);
+
+    const wrap = document.createElement("div");
+    wrap.className = "sound-graph";
+    wrap.style.setProperty("--vc", host.color);
+
+    const sel = this.graphTrace ? SOUND_TRACES.find((t) => t.id === this.graphTrace) ?? null : null;
+    wrap.append(this.soundToolbar(host, rerender, false));
+
+    const mkTool = (glyph: string, title2: string, fn: () => void, extra = "") =>
+      this.toolBtn(glyph, title2, fn, extra);
 
     // The graph. Tapping it (anywhere but the shuffle) auditions the current sound.
     const box = document.createElement("div");
@@ -2009,6 +2154,89 @@ export class App {
 
     if (sel) wrap.append(this.traceEditor(host, sel, rerender));
     else wrap.append(this.traceButtons(get, rerender));
+    return wrap;
+  }
+
+  /** The PARAMETER SHEET: the same sound with no graph, no functions and nothing drawn —
+      just every setting as a `name  value` row, packed into columns dense enough to read
+      a whole sound in one screenful.
+
+      Every row behaves identically, continuous and discrete alike: hold and drag to
+      scrub, tap to type on the numpad (attachScrub gives both). A choice list is simply
+      a parameter whose value happens to have names, so Waveform scrubs through Sine /
+      Square / Saw the way Cutoff scrubs through hertz, and neither one needs a dropdown
+      or the space one would cost.
+
+      Rows are grouped into short titled blocks (see {@link SHEET_BLOCK_TITLES}) that the
+      CSS column layout keeps whole, so the sheet reflows from two columns to four with
+      the groupings intact. The 32 PitchDraw slots are the one omission: they are samples
+      of a drawn curve, not settings, and are authored in the path overlay. */
+  private soundSheetPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
+    const p = host.draft;
+    const wrap = document.createElement("div");
+    wrap.className = "sound-graph sound-sheet";
+    wrap.style.setProperty("--vc", host.color);
+    wrap.append(this.soundToolbar(host, rerender, true));
+
+    const cols = document.createElement("div");
+    cols.className = "ps-cols";
+
+    let block: HTMLElement | null = null;
+    let group = -1;
+    for (let i = 0; i < NUM_PARAMS; i++) {
+      const id = i as ParamId;
+      if (id >= ParamId.PitchDraw1) break; // the drawn contour is not a list of settings
+      const spec = baseSpec(id);
+
+      // A block starts wherever the sheet names one, and otherwise wherever the registry's
+      // own grouping changes — so every row sits under a heading either way.
+      const title = SHEET_BLOCK_TITLES[id];
+      const g = getParamGroup(id);
+      if (title || g !== group || !block) {
+        group = g;
+        block = document.createElement("div");
+        block.className = "ps-block";
+        const h = document.createElement("div");
+        h.className = "ps-head";
+        h.textContent = title ?? getParamGroupName(g);
+        block.append(h);
+        cols.append(block);
+      }
+
+      const row = document.createElement("div");
+      row.className = "ps-row";
+      const name = document.createElement("span");
+      name.className = "ps-name";
+      name.textContent = spec.name;
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.readOnly = true;
+      inp.inputMode = "none";
+      inp.className = "ps-val";
+      const show = () => formatValue(spec, p.get(id));
+      inp.value = show();
+      // A value still sitting at its default is dim: on a sheet this size, that is what
+      // lets the eye find the handful of settings actually shaping this sound.
+      const markDefault = () => inp.classList.toggle("ps-default", Math.abs(p.get(id) - spec.def) < 1e-6);
+      markDefault();
+      this.attachScrub(inp, {
+        label: spec.name,
+        color: host.color,
+        read: () => p.get(id),
+        write: (n) => {
+          p.set(id, n);
+          markDefault();
+          host.write();
+        },
+        show,
+        commit: () => { host.commitAudition(); rerender(); },
+        step: sheetStep(spec),
+      });
+      row.append(name, inp);
+      block.append(row);
+    }
+
+    wrap.append(cols);
     return wrap;
   }
 
@@ -2311,6 +2539,21 @@ export class App {
       }
       card.append(this.labeledRow(ty.label, seg));
     }
+
+    // Life is the one trace with more to say than its own params: the per-loop accent and
+    // ghost PLACEMENTS (see LifePlacement in lines.ts) belong with the rest of the per-hit
+    // settings, so they hang off this trace rather than a button of their own. They're the
+    // deterministic form — every Nth hit, or a ramp — beside the sound's own probabilities,
+    // and a placement wins over the probability for its axis (see perHit in engine.js).
+    if (spec.id === "life" && host.lifeLoop) {
+      const life = document.createElement("div");
+      life.className = "trace-life";
+      const head2 = document.createElement("span");
+      head2.className = "placement-lbl transition-head";
+      head2.textContent = "Accents & Ghosts — every Nth hit";
+      life.append(head2, this.lifeRow(host.lifeLoop, "accent", rerender), this.lifeRow(host.lifeLoop, "ghost", rerender));
+      card.append(life);
+    }
     return card;
   }
 
@@ -2449,6 +2692,21 @@ export class App {
     // "Sound" is the transformed sound's graph (the end values).
     nav.append(mkTab("bars", "Bars"), mkTab("graph", "Curve"), mkTab("effects", "Sound"), mkTab("speed", "Speed"));
     wrap.append(nav);
+
+    // ⇄ opens THIS transition's sound directly (see the loop page's action), so the LIST —
+    // where a second transition is added, toggled or removed — needs its own door back.
+    const all = loop.transitions ?? [];
+    const listBtn = document.createElement("button");
+    listBtn.className = "loop-action-btn trans-list-btn";
+    listBtn.textContent = `⇄ All transitions (${all.length})`;
+    listBtn.title = "This loop's transitions — add, toggle or remove";
+    listBtn.onclick = () => {
+      this.stopPreview();
+      this.editTransition = null;
+      this.gridPick = null;
+      rerender();
+    };
+    wrap.append(listBtn);
 
     if (this.transTab === "bars") {
       wrap.append(this.transPreviewRow(loop, tr, rerender));
@@ -2959,7 +3217,7 @@ export class App {
     const wrap = document.createElement("div");
     wrap.className = "trans-effects";
     wrap.append(this.transReverseRow(loop, tr, rerender));
-    wrap.append(this.soundGraphPanel(this.graphHostForTransition(loop, tr, rerender), rerender));
+    wrap.append(this.soundPanel(this.graphHostForTransition(loop, tr, rerender), rerender));
     return wrap;
   }
 
@@ -3194,188 +3452,6 @@ export class App {
     this.engine.stopPreview();
   }
 
-  /** The rule editor block: Repeat-every (three-way) and For-n-bars. */
-  private placementControls(loop: Loop, rerender: () => void): HTMLElement {
-    const r = loop.rule;
-    const wrap = document.createElement("div");
-    wrap.className = "placement-controls";
-
-    // Repeat every: three-way toggle.
-    const everyRow = document.createElement("div");
-    everyRow.className = "placement-row";
-    const everyLbl = document.createElement("span");
-    everyLbl.className = "placement-lbl";
-    everyLbl.textContent = "Repeat every";
-    const seg = document.createElement("div");
-    seg.className = "placement-seg";
-    const mkSeg = (key: EveryRule["kind"], text: string) => {
-      const b = document.createElement("button");
-      b.className = "seg-btn" + (r.every.kind === key ? " on" : "");
-      b.textContent = text;
-      b.onclick = () => {
-        if (r.every.kind === key) return;
-        if (key === "nth") r.every = { kind: "nth", n: 4 };
-        else if (key === "pow2") r.every = { kind: "pow2" };
-        else if (key === "at") r.every = { kind: "at", bars: [1] };
-        else if (key === "fill") r.every = { kind: "fill" };
-        else if (key === "dice") r.every = { kind: "dice", weight: 3 };
-        else r.every = { kind: "weight", weight: 0.5 };
-        this.recompile();
-        rerender();
-      };
-      return b;
-    };
-    seg.append(
-      mkSeg("nth", "Nth bar"), mkSeg("pow2", "Powers of 2"), mkSeg("at", "At bars"),
-      mkSeg("fill", "Fill blanks"), mkSeg("dice", "Dice"), mkSeg("weight", "Chance"),
-    );
-    everyRow.append(everyLbl, seg);
-    wrap.append(everyRow);
-
-    // Per-kind parameter.
-    if (r.every.kind === "nth") {
-      wrap.append(this.numRow("Every N bars", () => (r.every as { n: number }).n, (n) => {
-        const e = r.every as { n: number; start?: number };
-        r.every = { kind: "nth", n: Math.max(1, Math.round(n)), start: e.start };
-        this.recompile();
-      }, rerender, () => `${(r.every as { n: number }).n}`));
-      // Start at bar: shift the whole series later. 1 (or off the track) = no shift.
-      wrap.append(this.numRow("Start at bar", () => (r.every as { start?: number }).start ?? 1, (n) => {
-        const e = r.every as { n: number };
-        const s = Math.max(1, Math.min(this.track.barLimit, Math.round(n)));
-        r.every = { kind: "nth", n: e.n, start: s > 1 ? s : undefined };
-        this.recompile();
-      }, rerender, () => {
-        const s = (r.every as { start?: number }).start ?? 1;
-        return s <= 1 ? "bar 1" : `bar ${s}`;
-      }));
-    } else if (r.every.kind === "at") {
-      // Manual bar list: a read-only field (tap → list numpad for precise / large-track
-      // entry) plus a play-range-style strip you tap or drag to pick MULTIPLE bars/ranges.
-      const row = document.createElement("div");
-      row.className = "placement-row placement-atbars";
-      const lbl = document.createElement("span");
-      lbl.className = "placement-lbl";
-      lbl.textContent = "Bars";
-      const inp = document.createElement("input");
-      inp.type = "text";
-      inp.readOnly = true;
-      inp.inputMode = "none";
-      inp.placeholder = "tap or drag below — e.g. 1, 5, 9";
-      const readBars = () => (r.every as { bars: number[] }).bars;
-      inp.value = readBars().join(", ");
-      inp.onclick = () => this.openNumpad({
-        title: "At bars",
-        value: readBars().join(", ") || "—",
-        color: loop.soundId >= 0 ? loop.color : undefined,
-        list: true,
-        onSubmitList: (raw) => {
-          const bars = (raw.match(/\d+/g) ?? []).map((s) => parseInt(s, 10)).filter((n) => n >= 1);
-          r.every = { kind: "at", bars };
-          this.recompile();
-          rerender();
-        },
-      });
-      row.append(lbl, inp);
-      wrap.append(row);
-
-      // The multi-select bar strip: tap toggles a bar, drag paints a span on/off.
-      const pick = document.createElement("div");
-      pick.className = "atbars-pick";
-      pick.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
-      const readout = document.createElement("span");
-      readout.className = "atbars-pick-hint";
-      const syncReadout = () => {
-        const bs = readBars();
-        readout.textContent = bs.length ? `bars ${bs.join(", ")}` : "tap or drag bars to pick";
-      };
-      syncReadout();
-      pick.append(readout);
-      pick.append(this.multiBarStrip(
-        Math.max(1, this.track.barLimit),
-        readBars,
-        (bars) => { r.every = { kind: "at", bars }; this.recompile(); inp.value = bars.join(", "); syncReadout(); },
-        rerender,
-      ));
-      wrap.append(pick);
-    } else if (r.every.kind === "fill") {
-      const hint = document.createElement("p");
-      hint.className = "hint placement-hint";
-      hint.textContent = "Sounds on every bar this colour's other loops leave empty — it fills the blanks around them, whatever their mode.";
-      wrap.append(hint);
-    } else if (r.every.kind === "dice") {
-      const hint = document.createElement("p");
-      hint.className = "hint placement-hint";
-      hint.textContent = "All this colour's Dice loops share the bars — a bigger face wins more of the track. Every bar is filled, none overlap.";
-      wrap.append(hint);
-      // Dice-face picker (1..6): this loop's slice of the pool.
-      const diceRow = document.createElement("div");
-      diceRow.className = "placement-row placement-dice";
-      const diceLbl = document.createElement("span");
-      diceLbl.className = "placement-lbl";
-      diceLbl.textContent = "Weight";
-      const faces = document.createElement("div");
-      faces.className = "dice-faces";
-      const FACES = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
-      for (let d = 1; d <= 6; d++) {
-        const b = document.createElement("button");
-        b.className = "dice-face" + ((r.every as { weight: number }).weight === d ? " on" : "");
-        b.textContent = FACES[d - 1];
-        b.title = `${d}`;
-        b.onclick = () => { r.every = { kind: "dice", weight: d }; this.recompile(); rerender(); };
-        faces.append(b);
-      }
-      diceRow.append(diceLbl, faces);
-      wrap.append(diceRow, this.rollRow(r, rerender));
-    } else if (r.every.kind === "weight") {
-      const chanceRow = this.numRow("Chance %", () => Math.round((r.every as { weight: number }).weight * 100), (n) => {
-        r.every = { kind: "weight", weight: Math.max(0, Math.min(1, Math.round(n) / 100)) };
-        this.recompile();
-      }, rerender, () => `${Math.round((r.every as { weight: number }).weight * 100)}%`);
-      wrap.append(chanceRow, this.rollRow(r, rerender));
-    }
-
-    // For: bar length(s). A single value, or a comma list that CYCLES across successive
-    // placements (2, 4 → 2 bars, then 4, then 2 …). The native keypad has no comma, so this
-    // opens our list numpad.
-    const forRow = document.createElement("div");
-    forRow.className = "placement-row placement-atbars";
-    const forLbl = document.createElement("span");
-    forLbl.className = "placement-lbl";
-    forLbl.textContent = "For (bars)";
-    const forInp = document.createElement("input");
-    forInp.type = "text";
-    forInp.readOnly = true;
-    forInp.inputMode = "none";
-    const shownLen = () => ruleLengths(r).join(", ");
-    forInp.value = shownLen();
-    forInp.onclick = () => this.openNumpad({
-      title: "For — bar length(s)",
-      value: shownLen(),
-      color: loop.soundId >= 0 ? loop.color : undefined,
-      list: true,
-      onSubmitList: (raw) => {
-        const nums = (raw.match(/\d+/g) ?? []).map((s) => Math.max(1, parseInt(s, 10))).filter((n) => n >= 1);
-        if (nums.length <= 1) { r.forBars = nums[0] ?? r.forBars; r.lengths = undefined; }
-        else { r.lengths = nums; r.forBars = nums[0]; }
-        this.recompile();
-        rerender();
-      },
-    });
-    forRow.append(forLbl, forInp);
-    wrap.append(forRow);
-    if (ruleLengths(r).length > 1) {
-      const hint = document.createElement("p");
-      hint.className = "hint placement-hint";
-      hint.textContent = `Placements cycle through ${ruleLengths(r).join(", ")} bars in turn.`;
-      wrap.append(hint);
-    }
-
-    // No clash control: a colour's loops always resolve by list priority (the earlier loop
-    // wins the bar), so a colour compiles to one lane — see track.ts resolveLane.
-    return wrap;
-  }
-
   /** One From/To endpoint row for a transition's swept parameter. Percent-style params
       (range ≤ 2) scrub as a percentage; wider ranges (filter Hz) scrub in native units at
       the spec's step so the drag stays usable, and the numpad still takes exact values. */
@@ -3406,21 +3482,6 @@ export class App {
   /** Draw the blend function's path (see blendShape in lines.ts — mirrors the engine's
       shapeT) into an SVG graph with a quarter grid, with left/right end labels. Shared
       by the loop-fade and row-sweep editors. */
-  /** Per-loop Accent / Ghost placement (see LifePlacement in lines.ts): a deterministic
-      alternative to the sound's own random accent/ghost. Each side picks Off / Every-N
-      (mark every Nth hit) / Ramp (swell across the loop) plus its amount. */
-  private lifeControls(loop: Loop, rerender: () => void): HTMLElement {
-    const wrap = document.createElement("div");
-    wrap.className = "placement-controls transition-controls life-controls";
-    const head = document.createElement("span");
-    head.className = "placement-lbl transition-head";
-    head.textContent = "Accents & Ghosts";
-    wrap.append(head);
-    wrap.append(this.lifeRow(loop, "accent", rerender));
-    wrap.append(this.lifeRow(loop, "ghost", rerender));
-    return wrap;
-  }
-
   /** One Life side (accent/ghost): mode segment + its parameter rows. */
   private lifeRow(loop: Loop, kind: "accent" | "ghost", rerender: () => void): HTMLElement {
     const row = document.createElement("div");
@@ -3514,36 +3575,6 @@ export class App {
     this.pushSounds();
   }
 
-  /** Re-roll / Back for a seeded rule (Chance or Dice): re-roll mints a new seed (pushing
-      the old one onto the history stack), Back pops it. For a Dice loop the pool is seeded
-      from every member's seed, so re-rolling any one reshuffles the whole colour. */
-  private rollRow(r: { seed: number; seedHistory: number[] }, rerender: () => void): HTMLElement {
-    const rollRow = document.createElement("div");
-    rollRow.className = "placement-row placement-roll";
-    const reroll = document.createElement("button");
-    reroll.className = "roll-btn";
-    reroll.textContent = "⟳ Re-roll";
-    reroll.onclick = () => {
-      r.seedHistory.push(r.seed);
-      r.seed = newSeed();
-      this.recompile();
-      rerender();
-    };
-    const backBtn = document.createElement("button");
-    backBtn.className = "roll-btn";
-    backBtn.textContent = "↩ Back";
-    backBtn.disabled = r.seedHistory.length === 0;
-    backBtn.onclick = () => {
-      const prev = r.seedHistory.pop();
-      if (prev === undefined) return;
-      r.seed = prev;
-      this.recompile();
-      rerender();
-    };
-    rollRow.append(reroll, backBtn);
-    return rollRow;
-  }
-
   /** A labelled scrub/numpad row inside the placement popup. `step` (native units per scrub
       tick) lets a wide range like filter Hz scrub coarsely while still typing exact values. */
   private numRow(label: string, read: () => number, write: (n: number) => void, commit: () => void, show: () => string, step = 1): HTMLElement {
@@ -3564,14 +3595,15 @@ export class App {
 
   // --- rhythm circles (per loop) ----------------------------------------
   private rhythmCircles(loop: Loop, commit: () => void): HTMLElement {
-    const mkNum = (label: string, value: number, field: RhythmField, disabled = false) => {
+    const mkNum = (label: string, field: RhythmField, disabled = false) => {
       const cell = document.createElement("div");
-      cell.className = "euclid-num";
+      // Push shows a fraction ("−1/64"), not a bare number: it gets a wider well.
+      cell.className = "euclid-num" + (field === "push" ? " wide" : "");
       const lab = document.createElement("span");
       lab.textContent = label;
       const inp = document.createElement("input");
       inp.type = "text";
-      inp.value = String(value);
+      inp.value = this.rhythmText(loop, field);
       inp.readOnly = true;
       inp.inputMode = "none";
       inp.disabled = disabled;
@@ -3581,7 +3613,9 @@ export class App {
           color: loop.soundId >= 0 ? loop.color : undefined,
           read: () => this.rhythmValue(loop, field),
           write: (n) => this.applyRhythm(loop, field, n),
-          show: () => String(this.rhythmValue(loop, field)),
+          show: () => this.rhythmText(loop, field),
+          // One drag tick = one notch of push (1/128 of a bar); every other field counts 1.
+          step: field === "push" ? 1 / PUSH_STEPS_PER_BAR : 1,
           commit,
         });
       }
@@ -3594,23 +3628,57 @@ export class App {
     vals.className = "euclid-vals";
     vals.style.setProperty("--vc", loop.soundId >= 0 ? loop.color : "#808080");
     vals.append(
-      mkNum("Hits", loop.hits, "hits"),
-      mkNum("Steps", loop.steps, "steps"),
-      mkNum("Start", loop.rotation, "rotation"),
-      mkNum("Split", loop.split ?? evenGap(loop.hits, loop.steps), "split", splitLocked),
+      mkNum("Hits", "hits"),
+      mkNum("Steps", "steps"),
+      mkNum("Start", "rotation"),
+      mkNum("Split", "split", splitLocked),
+      // Push sits with the rest of the timing: where the hits LAND, once the pattern has
+      // said which steps they're on. Off the grid by eighths of a step (see PUSH_UNIT),
+      // negative landing ahead of the beat.
+      mkNum("Push", "push"),
     );
     return vals;
   }
 
+  /** A rhythm field's value in the units it is scrubbed and typed in. Push counts in BARS
+      (a fraction of one), not in the steps it's stored in, so the numpad takes the same
+      "1/64" the field shows. */
   private rhythmValue(loop: Loop, field: RhythmField): number {
     if (field === "hits") return loop.hits;
     if (field === "steps") return loop.steps;
     if (field === "rotation") return loop.rotation;
+    if (field === "push") return (loop.push ?? 0) / STEPS_PER_BAR;
     return loop.split ?? evenGap(loop.hits, loop.steps);
+  }
+
+  /** What a rhythm field shows. Push reads as the fraction of a BAR it moves the hits —
+      the unit the ear counts in — rather than a raw number: one notch is "+1/128". */
+  private rhythmText(loop: Loop, field: RhythmField): string {
+    if (field !== "push") return String(this.rhythmValue(loop, field));
+    const n = this.pushNotches(this.rhythmValue(loop, field));
+    if (n === 0) return "0";
+    // n notches = n/128 of a bar; reduce so the common ones read as 1/64, 1/32, 3/64 …
+    let num = Math.abs(n), den = PUSH_STEPS_PER_BAR;
+    while (num % 2 === 0 && den % 2 === 0) { num /= 2; den /= 2; }
+    return `${n < 0 ? "−" : "+"}${num}/${den}`;
+  }
+
+  /** A push in bars, snapped to whole notches (1/128 of a bar) and clamped to just under
+      a whole step either way — see PUSH_UNIT/MAX_PUSH. */
+  private pushNotches(bars: number): number {
+    const max = Math.round(MAX_PUSH / PUSH_UNIT);
+    return Math.max(-max, Math.min(max, Math.round(bars * PUSH_STEPS_PER_BAR)));
   }
 
   private applyRhythm(loop: Loop, field: RhythmField, n: number): void {
     if (Number.isNaN(n)) n = 0;
+    if (field === "push") {
+      // Timing only — the pattern is untouched, so this one does NOT drop patternOv.
+      const notches = this.pushNotches(n);
+      loop.push = notches === 0 ? undefined : notches * PUSH_UNIT;
+      this.recompile();
+      return;
+    }
     // Editing the circles hands the pattern back to the Euclid derivation.
     loop.patternOv = undefined;
     if (field === "steps") loop.steps = clampSteps(n);
@@ -3768,7 +3836,9 @@ export class App {
       if (moved) { commit(); return; }
       this.openNumpad({
         title: opts.label,
-        value: startVal,
+        // The pad quotes the value the way the FIELD does (a push reads "−1/64", not
+        // -0.0078125); it's only the "now" line, and what's typed is parsed as a number.
+        value: opts.show ? opts.show() : startVal,
         color: opts.color,
         onSubmit: (n) => { opts.write(n); commit(); },
       });
