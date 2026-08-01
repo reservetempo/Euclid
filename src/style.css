@@ -1179,6 +1179,19 @@ select:focus { outline: none; }
 /* Loop tab: the rhythm circles sit centred above the always-shown pattern grid. */
 .loop-rhythm { display: flex; align-items: center; justify-content: center; gap: 10px; }
 .loop-rhythm .euclid-detail { flex: 0 1 auto; }
+/* On the LOOP page the rhythm numbers are a readout more than a workspace — the sound
+   below is what the page is for — so they run at half size here (full size everywhere
+   else). The connecting line tracks the smaller field: it is drawn at the field's own
+   half-height and inset by half its width, so it still passes behind the numbers. */
+.loop-rhythm .euclid-num { font-size: 8px; gap: 1px; }
+.loop-rhythm .euclid-num input { width: 26px; height: 24px; font-size: 12px; }
+.loop-rhythm .euclid-num.wide input { width: 36px; font-size: 10px; }
+.loop-rhythm .euclid-vals { gap: 5px; }
+.loop-rhythm .euclid-vals::before { left: 13px; right: 13px; bottom: 12px; }
+/* Nothing but the title bar sits above the rhythm row, so it starts at the top: an empty
+   sub-header still costs a flex gap, which read as a band of dead space. */
+.placement-sheet { padding-top: 4px; }
+.voice-sheet-sub:empty { display: none; }
 
 /* The sequencer pattern grid: one cell per step, hits lit in the voice colour. */
 .pattern-grid-wrap { --vc: var(--accent); display: flex; flex-direction: column; gap: 8px; }
@@ -1361,27 +1374,38 @@ select:focus { outline: none; }
    sound fits a phone screen. A CSS column layout does the packing — blocks are
    kept whole (break-inside), so widening the screen adds COLUMNS rather than
    restacking the groups, and a setting keeps the same neighbours everywhere. */
+/* Four columns on a phone. Dropping the block's own word from its rows (SHEET_BLOCK_TITLES
+   `strip`) is what buys the fourth: "Cycles" needs half the width of "Pitch Cycles", and
+   the width that frees goes back into ROW HEIGHT — the values are what you reach for, so
+   they get the taller target rather than the sheet getting shorter. */
 .ps-cols {
-  column-count: 3; column-gap: 7px;
-  font-size: 10px; line-height: 1.15;
+  column-count: 4; column-gap: 6px;
+  font-size: 9.5px; line-height: 1.15;
 }
-@media (min-width: 560px) { .ps-cols { column-count: 4; column-gap: 10px; } }
-@media (min-width: 800px) { .ps-cols { column-count: 5; } }
+@media (min-width: 560px) { .ps-cols { column-count: 5; column-gap: 10px; font-size: 10.5px; } }
+@media (min-width: 800px) { .ps-cols { column-count: 6; } }
 
-.ps-block { break-inside: avoid; page-break-inside: avoid; margin-bottom: 2px; }
+.ps-block { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3px; }
 .ps-head {
-  font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--vc, var(--muted)); height: 12px; line-height: 12px;
+  font-size: 8.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--muted); height: 13px; line-height: 13px;
   border-bottom: 1px solid var(--muted);
 }
-.ps-row { display: flex; align-items: center; gap: 3px; height: 14px; }
+/* A heading lights up in the voice colour once anything under it is audible. */
+.ps-head.on { color: var(--vc, var(--text)); border-bottom-color: var(--vc, var(--muted)); }
+
+.ps-row { display: flex; align-items: center; gap: 3px; height: 18px; }
 /* The name gives way first: a value must never be the thing that gets ellipsed. */
 .ps-name { flex: 1 1 auto; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-val {
-  flex: 0 0 auto; width: 51px; padding: 1px 2px; text-align: right;
-  font: inherit; font-size: 10px; font-weight: 700; color: var(--text);
+  flex: 0 0 auto; width: 44px; padding: 2px 1px; text-align: right;
+  font: inherit; font-size: 9.5px; font-weight: 700; color: var(--text);
   background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
   cursor: ns-resize; touch-action: none;
 }
-/* Still at its default — nothing has moved it, so it recedes. */
-.ps-val.ps-default { color: var(--muted); font-weight: 400; }
+@media (min-width: 560px) { .ps-val { width: 54px; font-size: 10.5px; } }
+/* INACTIVE: this setting holds a real, editable value that isn't reaching the output —
+   a zero-mix comb, an LFO routed to None. It recedes rather than disappearing, because
+   turning it on is exactly what you'd come here to do. */
+.ps-row.ps-off .ps-name { opacity: 0.4; }
+.ps-row.ps-off .ps-val { color: var(--muted); font-weight: 400; box-shadow: none; background: transparent; }

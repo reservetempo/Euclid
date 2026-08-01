@@ -80,28 +80,110 @@ type RhythmField = "hits" | "steps" | "rotation" | "split" | "push";
 // mode, so it is App state rather than anything the model or the save format knows about.
 type SoundLayout = "graph" | "sheet";
 
-/** Where the parameter sheet starts a new titled block, and what to call it. The
-    registry's own groups (getParamGroup) are the fallback, but they are too coarse to
-    read down a narrow column: "Tone" alone is 32 rows, and the three LFOs plus the FX
-    chain repeat the same short names ("Rate", "Amt", "Mix", "FB") with nothing but a
-    heading to tell them apart. Each entry names the FIRST parameter of a block, so the
-    blocks are contiguous enum ranges and stay in registry order. */
-const SHEET_BLOCK_TITLES: Partial<Record<ParamId, string>> = {
-  [ParamId.Pitch]: "Pitch",
-  [ParamId.Waveform]: "Tone",
-  [ParamId.NoiseLevel]: "Noise",
-  [ParamId.OscModType]: "Osc Mod",
-  [ParamId.Osc2Mix]: "Osc 2",
-  [ParamId.Fold]: "Shape",
-  [ParamId.WaveTable]: "Wavetable",
-  [ParamId.ClickLevel]: "Click",
-  [ParamId.Lfo1Target]: "LFO 1",
-  [ParamId.Lfo2Target]: "LFO 2",
-  [ParamId.Lfo3Target]: "LFO 3",
-  [ParamId.ModFxType]: "Mod FX",
-  [ParamId.EchoTime]: "Echo",
-  [ParamId.ReverbSize]: "Reverb",
+/** Where the parameter sheet starts a new titled block, what to call it, and the word
+    its rows may drop. The registry's own groups (getParamGroup) are the fallback, but
+    they are too coarse to read down a narrow column: "Tone" alone is 32 rows, and the
+    three LFOs plus the FX chain repeat the same short names ("Rate", "Amt", "Mix",
+    "FB") with nothing but a heading to tell them apart. Each entry names the FIRST
+    parameter of a block, so blocks are contiguous enum ranges in registry order.
+
+    `strip` is what makes four columns fit: under a heading that already says PITCH,
+    "Pitch Cycles" only has to say "Cycles". Dropping a redundant prefix beats
+    abbreviating ("P Cycles") because nothing has to be learned or guessed — and a row
+    whose whole name IS the prefix ("Pitch", "Tone", "Noise") keeps it, since that row
+    is the block's own level or value rather than one of its settings. */
+interface SheetBlock { title: string; strip?: string }
+const SHEET_BLOCK_TITLES: Partial<Record<ParamId, SheetBlock>> = {
+  [ParamId.Pitch]: { title: "Pitch", strip: "Pitch" },
+  [ParamId.Waveform]: { title: "Tone", strip: "Tone" },
+  [ParamId.NoiseLevel]: { title: "Noise", strip: "Noise" },
+  [ParamId.OscModType]: { title: "Osc Mod", strip: "Mod" },
+  [ParamId.Osc2Mix]: { title: "Osc 2" },
+  [ParamId.Fold]: { title: "Shape" },
+  [ParamId.WaveTable]: { title: "Wavetable" },
+  [ParamId.ClickLevel]: { title: "Click", strip: "Click" },
+  // Resonators is two unrelated instruments sharing a heading. Split, and each one's
+  // rows lose its name AND its heading lights independently of the other.
+  [ParamId.CombMix]: { title: "Comb", strip: "Comb" },
+  [ParamId.ModalMix]: { title: "Modal", strip: "Modal" },
+  [ParamId.Lfo1Target]: { title: "LFO 1" },
+  [ParamId.Lfo2Target]: { title: "LFO 2" },
+  [ParamId.Lfo3Target]: { title: "LFO 3" },
+  [ParamId.ModFxType]: { title: "Mod FX" },
+  [ParamId.EchoTime]: { title: "Echo", strip: "Echo" },
+  [ParamId.ReverbSize]: { title: "Reverb", strip: "Verb" },
 };
+
+/** The handful of names a four-column phone layout cannot fit even after `strip` has
+    taken the block's word off the front. Only the stragglers are listed: an abbreviation
+    has to be learned, so it earns its place one row at a time rather than as a policy.
+    The full name still shows on the numpad when the row is tapped. */
+const SHEET_SHORT_NAMES: Record<string, string> = {
+  Release: "Rel", "Att Shape": "Att Sh", "Dec Shape": "Dec Sh",
+  Material: "Mat", Downsmpl: "Down", "Ping-Pong": "Ping",
+  Humanize: "Human", "Hit Chance": "Chance", Ratchet: "Ratch", Volume: "Vol",
+  "Mod FX": "Type", // the row under the MOD FX heading is its type
+};
+
+/** Drop a block's own word from a row name ("Echo Time" under ECHO reads "Time"), then
+    shorten what is still too long. Never leaves a row nameless. */
+function sheetRowName(name: string, strip?: string): string {
+  const short = strip && name !== strip && name.startsWith(strip + " ")
+    ? name.slice(strip.length + 1)
+    : name;
+  return SHEET_SHORT_NAMES[short] ?? short;
+}
+
+/** The sheet's own value formatting: the registry's, but never more precision than the
+    column can hold. formatValue picks its decimals from the param's RANGE, which gives
+    an LFO at 27.11 Hz two decimals it does not need and cannot fit; here the decimals
+    come from the value itself, so nothing is quoted wider than "-2.68 st". */
+function sheetValue(s: ParamSpec, v: number): string {
+  if (isDiscrete(s)) return formatValue(s, v);
+  const mag = Math.abs(v);
+  const dec = mag >= 100 ? 0 : mag >= 10 ? 1 : 2;
+  return s.unit ? `${v.toFixed(dec)} ${s.unit}` : v.toFixed(dec);
+}
+
+/** Which trace decides whether a stretch of the sheet is doing anything, resolved once
+    per parameter. The ranges are contiguous because ParamId is ordered by feature, and
+    the PREDICATE is the graph's own (soundTraces): both layouts then agree on what
+    "active" means, and only one place in the codebase knows that a comb at zero mix is
+    off. A parameter with no entry is always part of the sound — the amp envelope, the
+    filter, the pitch it plays at.
+
+    Per-Hit Life is deliberately not mapped: its trace is active when accents OR ghosts
+    OR ratchets are, which says nothing about any one of its rows. */
+const SHEET_TRACE_OF: (TraceSpec | undefined)[] = (() => {
+  const byId = new Map(SOUND_TRACES.map((t) => [t.id, t]));
+  const map = new Array<TraceSpec | undefined>(NUM_PARAMS).fill(undefined);
+  const set = (from: ParamId, to: ParamId, id: string) => {
+    const t = byId.get(id);
+    for (let i = from; i <= to; i++) map[i] = t;
+  };
+  set(ParamId.Pitch, ParamId.PitchEnvCycles, "pitch");
+  set(ParamId.Waveform, ParamId.ToneEnvCycles, "tone");
+  set(ParamId.NoiseLevel, ParamId.NoiseEnvCycles, "noise");
+  set(ParamId.OscModType, ParamId.OscModAmount, "fm");
+  set(ParamId.Osc2Mix, ParamId.Sync, "osc2");
+  set(ParamId.Fold, ParamId.Fold, "fold");
+  set(ParamId.Unison, ParamId.UnisonDetune, "unison");
+  set(ParamId.FmFeedback, ParamId.FmFeedback, "fm"); // the FM operator's own feedback
+  set(ParamId.WaveTable, ParamId.WavePosition, "wavetable");
+  set(ParamId.ClickLevel, ParamId.ClickType, "click");
+  set(ParamId.CombMix, ParamId.CombDecay, "comb");
+  set(ParamId.ModalMix, ParamId.ModalDecay, "modal");
+  set(ParamId.Lfo1Target, ParamId.Lfo1Sync, "lfo1");
+  set(ParamId.Lfo2Target, ParamId.Lfo2Sync, "lfo2");
+  set(ParamId.Lfo3Target, ParamId.Lfo3Sync, "lfo3");
+  set(ParamId.Drive, ParamId.Drive, "drive");
+  set(ParamId.Crush, ParamId.Downsample, "bitcrush");
+  set(ParamId.ModFxType, ParamId.ModFxMix, "modfx");
+  set(ParamId.EchoTime, ParamId.EchoPing, "echo");
+  set(ParamId.ReverbSize, ParamId.ReverbMix, "reverb");
+  set(ParamId.Volume, ParamId.Pan, "out");
+  return map;
+})();
 
 // How much one scrub tick moves a parameter on the sheet. The registry's own step is the
 // EDIT granularity, which for a wide range is far too fine to drag across (Pitch steps in
@@ -1955,12 +2037,12 @@ export class App {
       desc: "A setting that picks from a list (Wave, Noise Col, Material, Mod FX, an LFO's Dest…) works exactly like a number: drag through Sine / Square / Saw the way you drag through hertz. That's why there are no dropdowns — a list costs the same one row as everything else.",
     },
     {
-      name: "Dim values",
-      desc: "A value shown dim is still sitting at its default — nothing has moved it. The bright ones are what make this sound what it is, which is the quickest way to see what a shuffle actually did.",
+      name: "What's actually on",
+      desc: "A row with a sunken white field is AUDIBLE — it is reaching the output right now. A flat, dim row is a setting that exists but isn't sounding: a comb at zero mix, an LFO routed to None, a wavetable switched off. It still holds a real value and you can still edit it; give it a level and it lights up. This is the same test the graph uses to decide whether to draw a curve, so the two layouts always agree.",
     },
     {
       name: "The blocks",
-      desc: "Rows are grouped by what they belong to (Pitch, Tone, Noise, the three LFOs, the FX chain, Per-Hit Life…) and the groups stay whole as the columns reflow, so the same setting sits in the same neighbourhood on any screen size.",
+      desc: "Rows are grouped by what they belong to (Pitch, Tone, Noise, Comb, Modal, the three LFOs, the FX chain, Per-Hit Life…), and a heading lights up in the voice colour once anything under it is sounding — so you can read what a shuffle actually built from the headings alone. A block's own word is dropped from its rows: under ECHO, \"Echo Time\" is just \"Time\". Tap any row and the keypad shows its full name.",
     },
     {
       name: "The drawn pitch contour",
@@ -2188,8 +2270,11 @@ export class App {
     const cols = document.createElement("div");
     cols.className = "ps-cols";
 
+    const get: ParamGet = (id) => p.get(id);
     let block: HTMLElement | null = null;
+    let head: HTMLElement | null = null;
     let group = -1;
+    let strip: string | undefined;
     for (let i = 0; i < NUM_PARAMS; i++) {
       const id = i as ParamId;
       if (id >= ParamId.PitchDraw1) break; // the drawn contour is not a list of settings
@@ -2197,42 +2282,46 @@ export class App {
 
       // A block starts wherever the sheet names one, and otherwise wherever the registry's
       // own grouping changes — so every row sits under a heading either way.
-      const title = SHEET_BLOCK_TITLES[id];
+      const named = SHEET_BLOCK_TITLES[id];
       const g = getParamGroup(id);
-      if (title || g !== group || !block) {
+      if (named || g !== group || !block) {
         group = g;
+        strip = named?.strip;
         block = document.createElement("div");
         block.className = "ps-block";
-        const h = document.createElement("div");
-        h.className = "ps-head";
-        h.textContent = title ?? getParamGroupName(g);
-        block.append(h);
+        head = document.createElement("div");
+        head.className = "ps-head";
+        head.textContent = named?.title ?? getParamGroupName(g);
+        block.append(head);
         cols.append(block);
       }
 
+      // ACTIVE = this setting is audible in the sound right now, by the same test the
+      // graph uses to decide whether to draw its curve. An inactive row still holds a
+      // real value you can edit — it just isn't reaching the output yet, so it recedes,
+      // and its heading only lights up once something under it is doing something.
+      const trace = SHEET_TRACE_OF[id];
+      const active = !trace || trace.active(get);
+      if (active && head) head.classList.add("on");
+
       const row = document.createElement("div");
-      row.className = "ps-row";
+      row.className = "ps-row" + (active ? "" : " ps-off");
       const name = document.createElement("span");
       name.className = "ps-name";
-      name.textContent = spec.name;
+      name.textContent = sheetRowName(spec.name, strip);
       const inp = document.createElement("input");
       inp.type = "text";
       inp.readOnly = true;
       inp.inputMode = "none";
       inp.className = "ps-val";
-      const show = () => formatValue(spec, p.get(id));
+      const show = () => sheetValue(spec, p.get(id));
       inp.value = show();
-      // A value still sitting at its default is dim: on a sheet this size, that is what
-      // lets the eye find the handful of settings actually shaping this sound.
-      const markDefault = () => inp.classList.toggle("ps-default", Math.abs(p.get(id) - spec.def) < 1e-6);
-      markDefault();
       this.attachScrub(inp, {
-        label: spec.name,
+        label: spec.name, // the numpad gets the FULL name — no block heading over it
         color: host.color,
         read: () => p.get(id),
         write: (n) => {
           p.set(id, n);
-          markDefault();
           host.write();
         },
         show,
