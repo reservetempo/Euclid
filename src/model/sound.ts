@@ -438,9 +438,13 @@ export class SoundDraft {
 
       So all that is left is the handful of settings that make it a drone rather than a
       plucked default. `holdSec` is the caller's: a drone wants its gate FITTED to the gap
-      between its own hits, so one note holds until the next begins.
+      between its own hits, so one note holds until the next begins. The app asks for eight
+      bars of it (see App.mintLoopSound); Gate's spec tops out at 60s, so set() clamps the
+      fitted hold below about 34bpm.
 
-      Pushes an undo step, so ↩ takes the previous sound straight back. */
+      Pushes an undo step, so ↩ takes the previous sound straight back. The pair it sets up —
+      a long gate held up by Sustain — is what {@link randomize} then protects from the
+      shuffle, so a rolled drone stays a drone. */
   resetToDrone(holdSec = 8): void {
     this.pushUndo();
     for (let i = 0; i < NUM_PARAMS; i++) this.set(i as ParamId, baseSpec(i as ParamId).def);
@@ -551,6 +555,17 @@ export class SoundDraft {
   private randomize(opts: ShuffleOptions): void {
     const randomness = Math.min(1, Math.max(0, opts.randomness));
     const curve = opts.curve ?? FreqCurve.Linear;
+    // A DRONE survives its own shuffle. Being a drone is derived from the sound rather than
+    // flagged on it ({@link isDrone}), so nothing else can defend it: the draw would re-roll
+    // Sustain across its full 0..1 range and any roll under DRONE_SUSTAIN would quietly turn
+    // a held note back into a hit that decays. Hold the PAIR that makes the note held — the
+    // gate and the sustain — and let everything else (timbre, filter, FX, the attack/decay/
+    // release shape) roll freely: the sound changes, the hold doesn't. Gate is already
+    // declared non-randomizable in params.ts, but it is restored here too so the pairing is
+    // stated where it is relied on instead of resting on a flag two files away.
+    const wasDrone = this.isDrone();
+    const droneGate = this.get(ParamId.Gate);
+    const droneSustain = this.get(ParamId.AmpSustain);
     if (opts.seed) rand = seededRng(opts.seed);
     try {
       for (let i = 0; i < NUM_PARAMS; i++) {
@@ -609,6 +624,12 @@ export class SoundDraft {
         this.tameHarshness();
       }
       this.clampLength(opts.maxLen ?? 0, opts.bpm ?? 120);
+      // Last, AFTER clampLength — the length cap scales the amp body, so a drone restored
+      // any earlier could still be trimmed out of its own hold.
+      if (wasDrone) {
+        this.set(ParamId.Gate, droneGate);
+        this.set(ParamId.AmpSustain, Math.max(droneSustain, DRONE_SUSTAIN));
+      }
     } finally {
       rand = Math.random;
     }

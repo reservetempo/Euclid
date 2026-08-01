@@ -34,7 +34,7 @@ import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_
 import { NUM_PARAMS, PARAMS, RealParamId } from "./params";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, LoopTransition,
-  DEFAULT_BAR_LIMIT, randomSeed,
+  DEFAULT_BAR_LIMIT, DEFAULT_TEMPO, randomSeed,
 } from "./track";
 
 /** Bring a stored snapshot up to the current length, filling anything missing or malformed
@@ -478,5 +478,5 @@ export function deserialize(json: ProjectJSON, track: Track): number {
   // v14 and v15 are refused along with the rest, though nothing about the snapshot layout
   // moved — a deliberate clean break, see docs/adr/0002.)
 
-  return typeof json.tempo === "number" ? json.tempo : 120;
+  return typeof json.tempo === "number" ? json.tempo : DEFAULT_TEMPO;
 }

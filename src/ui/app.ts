@@ -40,7 +40,7 @@ import { fitBlendShape, DRAWN_POINTS } from "../model/curveFit";
 import {
   Track, Loop, LoopTransition, emptyLoop, cloneLoop, loopToNode,
   randomSeed as newSeed, ruleLengths, defaultLoopTransition,
-  placementsFor,
+  placementsFor, DEFAULT_TEMPO,
 } from "../model/track";
 import { reverseSnapshot } from "../model/reverse";
 import { generateName, reshuffleNames } from "../model/name";
@@ -316,7 +316,8 @@ export class App {
   // Bar-square grids (loop placement / transition bars / the play range): how many bars
   // one square is worth (1 / 2 / 4 / 8), and the armed Start→End pick (start 0 = awaiting
   // the start square). The play range picks out a SECTION of the whole track rather than
-  // individual bars, so it starts at 8 (64 bars a row — a 256-bar track in four rows).
+  // individual bars, so it starts at 8 (64 bars a row — a 256-bar track in four rows, and
+  // the 32-bar default in a single one).
   private gridSpan: Record<"place" | "trans" | "range", number> = { place: 2, trans: 2, range: 8 };
   private gridPick: { key: "place" | "trans" | "range"; start: number } | null = null;
   // The popup's view identity at the last rebuild — an unchanged key means an in-place
@@ -344,7 +345,7 @@ export class App {
   private transPreviewMode: "transition" | "result" = "transition";
   private transPreviewBars = 4;
   private playing = false;
-  private tempo = 120;
+  private tempo = DEFAULT_TEMPO;
   // Play-range loop region (1-indexed bars, inclusive); 0/0 = loop the whole track. A
   // transient playback aid (see applySection) — not saved with the project.
   private playFromBar = 0;
@@ -361,7 +362,19 @@ export class App {
   // what the playback line is positioned against and what a tap on a column reads. See
   // trackBlockBoxes(). Cleared on every track render; also re-measured when the container
   // height changes (there is no resize listener, and none is needed for this).
-  private trackGeom: { h: number; boxes: { top: number; height: number }[] } | null = null;
+  private trackGeom: {
+    h: number;
+    boxes: { top: number; height: number }[];
+    colTop: number; // where a column's own box starts inside .track-cols (all six alike)
+  } | null = null;
+  // The overview's LIVE SECTION: one band per column, lit on the bar being played — but only
+  // on the columns whose paint actually covers that bar, so the light says who is sounding
+  // and not merely where the line is. `trackBars` is the same per-bar loop numbering the
+  // blocks are shaded from and a tap is hit-tested against (colorBarNumbers), kept from the
+  // render so the playhead needn't recompute it 16 times a bar. Both are rebuilt per render.
+  private trackLiveEls: HTMLElement[] | null = null;
+  private trackBars: number[][] | null = null;
+  private liveBar = -1; // the bar the bands are currently placed on (-1 = unplaced)
   // Channel -> flash LED (mixer) and sound id -> loop-row button (colour panel).
   private mixerLeds: Map<number, HTMLElement> | null = null;
   private voiceBtns: Map<number, HTMLElement> | null = null;
@@ -426,6 +439,8 @@ export class App {
   private handlePlayhead(p: Playhead): void {
     if (!p.lines) {
       this.trackPlayheadEl?.classList.remove("live");
+      for (const el of this.trackLiveEls ?? []) el.classList.remove("on");
+      this.liveBar = -1;
       this.lightPatternStep(-1);
       return;
     }
@@ -444,6 +459,7 @@ export class App {
         if (px === null) this.trackPlayheadEl.style.removeProperty("--phpx");
         else this.trackPlayheadEl.style.setProperty("--phpx", `${px.toFixed(2)}px`);
         this.trackPlayheadEl.classList.add("live");
+        this.lightLiveSection(Math.floor(bar));
       }
     }
     // Light the open Loop-tab pattern grid's currently-sounding step (nothing when the
@@ -478,6 +494,31 @@ export class App {
         btn.classList.remove("hit-flash");
         void btn.offsetWidth;
         btn.classList.add("hit-flash");
+      }
+    }
+  }
+
+  /** Light the section (one bar) being played, on the columns that actually sound there.
+      Called once per 16th step, but the work is done only when the bar CHANGES — or when
+      the blocks have been re-measured, which resets `liveBar` from under us (see
+      trackBlockBoxes), so a resized overview re-places its bands on the next step. */
+  private lightLiveSection(b: number): void {
+    const els = this.trackLiveEls;
+    const bars = this.trackBars;
+    if (!els || !bars || b === this.liveBar) return;
+    const box = this.trackLiveBox(b);
+    if (!box) return;
+    this.liveBar = b;
+    for (let c = 0; c < els.length; c++) {
+      const el = els[c];
+      // Lit only where this voice's paint covers the bar — the same per-bar numbering the
+      // blocks are shaded from, so the light and the shade can never disagree.
+      if ((bars[c]?.[b] ?? 0) > 0) {
+        el.style.top = `${box.top.toFixed(2)}px`;
+        el.style.height = `${box.height.toFixed(2)}px`;
+        el.classList.add("on");
+      } else {
+        el.classList.remove("on");
       }
     }
   }
@@ -620,7 +661,7 @@ export class App {
 
   private newProject(): void {
     this.track = new Track();
-    this.tempo = 120;
+    this.tempo = DEFAULT_TEMPO;
     this.editTransition = null;
     this.nextSoundId = 0;
     this.editLoop = null;
@@ -666,6 +707,9 @@ export class App {
     this.root.innerHTML = "";
     this.loopTimeEl = null;
     this.trackPlayheadEl = null;
+    this.trackLiveEls = null;
+    this.trackBars = null;
+    this.liveBar = -1;
     this.mixerLeds = null;
     this.voiceBtns = null;
 
@@ -785,7 +829,7 @@ export class App {
     tempo.onclick = () => this.openNumpad({
       title: "Tempo (BPM)", value: Math.round(this.tempo),
       onSubmit: (n) => {
-        this.tempo = Math.max(30, Math.min(300, Math.round(n) || 120));
+        this.tempo = Math.max(30, Math.min(300, Math.round(n) || DEFAULT_TEMPO));
         this.engine.setTempo(this.tempo);
         this.persist();
         this.render();
@@ -975,13 +1019,17 @@ export class App {
     const v = this.viewRoot;
     // Whole-track overview: one VERTICAL COLUMN per colour, the whole timeline at once and
     // in one screenful whatever the track length. Each column is OVERVIEW_BLOCKS blocks
-    // tall; a block covers barLimit/OVERVIEW_BLOCKS bars (exactly 16 at the 256-bar
-    // default) and paints those bars as slices, so its fill shows both how many bars sound
-    // and where they sit. No numbers anywhere — the column is a shape, not a table.
-    // Tapping a painted part of a column opens THAT loop's sound page directly (the shade
-    // you touch is the loop you get); under each column sit its loop chips and the ▦
+    // tall; a block covers barLimit/OVERVIEW_BLOCKS bars (2 at the 32-bar default, 16 at
+    // 256) and paints those bars as slices, so its fill shows both how many bars sound and
+    // where they sit. Every block is also RULED into the bars it holds, so the sections are
+    // countable and the one being played can light up. No numbers anywhere — the column is
+    // a shape, not a table. Tapping a painted part of a column opens THAT loop's sound page
+    // directly (the shade you touch is the loop you get); under each column sits the ▦
     // button onto the voice's all-loops grid.
     this.voiceBtns = new Map();
+    this.trackLiveEls = [];
+    this.trackBars = [];
+    this.liveBar = -1;
     const barLimit = Math.max(1, this.track.barLimit);
     this.trackGeom = null; // the blocks are about to be rebuilt — re-measure on first use
 
@@ -1013,12 +1061,21 @@ export class App {
       col.title = `Voice ${c + 1}`;
 
       const bars = this.colorBarNumbers(c);
+      this.trackBars!.push(bars);
       for (let i = 0; i < OVERVIEW_BLOCKS; i++) {
         // Split by rounded boundaries rather than a fixed block size, so the blocks always
         // tile the track exactly even when barLimit isn't a multiple of OVERVIEW_BLOCKS.
         const { from, to } = this.blockRange(i, barLimit);
         col.append(this.overviewBlock(bars.slice(from, Math.max(from + 1, to)), c));
       }
+
+      // The live-section band, sized and placed by the transport (see handlePlayhead). It
+      // rides ON the column rather than over the whole row so each voice can light on its
+      // own; it takes no pointer events, so the column's own hit test below is unaffected.
+      const live = document.createElement("div");
+      live.className = "track-live";
+      col.append(live);
+      this.trackLiveEls!.push(live);
 
       // Where the tap landed, in bars, read off the same per-bar numbers the blocks are
       // shaded from — so the loop that opens is always the one under the finger. Measured
@@ -1041,25 +1098,12 @@ export class App {
       gridBtn.onclick = () => this.openGrid(c);
       foot.append(gridBtn);
 
-      // The loop chips: the same shade ramp as the blocks, so a chip reads as the paint it
-      // stands for. They're the reliable way in when a loop's placement is too thin to hit.
-      const chips = document.createElement("div");
-      chips.className = "track-chips";
-      ct.loops.forEach((loop, i) => {
-        const chip = document.createElement("button");
-        chip.className = "track-chip";
-        // The shade rides on a custom property, not on `style.background`: an inline
-        // background would outrank .hit-flash and the chip would never light on a hit.
-        chip.style.setProperty("--ls", this.loopShade(c, i + 1));
-        chip.title = loop.label || loop.name || `Loop ${i + 1}`;
-        chip.setAttribute("aria-label", chip.title);
-        chip.onclick = () => this.openPlacement(loop, "sound");
-        // The playhead flashes the chip rather than the whole column, so a hit shows which
-        // loop played it.
-        if (loop.soundId >= 0) this.voiceBtns!.set(loop.soundId, chip);
-        chips.append(chip);
-      });
-      foot.append(chips);
+      // A hit flashes the COLUMN. Every loop of the voice maps to the same element, so the
+      // flash says which voice fired rather than which loop did — the shade under the live
+      // section already says that, and it costs the overview no chrome of its own.
+      for (const loop of ct.loops) {
+        if (loop.soundId >= 0) this.voiceBtns!.set(loop.soundId, col);
+      }
 
       foots.append(foot);
     }
@@ -1089,6 +1133,12 @@ export class App {
   private overviewBlock(cells: number[], c: number): HTMLElement {
     const el = document.createElement("div");
     el.className = "track-block";
+    // How many bars this block holds — the CSS rules it into that many sections. Read per
+    // block rather than computed once because blockRange's rounded boundaries can hand a
+    // block one bar more or fewer than its neighbours on an odd bar limit, and the lines
+    // have to land on the actual bars. Set on EMPTY blocks too: an empty stretch of track
+    // is still divided into sections you can count and land on.
+    el.style.setProperty("--bars", String(Math.max(1, cells.length)));
     if (!cells.some((n) => n > 0)) return el; // wholly empty: the plain field background
     const stops: string[] = [];
     for (let i = 0; i < cells.length; i++) {
@@ -1133,8 +1183,24 @@ export class App {
       const r = b.getBoundingClientRect();
       return { top: r.top - base, height: r.height };
     });
-    this.trackGeom = { h, boxes };
+    // Where the column itself starts inside .track-cols. The live band lives INSIDE a column
+    // and so is positioned in the column's own box, while everything else here is measured
+    // against .track-cols; this is the one offset between the two. All six columns are
+    // stretch items of a single flex row, so one measurement serves them all.
+    const colTop = col!.getBoundingClientRect().top - base;
+    this.liveBar = -1; // the geometry moved under them: the bands must be placed again
+    this.trackGeom = { h, boxes, colTop };
     return boxes;
+  }
+
+  /** The live band's box for bar `b` (0-based), in the COLUMN's coordinates: the same block
+      geometry the playhead rides, shifted by the column's own offset. Null when the overview
+      isn't on screen to be measured. */
+  private trackLiveBox(b: number): { top: number; height: number } | null {
+    const top = this.trackBarOffset(b);
+    const next = this.trackBarOffset(b + 1);
+    if (top === null || next === null || !this.trackGeom) return null;
+    return { top: top - this.trackGeom.colTop, height: Math.max(2, next - top) };
   }
 
   /** Where bar position `bar` (fractional, 0-based) sits in pixels down `.track-cols`, or
@@ -2268,8 +2334,12 @@ export class App {
         isDrone ? "This sound is a held drone — press to start a fresh one"
                 : "Start again from the drone — one long held note, no hit",
         () => {
-          // The hold is fitted to the gap between this loop's own hits, as the mint does.
-          p.resetToDrone(host.lifeLoop ? this.loopGapSeconds(host.lifeLoop) : undefined);
+          // Eight bars of hold, or the gap between this loop's own hits when that is longer
+          // (as the mint does). ∞ restarts a SOUND, not a placement, so the rhythm is left
+          // alone — on a dense loop the notes simply overlap, which a drone wants and the
+          // engine affords at six voices a channel.
+          const gap = host.lifeLoop ? this.loopGapSeconds(host.lifeLoop) ?? 0 : 0;
+          p.resetToDrone(Math.max(this.stepsToSeconds(MAX_STEPS), gap));
           void host.replace();
         },
         "graph-tool-drone" + (isDrone ? " on" : "")));
@@ -4211,10 +4281,11 @@ export class App {
 
       A drone is minted as a RHYTHM as well as a sound, because the two only work together:
       the hold has to reach the next hit or the drone breathes in and out, and it must not
-      overshoot it either — an 8s note against a hit every 2s stacks four copies of itself,
-      and past the engine's six voices the seventh steals a live one mid-note, which clicks.
-      So: one hit every MAX_STEPS (the longest gap the model allows — 4 bars), with the gate
-      fitted to exactly that gap at the current tempo. One note holds until the next begins. */
+      overshoot it by much either — a note against a hit four times as often stacks four
+      copies of itself, and past the engine's six voices the seventh steals a live one
+      mid-note, which clicks. So: one hit every MAX_STEPS (the longest gap the model allows —
+      8 bars, a ceiling set by this very case), with the gate fitted to exactly that gap at
+      the current tempo. One note holds until the next begins. */
   private mintLoopSound(loop: Loop): void {
     const draft = this.draftFor(loop);
     if (this.soundLayout === "deck") {

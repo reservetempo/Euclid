@@ -407,16 +407,19 @@ select:focus { outline: none; }
 
 /* Whole-track overview: six vertical columns, one per colour, each 16 blocks tall. Time
    runs DOWNWARD — bar 1 at the top of the first block, the last bar at the foot of the
-   last — so the whole track is one screenful whatever its length. Under each column sit
-   that voice's loop chips and its ▦ grid button, so the column itself stays pure paint. */
+   last — so the whole track is one screenful whatever its length. Under each column sits
+   that voice's ▦ grid button, so the column itself stays pure paint. */
 .track-overview { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+/* The overview is the one view that wants the width: six columns ruled into bars read far
+   better wide than they do at the shell's usual 740px reading measure. */
+.viewroot > .track-overview { width: min(100%, 1000px); }
 /* The paint row and the footer row line up column for column (same flex layout, same gap).
    They're separate rows so the playhead — positioned against .track-cols — measures the
    TRACK's height only, not the buttons underneath. */
 .track-cols, .track-foots {
   display: flex; flex-direction: row; align-items: stretch; gap: 6px;
 }
-.track-cols { position: relative; min-height: 60vh; }
+.track-cols { position: relative; min-height: 78vh; }
 .track-foot {
   --vc: var(--accent);
   flex: 1; min-width: 0;
@@ -425,6 +428,7 @@ select:focus { outline: none; }
 .track-color-col {
   --vc: var(--accent);
   flex: 1; min-width: 0;
+  position: relative; /* the live-section band is placed in this box */
   display: flex; flex-direction: column; gap: 2px;
   padding: 4px; text-align: left;
   color: var(--text);
@@ -435,18 +439,25 @@ select:focus { outline: none; }
   box-shadow: var(--btn-out);
 }
 .track-color-col:active { box-shadow: var(--btn-in); padding: 5px 3px 3px 5px; }
-
-/* The voice's loops as chips, in the shade the column paints each of them (set inline).
-   Tapping one opens that loop's page — the reliable way in when its bars are too thin to
-   hit up on the column. */
-.track-chips { display: flex; flex-wrap: wrap; gap: 2px; }
-.track-chip {
-  --ls: var(--vc);
-  flex: 1 1 auto; min-width: 10px; height: 14px; padding: 0;
-  background: var(--ls);
-  border: none; border-radius: 0; box-shadow: var(--btn-out);
+/* A hit flashes the whole column (app.ts registers it per sound). The generic .hit-flash
+   paints its target navy, which would swallow the paint — so the column takes the flash on
+   its identity stripe instead. Two classes beat one, so this wins wherever it sits. */
+.track-color-col.hit-flash {
+  background: var(--panel); color: var(--text);
+  border-top-color: #000080; box-shadow: var(--btn-in);
 }
-.track-chip:active { box-shadow: var(--btn-in); }
+
+/* The live section: the bar being played, lit on the columns that sound there. Placed in
+   pixels by the transport (app.ts lightLiveSection) off the same block geometry the
+   playhead rides. Pointer-transparent so the column's own tap hit-test is untouched. */
+.track-live {
+  position: absolute; left: 4px; right: 4px;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.3);
+  box-shadow: inset 0 0 0 2px #000000;
+  opacity: 0;
+}
+.track-live.on { opacity: 1; }
 /* The voice's main button: it sits directly under the column and is the one hit blind,
    so it takes the full width and a comfortable target height. */
 .track-grid-btn {
@@ -459,8 +470,23 @@ select:focus { outline: none; }
 /* One block = barLimit/16 bars, painted as equal slices by a gradient set in app.ts. An
    empty block keeps the plain sunken field. */
 .track-block {
-  flex: 1; min-height: 14px; border-radius: 0;
+  flex: 1; min-height: 18px; border-radius: 0; position: relative;
   background-color: #ffffff; box-shadow: inset 0 0 0 1px #dfdfdf;
+}
+/* …and ruled into the bars it holds: --bars is set per block in app.ts (its own count, not
+   barLimit/16, since rounded block boundaries can differ by a bar). A pseudo-element rather
+   than a second background layer, because the paint owns background-image inline.
+
+   The line is FAINT on purpose. A long track packs the sections tight — 16 bars to a block
+   at 256, a couple of pixels each — and at full strength the ruling would read as stripes
+   and swallow the paint it is meant to measure. Faint, it recedes into a texture at that
+   density and still counts the bars cleanly at the 32-bar default. */
+.track-block::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.16) 0 1px,
+    transparent 1px calc(100% / var(--bars, 1)));
 }
 
 /* Overview playback line: slides down the columns as the track plays. `--phpx` is the

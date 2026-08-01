@@ -248,8 +248,15 @@ export interface ColorTrack {
   sweeps?: RowSweep[]; // overarching FX sweeps across bar ranges of the whole row (may overlap)
 }
 
-// 256 bars = the track overview's 16 blocks per colour at exactly 16 bars each (see app.ts).
-export const DEFAULT_BAR_LIMIT = 256;
+// 32 bars = the track overview's 16 blocks per colour at 2 bars each, so a block's inner
+// grid divides into two sections you can actually see (see app.ts). Longer tracks still
+// work — a block just holds more bars and its grid gets finer.
+export const DEFAULT_BAR_LIMIT = 32;
+
+/** The tempo a fresh (or unreadable) project starts at. Not part of Track — tempo is
+    serialized beside it (see project.ts) — but it lives here so the app and the loader
+    can't drift apart on what "default" means. */
+export const DEFAULT_TEMPO = 140;
 
 /** The whole authoring model: a bar limit, six colours, and the key context (root/scale)
     the shuffle uses. Compiled into engine lanes by compile(). */

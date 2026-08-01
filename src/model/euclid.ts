@@ -4,7 +4,12 @@
 // (see lines.ts VoiceNode).
 
 export const EUCLID_VOICES = 6;     // voice lines / rings (one per logo letter)
-export const MAX_STEPS = 64;        // upper bound on a voice's step count
+// Upper bound on a voice's step count: 128 steps = 8 bars at STEPS_PER_BAR = 16. The
+// ceiling is set by the DRONE rather than by the sequencer — a held note wants one hit per
+// 8 bars so it can ring that long without the next hit stacking on top of it (see
+// App.mintLoopSound). Nothing downstream assumes a size: the engine has no step ceiling and
+// the pattern grid wraps at 16 columns, so a long pattern just becomes more rows.
+export const MAX_STEPS = 128;
 
 // New voices start blank — every value is 0, so a freshly assigned circle is silent
 // until the user dials in hits/steps/start. (steps 0 means the engine skips the voice.)
