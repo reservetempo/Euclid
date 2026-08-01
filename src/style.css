@@ -1362,11 +1362,11 @@ select:focus { outline: none; }
    kept whole (break-inside), so widening the screen adds COLUMNS rather than
    restacking the groups, and a setting keeps the same neighbours everywhere. */
 .ps-cols {
-  column-count: 2; column-gap: 10px;
-  font-size: 10.5px; line-height: 1.15;
+  column-count: 3; column-gap: 7px;
+  font-size: 10px; line-height: 1.15;
 }
-@media (min-width: 430px) { .ps-cols { column-count: 3; } }
-@media (min-width: 660px) { .ps-cols { column-count: 4; } }
+@media (min-width: 560px) { .ps-cols { column-count: 4; column-gap: 10px; } }
+@media (min-width: 800px) { .ps-cols { column-count: 5; } }
 
 .ps-block { break-inside: avoid; page-break-inside: avoid; margin-bottom: 2px; }
 .ps-head {
@@ -1374,12 +1374,12 @@ select:focus { outline: none; }
   color: var(--vc, var(--muted)); height: 12px; line-height: 12px;
   border-bottom: 1px solid var(--muted);
 }
-.ps-row { display: flex; align-items: center; gap: 4px; height: 13px; }
+.ps-row { display: flex; align-items: center; gap: 3px; height: 14px; }
 /* The name gives way first: a value must never be the thing that gets ellipsed. */
 .ps-name { flex: 1 1 auto; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-val {
-  flex: 0 0 auto; width: 52px; padding: 1px 2px; text-align: right;
-  font: inherit; font-size: 10.5px; font-weight: 700; color: var(--text);
+  flex: 0 0 auto; width: 51px; padding: 1px 2px; text-align: right;
+  font: inherit; font-size: 10px; font-weight: 700; color: var(--text);
   background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
   cursor: ns-resize; touch-action: none;
 }

@@ -1387,7 +1387,11 @@ export class App {
       detail.append(this.rhythmCircles(loop, rerender));
       rhythmRow.append(detail);
       sheet.append(rhythmRow);
-      sheet.append(this.patternGrid(loop, rerender));
+      // The sequencer grid stands down for the parameter sheet. The sheet is a whole
+      // screenful on its own, and it is what you came to this page for when it is the
+      // selected layout; the rhythm circles above still say what the loop plays. Switch
+      // back to the graph (∿) and the grid comes back with it.
+      if (this.soundLayout !== "sheet") sheet.append(this.patternGrid(loop, rerender));
 
       // The sound panel IS the sound — graph or sheet, whichever layout is selected.
       sheet.append(this.soundPanel(this.graphHostForLoop(loop, rerender), rerender));
@@ -2042,6 +2046,20 @@ export class App {
     bar.className = "graph-toolbar";
     const mkTool = (glyph: string, title2: string, fn: () => void, extra = "", disabled = false) =>
       this.toolBtn(glyph, title2, fn, extra, disabled);
+
+    // LAYOUT leads the toolbar. Everything after it can scroll out of reach on a narrow
+    // screen (the bar is wider than a phone), and the one control that must never do that
+    // is the one that gets you back to the other layout.
+    const onGraph = this.soundLayout === "graph";
+    bar.append(this.toolBtn(onGraph ? "▤" : "∿",
+      onGraph ? "Switch to the parameter sheet — every setting as a number"
+              : "Switch to the sound graph — every setting as a curve",
+      () => {
+        this.soundLayout = onGraph ? "sheet" : "graph";
+        this.graphTrace = null; // the graph always comes back on its buttons
+        rerender();
+      }, "graph-tool-layout"));
+
     for (const el of host.extraCorner ?? []) bar.append(el);
     bar.append(
       mkTool("↩", "Back to the previous sound", () => {
@@ -2098,17 +2116,6 @@ export class App {
       () => curveOptionIndex(p.curve),
       (i) => { p.curve = CURVE_OPTIONS[i].curve; },
     ));
-    // LAYOUT: the same sound, read either as functions over time or as a sheet of
-    // numbers. The toggle sits at the end of the settings, before the ?.
-    const onGraph = this.soundLayout === "graph";
-    bar.append(this.toolBtn(onGraph ? "▤" : "∿",
-      onGraph ? "Switch to the parameter sheet — every setting as a number"
-              : "Switch to the sound graph — every setting as a curve",
-      () => {
-        this.soundLayout = onGraph ? "sheet" : "graph";
-        this.graphTrace = null; // the graph always comes back on its buttons
-        rerender();
-      }));
     const help = helpButton(
       onGraph ? "The sound graph" : "The parameter sheet",
       onGraph ? App.SOUND_GRAPH_HELP : App.SOUND_SHEET_HELP,
