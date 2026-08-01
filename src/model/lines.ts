@@ -400,6 +400,12 @@ export interface VoiceNode {
   // sound's own random rolls in the engine (see perHit). Unset = the sound's own feel.
   accent?: LifePlacement;
   ghost?: LifePlacement;
+  // Timing PUSH: how far off the 16th grid this node's hits land, as a signed fraction of
+  // one step (−1..1 exclusive). Negative pushes the hits EARLY — the downbeat leans ahead
+  // of the bar — positive drags them late. The engine plays a late hit as a start delay,
+  // and an early one by firing it a whole step sooner and delaying the remainder (see
+  // fireLineAt), which is why the magnitude stops short of a full step.
+  push?: number;
   // A node's absolute pitch in Hz: the engine swaps P.Pitch to it (pitchedSnap) so one
   // sound can play a specific note rather than its own tuning. Unset on ordinary loop
   // nodes, which keep their sound's pitch — which today means NOTHING sets it: the
@@ -422,6 +428,15 @@ export function emptyNode(): VoiceNode {
 function nodeUnit(n: VoiceNode): number {
   return n.steps >= 1 ? n.steps : STEPS_PER_BAR;
 }
+
+/** Timing-push resolution and limit (see VoiceNode.push). A push is a whole number of
+    EIGHTHS of a 16th step — 1/128 of a bar, fine enough to lean on the beat rather than
+    move to another one — and stops one eighth short of a whole step, past which "early"
+    would just be the previous step's place. */
+export const PUSH_UNIT = 1 / 8;
+export const MAX_PUSH = 7 / 8;
+/** How many pushes make a bar — the unit the UI counts and shows them in (1/128). */
+export const PUSH_STEPS_PER_BAR = STEPS_PER_BAR / PUSH_UNIT;
 
 /** A node's lead-in silence in 16th-note steps: `wait` quiet BARS before the pattern
     starts (0 when unset). Counted in whole bars (not the node's own step unit) so a
@@ -641,6 +656,7 @@ export interface LineMessage {
     // uses these instead of the sound's random accent/ghost when present.
     accent?: LifePlacement;
     ghost?: LifePlacement;
+    push?: number; // hits off the grid by this fraction of a step (see VoiceNode.push)
   }[];
   sweeps?: SweepWindow[]; // row-wide FX sweep windows over this lane (step positions)
 }
@@ -734,6 +750,7 @@ export class LineArrangement {
           pitchHz: n.pitchHz,
           accent: n.accent,
           ghost: n.ghost,
+          push: n.push,
         };
       });
       return { sweeps: sweepsMessage(ln.sweeps, nodes), nodes };

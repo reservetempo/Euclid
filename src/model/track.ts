@@ -234,6 +234,9 @@ export interface Loop {
   transitions?: LoopTransition[];
   accent?: LifePlacement; // per-loop deterministic accent placement (overrides sound's own)
   ghost?: LifePlacement;  // per-loop deterministic ghost placement (overrides sound's own)
+  // Timing push: this loop's hits off the 16th grid, as a signed fraction of one step
+  // (negative = ahead of the beat). Scrubbed on the rhythm row; see VoiceNode.push.
+  push?: number;
   rule: PlacementRule;
 }
 
@@ -357,6 +360,7 @@ export function loopToNode(loop: Loop, reps = 1): VoiceNode {
   n.outro = loop.outro ? { ...loop.outro, modes: loop.outro.modes?.slice() } : undefined;
   n.accent = loop.accent ? { ...loop.accent } : undefined;
   n.ghost = loop.ghost ? { ...loop.ghost } : undefined;
+  n.push = loop.push;
   clampEnvelopes(n);
   return n;
 }
@@ -590,6 +594,7 @@ export function cloneLoop(loop: Loop): Loop {
       : undefined,
     accent: loop.accent ? { ...loop.accent } : undefined,
     ghost: loop.ghost ? { ...loop.ghost } : undefined,
+    push: loop.push,
     rule: {
       every,
       forBars: loop.rule.forBars,

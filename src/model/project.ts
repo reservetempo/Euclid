@@ -30,7 +30,7 @@
 // padSnapshot below fills the tail with defaults. The drawn pitch contour's 32 slots were
 // added that way on purpose, which is why they arrived while the format stayed at 14.
 
-import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_REPS, NUM_LINES, VOICE_COLORS, LEGACY_VOICE_COLORS } from "./lines";
+import { IntroEnv, OutroEnv, LifePlacement, TransitionMode, BlendShapeId, BLEND_SHAPES, FADE_MODES, MAX_PUSH, MAX_REPS, NUM_LINES, VOICE_COLORS, LEGACY_VOICE_COLORS } from "./lines";
 import { NUM_PARAMS, PARAMS, RealParamId } from "./params";
 import {
   Track, ColorTrack, Loop, PlacementRule, EveryRule, RowSweep, LoopTransition,
@@ -105,6 +105,10 @@ export interface LoopJSON {
   outro?: { reps: number; mode: TransitionMode; modes?: TransitionMode[]; toId: number; rate?: number; curve?: number; from?: number; to?: number; dir?: "in" | "out"; shape?: BlendShapeId; cycles?: number };
   accent?: LifePlacement;
   ghost?: LifePlacement;
+  // Timing push off the 16th grid (see VoiceNode.push). Additive to the format: a save
+  // written before it existed simply lacks the field and loads as 0, which is why it
+  // arrived without a version bump.
+  push?: number;
   transitions?: LoopTransitionJSON[]; // per-loop sound → transformed-sound transitions
   rule: RuleJSON;
 }
@@ -159,6 +163,7 @@ const cloneLoop = (l: Loop): LoopJSON => ({
   outro: l.outro ? { reps: l.outro.reps, mode: l.outro.mode, modes: l.outro.modes?.slice(), toId: l.outro.toId, rate: l.outro.rate, curve: l.outro.curve, from: l.outro.from, to: l.outro.to, dir: l.outro.dir, shape: l.outro.shape, cycles: l.outro.cycles } : undefined,
   accent: l.accent ? { ...l.accent } : undefined,
   ghost: l.ghost ? { ...l.ghost } : undefined,
+  push: l.push,
   rule: {
     every: l.rule.every,
     forBars: l.rule.forBars,
@@ -435,6 +440,10 @@ function readLoop(lv: unknown, colorIndex: number): Loop {
     outro: readEnv(s.outro, "outro"),
     accent: readLife(s.accent),
     ghost: readLife(s.ghost),
+    // Under a whole step in either direction: the engine plays an early hit by firing it
+    // one step ahead, which a full step would turn into no push at all.
+    push: typeof s.push === "number" && isFinite(s.push) && s.push !== 0
+      ? Math.max(-MAX_PUSH, Math.min(MAX_PUSH, s.push)) : undefined,
     transitions: readTransitions(s.transitions),
     rule: readRule(s.rule),
   };

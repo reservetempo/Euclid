@@ -1760,7 +1760,7 @@ class EngineProcessor extends AudioWorkletProcessor {
   // `mode` may be an ARRAY of silence-end styles (a multi-select) — they compose via
   // sweptSnap; pair blends only ever receive a single mode.
   // `ctx` is the per-hit Life context (accent/ghost placement) forwarded to perHit.
-  fireBlend(ownId, fromId, from, toId, to, mode, t, ctx, gate, beat, fired, nearV, farV) {
+  fireBlend(ownId, fromId, from, toId, to, mode, t, ctx, gate, beat, fired, nearV, farV, delay) {
     if (!from && !to) return;
     const modes = Array.isArray(mode) ? mode : [mode];
     mode = modes[0];
@@ -1773,7 +1773,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       const hit = this.perHit(snap, ctx);
       if (!hit) return;
       const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
-      this.triggerSound(ownId, snap, voiceSnap, gate, real.tail, hit.vel, hit.count, hit.interval, beat);
+      this.triggerSound(ownId, snap, voiceSnap, gate, real.tail, hit.vel, hit.count, hit.interval, beat, delay);
       fired.push(ownId);
     } else if (mode === "crossfade") {
       // Both sounds play on their own channels, from fading out as to fades in.
@@ -1781,12 +1781,12 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (!hit) return;
       if (1 - t > 0.02) {
         const vsA = from.snap.slice(); this.jitterSnap(vsA, hit.human);
-        this.triggerSound(fromId, from.snap, vsA, gate, from.tail, hit.vel * (1 - t), hit.count, hit.interval, beat);
+        this.triggerSound(fromId, from.snap, vsA, gate, from.tail, hit.vel * (1 - t), hit.count, hit.interval, beat, delay);
         fired.push(fromId);
       }
       if (t > 0.02) {
         const vsB = to.snap.slice(); this.jitterSnap(vsB, hit.human);
-        this.triggerSound(toId, to.snap, vsB, gate, to.tail, hit.vel * t, hit.count, hit.interval, beat);
+        this.triggerSound(toId, to.snap, vsB, gate, to.tail, hit.vel * t, hit.count, hit.interval, beat, delay);
         fired.push(toId);
       }
     } else if (mode === "alternate") {
@@ -1797,7 +1797,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       const hit = this.perHit(src.snap, ctx);
       if (!hit) return;
       const vs = src.snap.slice(); this.jitterSnap(vs, hit.human);
-      this.triggerSound(id, src.snap, vs, gate, src.tail, hit.vel, hit.count, hit.interval, beat);
+      this.triggerSound(id, src.snap, vs, gate, src.tail, hit.vel, hit.count, hit.interval, beat, delay);
       fired.push(id);
     } else if (mode === "filter") {
       // Spectral crossfade: both play while from's filter closes and to's opens.
@@ -1806,13 +1806,13 @@ class EngineProcessor extends AudioWorkletProcessor {
       if (1 - t > 0.02) {
         const a = this.lerpSnap(from.snap, this.silentVariant(from.snap, "filter"), t);
         const vsA = a.slice(); this.jitterSnap(vsA, hit.human);
-        this.triggerSound(fromId, a, vsA, gate, from.tail, hit.vel, hit.count, hit.interval, beat);
+        this.triggerSound(fromId, a, vsA, gate, from.tail, hit.vel, hit.count, hit.interval, beat, delay);
         fired.push(fromId);
       }
       if (t > 0.02) {
         const b = this.lerpSnap(this.silentVariant(to.snap, "filter"), to.snap, t);
         const vsB = b.slice(); this.jitterSnap(vsB, hit.human);
-        this.triggerSound(toId, b, vsB, gate, to.tail, hit.vel, hit.count, hit.interval, beat);
+        this.triggerSound(toId, b, vsB, gate, to.tail, hit.vel, hit.count, hit.interval, beat, delay);
         fired.push(toId);
       }
     } else {
@@ -1821,7 +1821,7 @@ class EngineProcessor extends AudioWorkletProcessor {
       const hit = this.perHit(snap, ctx);
       if (!hit) return;
       const voiceSnap = snap.slice(); this.jitterSnap(voiceSnap, hit.human);
-      this.triggerSound(ownId, snap, voiceSnap, gate, Math.max(from.tail || 0, to.tail || 0), hit.vel, hit.count, hit.interval, beat);
+      this.triggerSound(ownId, snap, voiceSnap, gate, Math.max(from.tail || 0, to.tail || 0), hit.vel, hit.count, hit.interval, beat, delay);
       fired.push(ownId);
     }
   }
@@ -1836,7 +1836,10 @@ class EngineProcessor extends AudioWorkletProcessor {
   // effect → sound as its onsets settle onto the grid, an outro the reverse), so a
   // "Rush + Filter" intro rushes in WHILE the filter opens. Speed alone keeps the plain
   // sound — timing only.
-  fireSpeedStep(nd, snd, env, side, span, activeLocal, activeLen, gate, beat, fired) {
+  // `baseDelay` is the node's timing push (see fireLineAt), which rides on top of each
+  // onset's own fractional offset — a rushing intro on a loop that sits behind the beat
+  // keeps sitting behind it.
+  fireSpeedStep(nd, snd, env, side, span, activeLocal, activeLen, gate, beat, fired, baseDelay) {
     const onsets = env.warp;
     if (!onsets || !onsets.length) return;
     const spb = this.samplesPerStep();
@@ -1846,7 +1849,7 @@ class EngineProcessor extends AudioWorkletProcessor {
     for (let k = 0; k < onsets.length; k++) {
       const o = onsets[k];
       if (Math.floor(o) !== activeLocal) continue; // not this step's onset(s)
-      const delay = Math.round((o - activeLocal) * spb);
+      const delay = Math.round((o - activeLocal) * spb) + (baseDelay || 0);
       const pos01 = activeLen > 1 ? clamp(o / (activeLen - 1), 0, 1) : 1;
       const life = { isAccent: k === 0, hitIndex: k, pos01, accent: nd.accent, ghost: nd.ghost };
       let snap = baseSnap;
@@ -2035,17 +2038,10 @@ class EngineProcessor extends AudioWorkletProcessor {
       totals.push(total);
       if (total > loopTotal) loopTotal = total;
     }
-    // Section loop: while a node is being edited the transport cycles just that
-    // node's window of the loop (clamped inside it); every line still plays its own
-    // content there, so you hear the edit in the track's context. 0 = whole loop.
-    let pos;
-    if (this.sectionLen > 0 && loopTotal > 0) {
-      const start = Math.min(this.sectionStart, loopTotal - 1);
-      const len = Math.max(1, Math.min(this.sectionLen, loopTotal - start));
-      pos = start + (this.absStep % len);
-    } else {
-      pos = loopTotal > 0 ? this.absStep % loopTotal : 0;
-    }
+    const posNow = this.posFor(this.absStep, loopTotal);
+    // One step AHEAD: an early-pushed node's hits are due before the step they belong to,
+    // so they have to be fired from here (see fireLineAt).
+    const posNext = this.posFor(this.absStep + 1, loopTotal);
 
     const fired = [];
     const states = []; // per line: { node, step } for the playhead (-1 = resting)
@@ -2054,162 +2050,203 @@ class EngineProcessor extends AudioWorkletProcessor {
       const nodes = (ln && ln.nodes) || [];
       const total = totals[li];
       // Past this line's own length (or empty): the line rests until the loop wraps.
-      if (total <= 0 || pos >= total) { states.push({ node: -1, step: -1 }); continue; }
-
-      let acc = 0, ni = 0;
-      while (ni < nodes.length - 1 && pos >= acc + Math.max(1, nodes[ni].lenSteps | 0)) {
-        acc += Math.max(1, nodes[ni].lenSteps | 0);
-        ni++;
-      }
-      const nd = nodes[ni];
-      const nodeLocal = pos - acc;
-      const vs = nd.steps | 0;
-      // Lead-in silence: the first `waitSteps` of the window are quiet (the node waits,
-      // then plays), so the pattern clock starts AFTER the wait. <0 = still waiting.
-      const waitSteps = Math.max(0, nd.waitSteps | 0);
-      const activeLocal = nodeLocal - waitSteps;
-      states.push({ node: ni, step: vs >= 1 && activeLocal >= 0 ? activeLocal % vs : -1 });
-
-      // Still waiting (lead-in)? A speed row sweep may have dragged hits INTO the wait
-      // span — fire those; the grid is silent here anyway.
-      if (activeLocal < 0) { this.fireRowWarpAt(ln, pos, gate, fired); continue; }
-
-      // Speed transition: within an intro/outro SPEED span the node's hits are RE-TIMED —
-      // a precomputed onset list (fractional steps, off the grid) replaces the pattern's
-      // grid hits. Handled BEFORE the pattern gate below so onsets can land on steps the
-      // grid pattern would skip. Outside the span the node plays its pattern normally.
-      // Speed may STACK with tonal styles (env.modes) — fireSpeedStep morphs each re-timed
-      // hit through them at its own blend position. (`warp` is only shipped when the
-      // env's style set includes "speed" — see linesMessage.)
-      const speedIntro = nd.intro && nd.intro.warp;
-      const speedOutro = nd.outro && nd.outro.warp;
-      if (speedIntro || speedOutro) {
-        const snd2 = this.sounds.get(nd.soundId);
-        if (snd2) {
-          const aLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
-          const beat2 = this.absStep * 0.25;
-          const iSpan = speedIntro ? Math.min(aLen, Math.max(1, nd.intro.steps | 0)) : 0;
-          const oSpan = speedOutro ? Math.min(aLen, Math.max(1, nd.outro.steps | 0)) : 0;
-          if (iSpan > 0 && activeLocal < iSpan) {
-            this.fireSpeedStep(nd, snd2, nd.intro, "intro", iSpan, activeLocal, aLen, gate, beat2, fired);
-            continue;
-          }
-          if (oSpan > 0 && activeLocal >= aLen - oSpan) {
-            this.fireSpeedStep(nd, snd2, nd.outro, "outro", oSpan, activeLocal, aLen, gate, beat2, fired);
-            continue;
-          }
-        }
-      }
-
-      // SPEED row sweeps (see fireRowWarpAt): inside a warp-carrying window the lane's
-      // grid hits are replaced by the window's re-timed onsets — rushing in / dragging
-      // out across the whole row, node boundaries included. A node's OWN speed span
-      // still wins (handled above; its hits were left out of the window's warp).
-      if (this.fireRowWarpAt(ln, pos, gate, fired)) continue;
-
-      // A pattern rest (rests ship an empty pattern) — nothing to fire on the grid here.
-      if (vs < 1 || !nd.pattern || !nd.pattern[activeLocal % vs]) continue;
-
-      // Accent = the first hit of this node's pattern cycle. beat = LFO-sync phase.
-      let firstHit = 0;
-      for (let h = 0; h < vs; h++) if (nd.pattern[h]) { firstHit = h; break; }
-      const isAccent = (activeLocal % vs) === firstHit;
-      const beat = this.absStep * 0.25;
-
-      // Normal node: play its own sound, but shape its ends where it carries fades.
-      // A node keeps its sound throughout; an intro fades the first `introSteps` of the
-      // sounding window, an outro the last `outroSteps` (clampEnvelopes keeps them from
-      // overlapping, so at most one region contains any given step).
-      const snd = this.sounds.get(nd.soundId);
-      if (!snd) continue;
-      const activeLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
-      const introSteps = nd.intro ? Math.min(activeLen, Math.max(1, nd.intro.steps | 0)) : 0;
-      const outroSteps = nd.outro ? Math.min(activeLen, Math.max(1, nd.outro.steps | 0)) : 0;
-
-      // Per-hit Life context for a per-loop accent/ghost layer: the hit's ordinal
-      // across the whole loop (so "every Nth hit" runs continuously past pattern-cycle
-      // boundaries) and its position 0..1 through the sounding window (for ramps).
-      const localStep = activeLocal % vs;
-      let hitsPerCycle = 0, hitPrefix = 0;
-      for (let h = 0; h < vs; h++) if (nd.pattern[h]) { if (h < localStep) hitPrefix++; hitsPerCycle++; }
-      const hitIndex = Math.floor(activeLocal / vs) * hitsPerCycle + hitPrefix;
-      const pos01 = activeLen > 1 ? clamp(activeLocal / (activeLen - 1), 0, 1) : 1;
-      const life = { isAccent, hitIndex, pos01, accent: nd.accent, ghost: nd.ghost };
-
-      // Intro: rise from silence (fromId < 0) or morph from a previous sound into this
-      // one, over introSteps. t runs 0→1 across the span.
-      if (introSteps > 0 && activeLocal < introSteps) {
-        const fromId = nd.intro.fromId;
-        const from = fromId >= 0 ? this.sounds.get(fromId) : null;
-        if (fromId < 0 || from) {
-          const raw = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
-          const t = shapeY(raw, nd.intro);
-          this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.modes || nd.intro.mode, t, life, gate, beat, fired, nd.intro.from, nd.intro.to);
-          continue;
-        }
-        // Source sound gone — fall through and play this node plainly.
-      }
-      // Outro: fall to silence (toId < 0) or morph this sound into a next one, over the
-      // last outroSteps. t runs 0→1 as the sound gives way.
-      if (outroSteps > 0 && activeLocal >= activeLen - outroSteps) {
-        const toId = nd.outro.toId;
-        const to = toId >= 0 ? this.sounds.get(toId) : null;
-        if (toId < 0 || to) {
-          const local = activeLocal - (activeLen - outroSteps);
-          const raw = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
-          const t = shapeY(raw, nd.outro);
-          this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.modes || nd.outro.mode, t, life, gate, beat, fired, nd.outro.from, nd.outro.to);
-          continue;
-        }
-        // Destination sound gone — play plainly.
-      }
-
-      // Row FX sweeps: lane-wide windows (see SweepWindow) that morph the steady hit
-      // toward (side "out") or out of (side "in") each style's FX extreme by the window's
-      // global progress across [from, to). Every window covering this position applies —
-      // overlaps COMPOSE, each morphing the result of the previous — and a window may
-      // itself carry several styles (sw.modes). Overrides the plain steady trigger; a
-      // node's own intro/outro (handled above with `continue`) still wins where they
-      // overlap.
-      const sws = this.sweepsAt(ln, pos);
-      if (sws) {
-        // Melody notes carry their own pitch: sweep a pitched copy so the fade keeps the tune.
-        let snap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
-        const preSweepPitch = snap[P.Pitch];
-        for (let si = 0; si < sws.length; si++) {
-          const sw = sws[si];
-          const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
-          const t = shapeY(raw, sw);
-          const modes = sw.modes && sw.modes.length ? sw.modes : [sw.mode];
-          snap = this.sweptSnap(snap, modes, t, sw.side, sw.fromV, sw.toV, sw.morphSnap);
-        }
-        const hit = this.perHit(snap, life);
-        if (!hit) continue;
-        const voiceSnap = snap.slice();
-        this.jitterSnap(voiceSnap, hit.human);
-        // A long-held note keeps following the morph windows' function (drone glide).
-        const track = this.morphPitchTrack(sws, pos, preSweepPitch, snap);
-        this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, 0, track);
-        fired.push(nd.soundId);
-        continue;
-      }
-
-      // Steady middle: the node's own sound. A melody note carries its own pitch
-      // (`pitchHz`) — the one re-pitched instrument playing a scale degree — so it plays
-      // from a copy of the snapshot with P.Pitch swapped to that note.
-      const baseSnap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
-      const hit = this.perHit(baseSnap, life);
-      if (!hit) continue; // dropped by HitChance
-      const voiceSnap = baseSnap.slice();
-      this.jitterSnap(voiceSnap, hit.human);
-      this.triggerSound(nd.soundId, baseSnap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat);
-      fired.push(nd.soundId);
+      if (total <= 0 || posNow >= total) { states.push({ node: -1, step: -1 }); continue; }
+      // Two passes over the line: the hits due NOW (on the grid, or dragged late), then
+      // the early-pushed ones read off the step ahead. A node's push decides which pass
+      // serves it, and only one of them does, so no hit can fire twice.
+      states.push(this.fireLineAt(ln, nodes, posNow, gate, fired, false));
+      if (posNext < total) this.fireLineAt(ln, nodes, posNext, gate, fired, true);
     }
-    this.reportPlayhead(states, fired, pos);
+    this.reportPlayhead(states, fired, posNow);
 
     this.absStep += 1;
     // Apply staged edits at bar boundaries so changes land musically.
     if (this.absStep % STEPS_PER_BAR === 0) this.promotePending();
+  }
+
+  // Where the transport sits in the lane loop at absolute step `abs`: inside the SECTION
+  // window when one is set — while a node is being edited the transport cycles just that
+  // node's window of the loop (clamped inside it), every line still playing its own
+  // content there, so the edit is heard in the track's context — else a plain wrap.
+  // sectionLen 0 = the whole loop.
+  posFor(abs, loopTotal) {
+    if (this.sectionLen > 0 && loopTotal > 0) {
+      const start = Math.min(this.sectionStart, loopTotal - 1);
+      const len = Math.max(1, Math.min(this.sectionLen, loopTotal - start));
+      return start + (abs % len);
+    }
+    return loopTotal > 0 ? abs % loopTotal : 0;
+  }
+
+  // Fire one line's hits at lane position `pos`, and report where its playhead is:
+  // { node, step } (step -1 = resting).
+  //
+  // TIMING PUSH (VoiceNode.push — a signed fraction of a step): a LATE push is just a
+  // start delay on the trigger. An EARLY one can't be, since the hit is due before the
+  // step it belongs to, so it fires from the PREVIOUS step with the remainder as its
+  // delay: a hit at step k pushed by −f sounds at (k−1) + (1−f) = k−f. `wantEarly` is
+  // which of those two jobs this call is doing — fireStep makes both, at consecutive
+  // positions, and each node answers exactly one of them.
+  fireLineAt(ln, nodes, pos, gate, fired, wantEarly) {
+    let acc = 0, ni = 0;
+    while (ni < nodes.length - 1 && pos >= acc + Math.max(1, nodes[ni].lenSteps | 0)) {
+      acc += Math.max(1, nodes[ni].lenSteps | 0);
+      ni++;
+    }
+    const nd = nodes[ni];
+    const nodeLocal = pos - acc;
+    const vs = nd.steps | 0;
+    // Lead-in silence: the first `waitSteps` of the window are quiet (the node waits,
+    // then plays), so the pattern clock starts AFTER the wait. <0 = still waiting.
+    const waitSteps = Math.max(0, nd.waitSteps | 0);
+    const activeLocal = nodeLocal - waitSteps;
+    const state = { node: ni, step: vs >= 1 && activeLocal >= 0 ? activeLocal % vs : -1 };
+
+    // Whose pass is this? The state above is the line's whatever the answer — the
+    // playhead follows the grid, not the push.
+    const push = Number(nd.push) || 0;
+    if ((push < 0) !== !!wantEarly) return state;
+    const spb = this.samplesPerStep();
+    // Late: hold the hit off the grid by `push`. Early: it was brought forward a whole
+    // step above, so what's left is the rest of that step.
+    const delay = push === 0 ? 0 : Math.round((push < 0 ? 1 + push : push) * spb);
+    // beat = LFO-sync phase; an early hit belongs to the NEXT step, so it counts as one.
+    const beat = (this.absStep + (wantEarly ? 1 : 0)) * 0.25;
+
+    // Still waiting (lead-in)? A speed row sweep may have dragged hits INTO the wait
+    // span — fire those; the grid is silent here anyway. Row warps re-time their hits
+    // themselves, so they don't take the push as well and only the on-grid pass runs them.
+    if (activeLocal < 0) { if (!wantEarly) this.fireRowWarpAt(ln, pos, gate, fired); return state; }
+
+    // Speed transition: within an intro/outro SPEED span the node's hits are RE-TIMED —
+    // a precomputed onset list (fractional steps, off the grid) replaces the pattern's
+    // grid hits. Handled BEFORE the pattern gate below so onsets can land on steps the
+    // grid pattern would skip. Outside the span the node plays its pattern normally.
+    // Speed may STACK with tonal styles (env.modes) — fireSpeedStep morphs each re-timed
+    // hit through them at its own blend position. (`warp` is only shipped when the
+    // env's style set includes "speed" — see linesMessage.)
+    const speedIntro = nd.intro && nd.intro.warp;
+    const speedOutro = nd.outro && nd.outro.warp;
+    if (speedIntro || speedOutro) {
+      const snd2 = this.sounds.get(nd.soundId);
+      if (snd2) {
+        const aLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
+        const iSpan = speedIntro ? Math.min(aLen, Math.max(1, nd.intro.steps | 0)) : 0;
+        const oSpan = speedOutro ? Math.min(aLen, Math.max(1, nd.outro.steps | 0)) : 0;
+        if (iSpan > 0 && activeLocal < iSpan) {
+          this.fireSpeedStep(nd, snd2, nd.intro, "intro", iSpan, activeLocal, aLen, gate, beat, fired, delay);
+          return state;
+        }
+        if (oSpan > 0 && activeLocal >= aLen - oSpan) {
+          this.fireSpeedStep(nd, snd2, nd.outro, "outro", oSpan, activeLocal, aLen, gate, beat, fired, delay);
+          return state;
+        }
+      }
+    }
+
+    // SPEED row sweeps (see fireRowWarpAt): inside a warp-carrying window the lane's
+    // grid hits are replaced by the window's re-timed onsets — rushing in / dragging
+    // out across the whole row, node boundaries included. A node's OWN speed span
+    // still wins (handled above; its hits were left out of the window's warp).
+    if (!wantEarly && this.fireRowWarpAt(ln, pos, gate, fired)) return state;
+
+    // A pattern rest (rests ship an empty pattern) — nothing to fire on the grid here.
+    if (vs < 1 || !nd.pattern || !nd.pattern[activeLocal % vs]) return state;
+
+    // Accent = the first hit of this node's pattern cycle.
+    let firstHit = 0;
+    for (let h = 0; h < vs; h++) if (nd.pattern[h]) { firstHit = h; break; }
+    const isAccent = (activeLocal % vs) === firstHit;
+
+    // Normal node: play its own sound, but shape its ends where it carries fades.
+    // A node keeps its sound throughout; an intro fades the first `introSteps` of the
+    // sounding window, an outro the last `outroSteps` (clampEnvelopes keeps them from
+    // overlapping, so at most one region contains any given step).
+    const snd = this.sounds.get(nd.soundId);
+    if (!snd) return state;
+    const activeLen = Math.max(1, (nd.lenSteps | 0) - waitSteps);
+    const introSteps = nd.intro ? Math.min(activeLen, Math.max(1, nd.intro.steps | 0)) : 0;
+    const outroSteps = nd.outro ? Math.min(activeLen, Math.max(1, nd.outro.steps | 0)) : 0;
+
+    // Per-hit Life context for a per-loop accent/ghost layer: the hit's ordinal
+    // across the whole loop (so "every Nth hit" runs continuously past pattern-cycle
+    // boundaries) and its position 0..1 through the sounding window (for ramps).
+    const localStep = activeLocal % vs;
+    let hitsPerCycle = 0, hitPrefix = 0;
+    for (let h = 0; h < vs; h++) if (nd.pattern[h]) { if (h < localStep) hitPrefix++; hitsPerCycle++; }
+    const hitIndex = Math.floor(activeLocal / vs) * hitsPerCycle + hitPrefix;
+    const pos01 = activeLen > 1 ? clamp(activeLocal / (activeLen - 1), 0, 1) : 1;
+    const life = { isAccent, hitIndex, pos01, accent: nd.accent, ghost: nd.ghost };
+
+    // Intro: rise from silence (fromId < 0) or morph from a previous sound into this
+    // one, over introSteps. t runs 0→1 across the span.
+    if (introSteps > 0 && activeLocal < introSteps) {
+      const fromId = nd.intro.fromId;
+      const from = fromId >= 0 ? this.sounds.get(fromId) : null;
+      if (fromId < 0 || from) {
+        const raw = introSteps > 1 ? clamp(activeLocal / (introSteps - 1), 0, 1) : 1;
+        const t = shapeY(raw, nd.intro);
+        this.fireBlend(nd.soundId, fromId, from, nd.soundId, snd, nd.intro.modes || nd.intro.mode, t, life, gate, beat, fired, nd.intro.from, nd.intro.to, delay);
+        return state;
+      }
+      // Source sound gone — fall through and play this node plainly.
+    }
+    // Outro: fall to silence (toId < 0) or morph this sound into a next one, over the
+    // last outroSteps. t runs 0→1 as the sound gives way.
+    if (outroSteps > 0 && activeLocal >= activeLen - outroSteps) {
+      const toId = nd.outro.toId;
+      const to = toId >= 0 ? this.sounds.get(toId) : null;
+      if (toId < 0 || to) {
+        const local = activeLocal - (activeLen - outroSteps);
+        const raw = outroSteps > 1 ? clamp(local / (outroSteps - 1), 0, 1) : 1;
+        const t = shapeY(raw, nd.outro);
+        this.fireBlend(nd.soundId, nd.soundId, snd, toId, to, nd.outro.modes || nd.outro.mode, t, life, gate, beat, fired, nd.outro.from, nd.outro.to, delay);
+        return state;
+      }
+      // Destination sound gone — play plainly.
+    }
+
+    // Row FX sweeps: lane-wide windows (see SweepWindow) that morph the steady hit
+    // toward (side "out") or out of (side "in") each style's FX extreme by the window's
+    // global progress across [from, to). Every window covering this position applies —
+    // overlaps COMPOSE, each morphing the result of the previous — and a window may
+    // itself carry several styles (sw.modes). Overrides the plain steady trigger; a
+    // node's own intro/outro (handled above with an early return) still wins where they
+    // overlap.
+    const sws = this.sweepsAt(ln, pos);
+    if (sws) {
+      // Melody notes carry their own pitch: sweep a pitched copy so the fade keeps the tune.
+      let snap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+      const preSweepPitch = snap[P.Pitch];
+      for (let si = 0; si < sws.length; si++) {
+        const sw = sws[si];
+        const raw = clamp((pos - sw.from) / Math.max(1, sw.to - sw.from), 0, 1);
+        const t = shapeY(raw, sw);
+        const modes = sw.modes && sw.modes.length ? sw.modes : [sw.mode];
+        snap = this.sweptSnap(snap, modes, t, sw.side, sw.fromV, sw.toV, sw.morphSnap);
+      }
+      const hit = this.perHit(snap, life);
+      if (!hit) return state;
+      const voiceSnap = snap.slice();
+      this.jitterSnap(voiceSnap, hit.human);
+      // A long-held note keeps following the morph windows' function (drone glide).
+      const track = this.morphPitchTrack(sws, pos, preSweepPitch, snap);
+      this.triggerSound(nd.soundId, snap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, delay, track);
+      fired.push(nd.soundId);
+      return state;
+    }
+
+    // Steady middle: the node's own sound. A melody note carries its own pitch
+    // (`pitchHz`) — the one re-pitched instrument playing a scale degree — so it plays
+    // from a copy of the snapshot with P.Pitch swapped to that note.
+    const baseSnap = nd.pitchHz > 0 ? this.pitchedSnap(snd.snap, nd.pitchHz) : snd.snap;
+    const hit = this.perHit(baseSnap, life);
+    if (!hit) return state; // dropped by HitChance
+    const voiceSnap = baseSnap.slice();
+    this.jitterSnap(voiceSnap, hit.human);
+    this.triggerSound(nd.soundId, baseSnap, voiceSnap, gate, snd.tail, hit.vel, hit.count, hit.interval, beat, delay);
+    fired.push(nd.soundId);
+    return state;
   }
 
   renderChannels(offset, n) {
