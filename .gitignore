@@ -3,5 +3,3 @@ dist/
 *.local
 .DS_Store
 .claude/
-# Generated knowledge graph (/graphify) — rebuildable from the source tree.
-graphify-out/

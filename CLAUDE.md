@@ -26,12 +26,19 @@ the voice's **all-loops grid**, which is the bar-square placement grid with a lo
 every loop of the colour showing at once. A loop's page is the whole loop, top to bottom:
 rhythm circles (Hits / Steps / Start / Split, and **Push** — the hits off the 16th grid by
 a fraction of a bar), sequencer grid, the sound panel, then the two buttons off it
-(Transitions, Copy). The sound panel has two LAYOUTS of the same draft, toggled on its
-toolbar (▤ / ∿): the **graph**, where every active setting is a coloured function of time,
-and the **sheet**, where every setting is a `name value` row packed into columns — no
-functions, nothing drawn, the whole engine in one screenful. Rows behave alike whatever the
+(Transitions, Copy). The sound panel has three LAYOUTS of the same draft, cycled by one
+button on its toolbar (∿ → ▤ → ◫): the **graph**, where every active setting is a coloured
+function of time; the **sheet**, where every setting is a `name value` row packed into
+columns — no functions, nothing drawn, the whole engine in one screenful; and the **deck**,
+which spends the whole screen on ONE section of the engine (the sections sit along the
+bottom as buttons) so every setting can be shown in full — a choice list as a list you
+slide across, a number as a bar you slide along. Sheet rows behave alike whatever the
 setting: hold-drag to scrub, tap for the numpad, and a choice list scrubs through its labels
-the way a number scrubs through its range, which is why the sheet needs no dropdowns. There is no loop LIST any more — picking a loop happens on the column
+the way a number scrubs through its range, which is why the sheet needs no dropdowns; the
+deck trades that density for room, and is where a DRONE is designed — a loop added while it
+is open is minted as one long held note instead of a shuffled hit (`SoundDraft.resetToDrone`,
+also on the deck's ∞ button). All three layouts cut the engine into sections through one
+shared list (`SHEET_SECTIONS`), so they can never disagree about what a section is. There is no loop LIST any more — picking a loop happens on the column
 or in the grid's picker; there is no rule editor either — a loop's bars are PAINTED on the
 grid, and its per-hit accents/ghosts live on the sound graph's Life trace.
 
@@ -304,13 +311,3 @@ avoid a startup race).
   committed with the code. No external tracker, no `gh` dependency.
 - **`docs/adr/`** — architecture decision records, written when a decision needs explaining
   beyond what the code shows.
-
-## graphify
-
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
