@@ -17,9 +17,12 @@ import { EngineHost, EngineSound, Playhead } from "../audio/engineHost";
 import { measureLoudness, makeupGain } from "../audio/loudness";
 import { encodeWavFromBuffer } from "../audio/wav";
 import {
-  ParamId, NUM_PARAMS, PITCH_DRAW_BASE, PITCH_DRAW_SLOTS, getParamGroup, getParamGroupName,
+  ParamId, RealParamId, NUM_PARAMS, PITCH_DRAW_BASE, PITCH_DRAW_SLOTS,
+  getParamGroup, getParamGroupName,
 } from "../model/params";
-import { baseSpec, isDiscrete, formatValue, ParamSpec, PITCH_SHAPE_DRAWN } from "../model/paramSpec";
+import {
+  baseSpec, isDiscrete, formatValue, valueToNorm, normToValue, ParamSpec, PITCH_SHAPE_DRAWN,
+} from "../model/paramSpec";
 import {
   SOUND_TRACES, TraceSpec, TraceCtx, ParamGet, traceAxisSeconds, snapshotAxisSeconds,
   traceDomain, traceParts, hzToNorm, normToHz,
@@ -76,9 +79,11 @@ type PlacementTab = "sound" | "transition";
 type RhythmField = "hits" | "steps" | "rotation" | "split" | "push";
 
 // How the sound is READ. The graph draws each active setting as a function of time; the
-// sheet lists every setting as a number. Same draft, same edits — a preference, not a
-// mode, so it is App state rather than anything the model or the save format knows about.
-type SoundLayout = "graph" | "sheet";
+// sheet lists every setting as a number; the deck opens ONE section at a time with every
+// setting shown in full (a choice list as a list, a number as a bar). Same draft, same
+// edits — a preference, not a mode, so it is App state rather than anything the model or
+// the save format knows about.
+type SoundLayout = "graph" | "sheet" | "deck";
 
 /** Where the parameter sheet starts a new titled block, what to call it, and the word
     its rows may drop. The registry's own groups (getParamGroup) are the fallback, but
@@ -125,12 +130,19 @@ const SHEET_SHORT_NAMES: Record<string, string> = {
   "Mod FX": "Type", // the row under the MOD FX heading is its type
 };
 
-/** Drop a block's own word from a row name ("Echo Time" under ECHO reads "Time"), then
-    shorten what is still too long. Never leaves a row nameless. */
-function sheetRowName(name: string, strip?: string): string {
-  const short = strip && name !== strip && name.startsWith(strip + " ")
+/** Drop a block's own word from a row name ("Echo Time" under ECHO reads "Time"). Never
+    leaves a row nameless — a row whose whole name IS the word keeps it. */
+function dropBlockWord(name: string, strip?: string): string {
+  return strip && name !== strip && name.startsWith(strip + " ")
     ? name.slice(strip.length + 1)
     : name;
+}
+
+/** The sheet's row name: the block's word dropped, then whatever is still too long for a
+    column abbreviated. The deck only takes the first half — it gives a setting a whole
+    row of its own, so nothing there has to be shortened. */
+function sheetRowName(name: string, strip?: string): string {
+  const short = dropBlockWord(name, strip);
   return SHEET_SHORT_NAMES[short] ?? short;
 }
 
@@ -185,6 +197,15 @@ const SHEET_TRACE_OF: (TraceSpec | undefined)[] = (() => {
   return map;
 })();
 
+/** Is this setting audible right now? A parameter with no trace of its own is always part
+    of the sound (the amp envelope, the filter, the pitch it plays at); otherwise the
+    graph's own predicate decides. Both flat layouts ask through here, so "on" means one
+    thing across the whole app. */
+function sectionRowActive(id: ParamId, get: ParamGet): boolean {
+  const trace = SHEET_TRACE_OF[id];
+  return !trace || trace.active(get);
+}
+
 // How much one scrub tick moves a parameter on the sheet. The registry's own step is the
 // EDIT granularity, which for a wide range is far too fine to drag across (Pitch steps in
 // single hertz over 8 kHz — a screen-height drag would not clear the bass). So a range
@@ -198,6 +219,34 @@ function sheetStep(s: ParamSpec): number {
   if (span / step <= SHEET_SCRUB_TICKS) return step;
   return Math.max(step, Math.round(span / SHEET_SCRUB_TICKS / step) * step);
 }
+
+/** The engine cut into readable sections, once, at module load. This is the SHEET's own
+    splitting rule — start a section wherever {@link SHEET_BLOCK_TITLES} names one, and
+    otherwise wherever the registry's grouping changes, so every parameter lands under a
+    heading either way — lifted out because the deck needs the same cut for a different
+    purpose: what the sheet stacks as titled blocks down four columns, the deck spreads
+    across the bottom as one button each. One split, so the two layouts can never disagree
+    about what "the Echo section" is.
+
+    The 32 PitchDraw slots are the one omission, in both layouts: they are samples of a
+    drawn curve rather than settings, and are authored in the path overlay. */
+interface SheetSection { title: string; strip?: string; ids: RealParamId[] }
+const SHEET_SECTIONS: SheetSection[] = (() => {
+  const out: SheetSection[] = [];
+  let group = -1;
+  for (let i = 0; i < NUM_PARAMS; i++) {
+    const id = i as ParamId;
+    if (id >= ParamId.PitchDraw1) break;
+    const named = SHEET_BLOCK_TITLES[id];
+    const g = getParamGroup(id);
+    if (named || g !== group || !out.length) {
+      group = g;
+      out.push({ title: named?.title ?? getParamGroupName(g), strip: named?.strip, ids: [] });
+    }
+    out[out.length - 1].ids.push(id as RealParamId);
+  }
+  return out;
+})();
 
 /** What a sound-graph panel edits: the kit + shuffle settings, and where edits land.
     Two hosts exist — a loop's OWN sound, and a transition's TRANSFORMED sound. */
@@ -257,8 +306,11 @@ export class App {
   // the coloured trace buttons) and which button page shows (0 = active settings;
   // later pages = the inactive ones).
   private graphTrace: string | null = null;
-  // How the sound panel is read (graph vs sheet) — sticky across loops for the session.
+  // How the sound panel is read (graph / sheet / deck) — sticky across loops for the
+  // session, as is the deck's open section (index into SHEET_SECTIONS): coming back to the
+  // deck should land where you left it, the way the graph keeps its page.
   private soundLayout: SoundLayout = "graph";
+  private deckSection = 0;
   private graphPage = 0;
   // Transition editor state: the open transition and its tabs. The editing state for a
   // transition's transformed sound is the draft on the transition itself (see
@@ -1469,13 +1521,13 @@ export class App {
       detail.append(this.rhythmCircles(loop, rerender));
       rhythmRow.append(detail);
       sheet.append(rhythmRow);
-      // The sequencer grid stands down for the parameter sheet. The sheet is a whole
-      // screenful on its own, and it is what you came to this page for when it is the
-      // selected layout; the rhythm circles above still say what the loop plays. Switch
-      // back to the graph (∿) and the grid comes back with it.
-      if (this.soundLayout !== "sheet") sheet.append(this.patternGrid(loop, rerender));
+      // The sequencer grid stands down for the two FLAT layouts. Each is a whole screenful
+      // on its own, and is what you came to this page for when it is the selected layout;
+      // the rhythm circles above still say what the loop plays. Switch back to the graph
+      // (∿) and the grid comes back with it.
+      if (this.soundLayout === "graph") sheet.append(this.patternGrid(loop, rerender));
 
-      // The sound panel IS the sound — graph or sheet, whichever layout is selected.
+      // The sound panel IS the sound, in whichever layout is selected.
       sheet.append(this.soundPanel(this.graphHostForLoop(loop, rerender), rerender));
 
       const actions = document.createElement("div");
@@ -2018,15 +2070,15 @@ export class App {
       desc: "Beside the buttons on the toolbar. GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it). MAX LEN — a shuffled sound is trimmed to at most this long, keeping hits punchy (Off = untrimmed). SPREAD — how the shuffle spreads its pitch & filter draws: linear, log, or weighted toward bass / mid / high. Max len and Spread shape the NEXT 🎲, not the current sound.",
     },
     {
-      name: "▤ The parameter sheet",
-      desc: "The other way to read the same sound: no graph and no functions, every setting listed as a number instead. Use it when you know which setting you want and just want to reach it. ∿ comes back here.",
+      name: "▤ The other two layouts",
+      desc: "The same sound, read two other ways. ▤ THE SHEET: no graph and no functions, every setting listed as a number instead — use it when you know which setting you want and just want to reach it. ◫ THE DECK: one section of the engine at a time, filling the screen, with every setting shown in full — a choice list as a list you drag across, a number as a bar. The toolbar button cycles graph → sheet → deck → graph, so ∿ always comes back here.",
     },
   ];
 
   private static readonly SOUND_SHEET_HELP: HelpItem[] = [
     {
       name: "The sheet",
-      desc: "Every setting of this sound as one row — the whole engine on one screen, in the order the signal runs through it. Nothing is hidden and nothing is drawn: this is the same sound the graph shows, read as numbers instead of curves. ∿ on the toolbar switches back to the graph.",
+      desc: "Every setting of this sound as one row — the whole engine on one screen, in the order the signal runs through it. Nothing is hidden and nothing is drawn: this is the same sound the graph shows, read as numbers instead of curves. The toolbar button cycles on to ◫ the deck, and from there back to ∿ the graph.",
     },
     {
       name: "Changing a value",
@@ -2047,6 +2099,33 @@ export class App {
     {
       name: "The drawn pitch contour",
       desc: "The one thing not on the sheet. Setting Pitch Shape to \"Drawn\" plays a curve you draw by hand rather than a formula, and its 32 stored points are samples of that drawing, not settings — they're authored by drawing, from the graph's Pitch trace.",
+    },
+  ];
+
+  private static readonly SOUND_DECK_HELP: HelpItem[] = [
+    {
+      name: "The deck",
+      desc: "The same sound as the graph and the sheet, but one section of the engine at a time, filling the screen. Where the sheet fits everything at once by giving each setting a single line, the deck spends the whole screen on one section — so nothing has to be read blind. The toolbar button cycles on to ∿ the graph.",
+    },
+    {
+      name: "The section buttons",
+      desc: "Along the bottom: one button per part of the engine — Pitch, Tone, Noise, the oscillators and shapers, Click, the Comb and Modal resonators, the three LFOs, the FX chain, the amp envelope, the filter, Per-Hit Life and Output. Tap one to open it above. A button lit in the voice colour has something sounding in it, so the strip alone reads what a shuffle built — the same test the sheet's headings use.",
+    },
+    {
+      name: "Lists you drag across",
+      desc: "A setting that picks from a list (Wave, Noise Col, Material, Mod FX, an LFO's Dest…) shows EVERY option, not just the current one. Press anywhere on the list and slide: the choice follows your finger and the sound changes as it goes, so you can hear your way along the row instead of picking blind. Let go and it plays. Tapping a single option picks it outright.",
+    },
+    {
+      name: "Bars you drag along",
+      desc: "Everything else is a bar showing where the value sits in the range the engine allows. Press anywhere on it — the value jumps to your finger and follows it, updating live — and let go to hear it. Tap without sliding to type an exact number on the keypad instead.",
+    },
+    {
+      name: "New loops start as drones",
+      desc: "Add a loop while this layout is open and it arrives as a DRONE rather than a shuffled drum hit: the gate held for seconds with the sustain up under it, an eased attack and release, and the hit machinery (click, noise, ratchet) at zero. That's the sound this screen is for — one long note you shape while it holds. ∞ on the toolbar turns any existing sound into one, and ↩ takes it back. Sounds you already have are never overwritten by opening this screen.",
+    },
+    {
+      name: "What's actually on",
+      desc: "A dim row is a setting that exists but isn't sounding — a comb at zero mix, an LFO routed to None. It still holds a real value and you can still edit it; give it a level and it lights up, here and on the graph alike.",
     },
   ];
 
@@ -2108,14 +2187,23 @@ export class App {
   }
 
   /** The SOUND panel, in whichever layout is selected: the graph (functions drawn over
-      time) or the sheet (every parameter as a row). Both edit the same draft through the
-      same host, so the choice is purely how you'd rather read and reach the values.
+      time), the sheet (every parameter as a row) or the deck (one section at a time, every
+      setting shown in full). All three edit the same draft through the same host, so the
+      choice is purely how you'd rather read and reach the values.
       Hosted by a loop's own sound OR a transition's transformed sound. */
   private soundPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
-    return this.soundLayout === "sheet"
-      ? this.soundSheetPanel(host, rerender)
-      : this.soundGraphPanel(host, rerender);
+    if (this.soundLayout === "sheet") return this.soundSheetPanel(host, rerender);
+    if (this.soundLayout === "deck") return this.soundDeckPanel(host, rerender);
+    return this.soundGraphPanel(host, rerender);
   }
+
+  // The layout cycle, and what the toolbar button says while you are in each one: the
+  // glyph and title name where the button GOES, never where you are.
+  private static readonly LAYOUT_NEXT: Record<SoundLayout, { next: SoundLayout; glyph: string; title: string }> = {
+    graph: { next: "sheet", glyph: "▤", title: "Switch to the parameter sheet — every setting as a number" },
+    sheet: { next: "deck", glyph: "◫", title: "Switch to the deck — one section at a time, every setting in full" },
+    deck: { next: "graph", glyph: "∿", title: "Switch to the sound graph — every setting as a curve" },
+  };
 
   /** The line above either sound layout: host extras (the ⧉ copy), Back / Reset, the
       shuffle settings (Volume / Gate / Max len / Spread), the layout toggle and the ?.
@@ -2133,14 +2221,12 @@ export class App {
     // screen (the bar is wider than a phone), and the one control that must never do that
     // is the one that gets you back to the other layout.
     const onGraph = this.soundLayout === "graph";
-    bar.append(this.toolBtn(onGraph ? "▤" : "∿",
-      onGraph ? "Switch to the parameter sheet — every setting as a number"
-              : "Switch to the sound graph — every setting as a curve",
-      () => {
-        this.soundLayout = onGraph ? "sheet" : "graph";
-        this.graphTrace = null; // the graph always comes back on its buttons
-        rerender();
-      }, "graph-tool-layout"));
+    const step = App.LAYOUT_NEXT[this.soundLayout];
+    bar.append(this.toolBtn(step.glyph, step.title, () => {
+      this.soundLayout = step.next;
+      this.graphTrace = null; // the graph always comes back on its buttons
+      rerender();
+    }, "graph-tool-layout"));
 
     for (const el of host.extraCorner ?? []) bar.append(el);
     bar.append(
@@ -2152,6 +2238,15 @@ export class App {
         void host.replace();
       }),
     );
+    // The deck's own starting point, stamped on demand — ∞ for the note that doesn't end.
+    // A loop ADDED while the deck is open is already minted as one (see mintLoopSound);
+    // this is how any other sound becomes one.
+    if (this.soundLayout === "deck") {
+      bar.append(mkTool("∞", "Start again from the drone — one long held note, no hit", () => {
+        p.resetToDrone();
+        void host.replace();
+      }));
+    }
     if (withDice) {
       bar.append(mkTool("🎲", "Shuffle a new sound", () => {
         p.shuffle(this.shuffleContext());
@@ -2199,8 +2294,9 @@ export class App {
       (i) => { p.curve = CURVE_OPTIONS[i].curve; },
     ));
     const help = helpButton(
-      onGraph ? "The sound graph" : "The parameter sheet",
-      onGraph ? App.SOUND_GRAPH_HELP : App.SOUND_SHEET_HELP,
+      onGraph ? "The sound graph" : this.soundLayout === "deck" ? "The deck" : "The parameter sheet",
+      onGraph ? App.SOUND_GRAPH_HELP
+        : this.soundLayout === "deck" ? App.SOUND_DECK_HELP : App.SOUND_SHEET_HELP,
     );
     help.classList.add("graph-tool-help");
     bar.append(help);
@@ -2271,69 +2367,278 @@ export class App {
     cols.className = "ps-cols";
 
     const get: ParamGet = (id) => p.get(id);
-    let block: HTMLElement | null = null;
-    let head: HTMLElement | null = null;
-    let group = -1;
-    let strip: string | undefined;
-    for (let i = 0; i < NUM_PARAMS; i++) {
-      const id = i as ParamId;
-      if (id >= ParamId.PitchDraw1) break; // the drawn contour is not a list of settings
-      const spec = baseSpec(id);
+    for (const section of SHEET_SECTIONS) {
+      const block = document.createElement("div");
+      block.className = "ps-block";
+      const head = document.createElement("div");
+      head.className = "ps-head";
+      head.textContent = section.title;
+      block.append(head);
+      cols.append(block);
 
-      // A block starts wherever the sheet names one, and otherwise wherever the registry's
-      // own grouping changes — so every row sits under a heading either way.
-      const named = SHEET_BLOCK_TITLES[id];
-      const g = getParamGroup(id);
-      if (named || g !== group || !block) {
-        group = g;
-        strip = named?.strip;
-        block = document.createElement("div");
-        block.className = "ps-block";
-        head = document.createElement("div");
-        head.className = "ps-head";
-        head.textContent = named?.title ?? getParamGroupName(g);
-        block.append(head);
-        cols.append(block);
+      for (const id of section.ids) {
+        const spec = baseSpec(id);
+
+        // ACTIVE = this setting is audible in the sound right now, by the same test the
+        // graph uses to decide whether to draw its curve. An inactive row still holds a
+        // real value you can edit — it just isn't reaching the output yet, so it recedes,
+        // and its heading only lights up once something under it is doing something.
+        const active = sectionRowActive(id, get);
+        if (active) head.classList.add("on");
+
+        const row = document.createElement("div");
+        row.className = "ps-row" + (active ? "" : " ps-off");
+        const name = document.createElement("span");
+        name.className = "ps-name";
+        name.textContent = sheetRowName(spec.name, section.strip);
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.readOnly = true;
+        inp.inputMode = "none";
+        inp.className = "ps-val";
+        const show = () => sheetValue(spec, p.get(id));
+        inp.value = show();
+        this.attachScrub(inp, {
+          label: spec.name, // the numpad gets the FULL name — no block heading over it
+          color: host.color,
+          read: () => p.get(id),
+          write: (n) => {
+            p.set(id, n);
+            host.write();
+          },
+          show,
+          commit: () => { host.commitAudition(); rerender(); },
+          step: sheetStep(spec),
+        });
+        row.append(name, inp);
+        block.append(row);
       }
-
-      // ACTIVE = this setting is audible in the sound right now, by the same test the
-      // graph uses to decide whether to draw its curve. An inactive row still holds a
-      // real value you can edit — it just isn't reaching the output yet, so it recedes,
-      // and its heading only lights up once something under it is doing something.
-      const trace = SHEET_TRACE_OF[id];
-      const active = !trace || trace.active(get);
-      if (active && head) head.classList.add("on");
-
-      const row = document.createElement("div");
-      row.className = "ps-row" + (active ? "" : " ps-off");
-      const name = document.createElement("span");
-      name.className = "ps-name";
-      name.textContent = sheetRowName(spec.name, strip);
-      const inp = document.createElement("input");
-      inp.type = "text";
-      inp.readOnly = true;
-      inp.inputMode = "none";
-      inp.className = "ps-val";
-      const show = () => sheetValue(spec, p.get(id));
-      inp.value = show();
-      this.attachScrub(inp, {
-        label: spec.name, // the numpad gets the FULL name — no block heading over it
-        color: host.color,
-        read: () => p.get(id),
-        write: (n) => {
-          p.set(id, n);
-          host.write();
-        },
-        show,
-        commit: () => { host.commitAudition(); rerender(); },
-        step: sheetStep(spec),
-      });
-      row.append(name, inp);
-      block.append(row);
     }
 
     wrap.append(cols);
     return wrap;
+  }
+
+  /** The DECK: the engine one section at a time, with the sections themselves along the
+      bottom as buttons. Where the sheet fits the whole sound on one screen by giving every
+      setting a single 18px line, the deck spends the whole screen on ONE section — which
+      buys the thing neither other layout can afford: a setting shown IN FULL.
+
+      A choice list is drawn as a list. On the sheet, dragging Waveform flicks one field
+      through Sine / Tri / Square / Saw and you never see the options you are passing; here
+      they are all on screen and you slide across them, hearing each one. A number is drawn
+      as a bar, so where the value sits in the range the engine allows is visible rather
+      than inferred from the digits.
+
+      It is also the screen a DRONE is designed on — a sound you hold and shape while it
+      rings, rather than a hit you fire. A loop added while this layout is open is minted
+      as one instead of being shuffled (see {@link mintLoopSound}), and ∞ on the toolbar
+      stamps it onto any sound. Nothing is applied on arrival here: a sound you already
+      have is a sound you chose, and this screen is where you would come to work on it. */
+  private soundDeckPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
+    const p = host.draft;
+    const wrap = document.createElement("div");
+    wrap.className = "sound-graph sound-deck";
+    wrap.style.setProperty("--vc", host.color);
+    wrap.append(this.soundToolbar(host, rerender, true));
+
+    const get: ParamGet = (id) => p.get(id);
+    const idx = Math.max(0, Math.min(SHEET_SECTIONS.length - 1, this.deckSection));
+    const section = SHEET_SECTIONS[idx];
+
+    const panel = document.createElement("div");
+    panel.className = "deck-panel";
+    const head = document.createElement("div");
+    head.className = "deck-head";
+    head.textContent = section.title;
+    panel.append(head);
+    for (const id of section.ids) {
+      const spec = baseSpec(id);
+      const row = isDiscrete(spec)
+        ? this.deckChoiceRow(host, rerender, id, spec, section.strip)
+        : this.deckBarRow(host, rerender, id, spec, section.strip);
+      // Dim what isn't reaching the output, by the sheet's own test — the value is still
+      // real and still editable, it just isn't sounding yet.
+      if (!sectionRowActive(id, get)) row.classList.add("deck-off");
+      panel.append(row);
+    }
+    wrap.append(panel);
+
+    // The sections, as the buttons that switch between them. A lit button has something
+    // sounding inside it, so the strip reads like the sheet's headings do.
+    const tabs = document.createElement("div");
+    tabs.className = "deck-tabs";
+    SHEET_SECTIONS.forEach((s, i) => {
+      const b = document.createElement("button");
+      b.className = "deck-tab"
+        + (i === idx ? " on" : "")
+        + (s.ids.some((id) => sectionRowActive(id, get)) ? " lit" : "");
+      b.textContent = s.title;
+      b.title = `${s.title} — ${s.ids.length} setting${s.ids.length === 1 ? "" : "s"}`;
+      b.onclick = () => { this.deckSection = i; rerender(); };
+      tabs.append(b);
+    });
+    wrap.append(tabs);
+    return wrap;
+  }
+
+  /** One choice parameter on the deck: every option visible, and one press that slides
+      across them. The write happens on press as well as on move, so a plain tap on an
+      option picks it — the list is a row of buttons and a slider at the same time. */
+  private deckChoiceRow(
+    host: SoundGraphHost, rerender: () => void,
+    id: ParamId, spec: ParamSpec, strip?: string,
+  ): HTMLElement {
+    const p = host.draft;
+    const row = document.createElement("div");
+    row.className = "deck-row deck-choice";
+    const name = document.createElement("span");
+    name.className = "deck-name";
+    name.textContent = dropBlockWord(spec.name, strip);
+    const list = document.createElement("div");
+    list.className = "deck-list";
+
+    // "Drawn" is not pickable as a label: choosing it without a drawing would just pin the
+    // pitch flat, so it stays author-only (the graph's Pitch trace has the ✏ way in). The
+    // options are therefore a SUBSET of the range, and each one carries its own value.
+    const opts: { el: HTMLElement; value: number }[] = [];
+    (spec.choices ?? []).forEach((label, i) => {
+      if (id === ParamId.PitchEnvShape && i === PITCH_SHAPE_DRAWN) return;
+      const el = document.createElement("span");
+      el.className = "deck-opt";
+      el.textContent = label;
+      list.append(el);
+      opts.push({ el, value: i });
+    });
+    const paint = () => {
+      const v = Math.round(p.get(id));
+      for (const o of opts) o.el.classList.toggle("on", o.value === v);
+    };
+    paint();
+
+    this.attachDeckDrag(list, {
+      downWrites: true,
+      // Hit-test against the options themselves rather than dividing the width evenly:
+      // they are laid out by their labels, so "Sine" and "Wavetable" are not the same
+      // width and an even division would not line up with what is under the finger.
+      at: (x) => {
+        let best = opts[0];
+        let bestD = Infinity;
+        for (const o of opts) {
+          const r = o.el.getBoundingClientRect();
+          const d = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+          if (d < bestD) { bestD = d; best = o; }
+        }
+        if (!best || Math.round(p.get(id)) === best.value) return;
+        p.set(id, best.value);
+        host.write();
+        paint();
+      },
+      commit: () => { host.commitAudition(); rerender(); },
+    });
+
+    row.append(name, list);
+    return row;
+  }
+
+  /** One continuous parameter on the deck: a bar showing where the value sits in the range
+      the engine allows, dragged along rather than scrubbed up and down. The position is
+      ABSOLUTE — the value goes where the finger is — which is what makes the bar worth
+      drawing; the numpad (tap, as everywhere else) is still how you land on an exact
+      number. The mapping is the registry's own skew, so a bar reads the way that
+      parameter's range is actually shaped. */
+  private deckBarRow(
+    host: SoundGraphHost, rerender: () => void,
+    id: ParamId, spec: ParamSpec, strip?: string,
+  ): HTMLElement {
+    const p = host.draft;
+    const row = document.createElement("div");
+    row.className = "deck-row deck-bar";
+    const name = document.createElement("span");
+    name.className = "deck-name";
+    name.textContent = dropBlockWord(spec.name, strip);
+    const val = document.createElement("span");
+    val.className = "deck-val";
+    const track = document.createElement("div");
+    track.className = "deck-track";
+    const fill = document.createElement("div");
+    fill.className = "deck-fill";
+    track.append(fill);
+
+    const paint = () => {
+      const v = p.get(id);
+      fill.style.width = `${valueToNorm(spec, v) * 100}%`;
+      val.textContent = sheetValue(spec, v);
+    };
+    paint();
+
+    this.attachDeckDrag(track, {
+      downWrites: false, // a press alone must not move the value — that press may be a tap
+      at: (x, rect) => {
+        const norm = Math.max(0, Math.min(1, (x - rect.left) / Math.max(1, rect.width)));
+        p.set(id, normToValue(spec, norm)); // already stepped and clamped
+        host.write();
+        paint();
+      },
+      tap: () => this.openNumpad({
+        title: spec.name, // the FULL name — no section heading over the keypad
+        value: sheetValue(spec, p.get(id)),
+        color: host.color,
+        onSubmit: (n) => {
+          p.set(id, n);
+          host.write();
+          host.commitAudition();
+          rerender();
+        },
+      }),
+      commit: () => { host.commitAudition(); rerender(); },
+    });
+
+    row.append(name, track, val);
+    return row;
+  }
+
+  /** The deck's one pointer gesture: press and slide ALONG a widget, where x means a
+      position within it. `attachScrub` cannot serve here — it is vertical and relative (a
+      value moves by however far you dragged), while these are horizontal and absolute (the
+      value IS where your finger is). Writes go straight to the DOM as they happen; the
+      rerender waits for the release, so a slide never rebuilds the thing under the finger.
+
+      `downWrites` is what separates the two widgets: a choice list writes on press, so a
+      tap picks an option; a bar does not, so a tap can open the keypad instead. */
+  private attachDeckDrag(el: HTMLElement, opts: {
+    at: (x: number, rect: DOMRect) => void;
+    downWrites: boolean;
+    tap?: () => void;
+    commit: () => void;
+  }): void {
+    const MOVE_EPS = 3; // px of travel before a press counts as a slide rather than a tap
+    let dragging = false, moved = false, startX = 0;
+
+    el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      dragging = true;
+      moved = false;
+      startX = e.clientX;
+      el.setPointerCapture(e.pointerId);
+      if (opts.downWrites) opts.at(e.clientX, el.getBoundingClientRect());
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      if (!moved && Math.abs(e.clientX - startX) < MOVE_EPS) return;
+      moved = true;
+      e.preventDefault();
+      opts.at(e.clientX, el.getBoundingClientRect());
+    });
+    const end = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      try { el.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      if (moved || opts.downWrites) opts.commit();
+      else opts.tap?.();
+    };
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
   }
 
   /** One labelled corner number (gate / time limit): a tiny label over a scrub/numpad
@@ -3870,9 +4175,16 @@ export class App {
     await this.normalizeLoop(loop);
   }
 
-  /** Mint an audible sound for a fresh loop by shuffling its draft and writing it. */
+  /** Mint an audible sound for a fresh loop: a shuffle, or — when the DECK is the open
+      layout — the drone start it is built around (see {@link SoundDraft.resetToDrone}).
+      The layout is the whole signal: a shuffled hit is what you want a new loop to be when
+      you are working on the graph or the sheet, and a held note is what you want it to be
+      when you are on the screen for shaping one. Existing sounds are never touched either
+      way — ∞ on the deck's toolbar is how an already-minted sound becomes a drone. */
   private mintLoopSound(loop: Loop): void {
-    this.draftFor(loop).shuffle(this.shuffleContext(), randomSeed());
+    const draft = this.draftFor(loop);
+    if (this.soundLayout === "deck") draft.resetToDrone();
+    else draft.shuffle(this.shuffleContext(), randomSeed());
     this.writeLoopFromEditor(loop);
     void this.normalizeLoop(loop);
   }

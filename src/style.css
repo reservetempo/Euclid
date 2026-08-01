@@ -1409,3 +1409,78 @@ select:focus { outline: none; }
    turning it on is exactly what you'd come here to do. */
 .ps-row.ps-off .ps-name { opacity: 0.4; }
 .ps-row.ps-off .ps-val { color: var(--muted); font-weight: 400; box-shadow: none; background: transparent; }
+
+/* --- The deck ----------------------------------------------------------------
+   The sheet's opposite trade: one section of the engine at a time, given the whole
+   screen, with the sections themselves along the bottom as buttons. The panel takes
+   the height and scrolls inside itself, so the button strip stays put — a section is
+   always one tap away, never a scroll away. */
+.deck-panel {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 52vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 8px; background: var(--panel); box-shadow: var(--btn-out);
+}
+.deck-head {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--vc, var(--text)); border-bottom: 1px solid var(--vc, var(--muted));
+  padding-bottom: 3px; margin-bottom: 2px;
+}
+.deck-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+/* A fixed name column keeps every control on the row starting at the same x, so the
+   section reads as one stack of bars rather than a ragged edge. */
+.deck-name {
+  flex: 0 0 5.5em; min-width: 0; font-size: 11px; font-weight: 600; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.deck-off .deck-name { opacity: 0.4; }
+
+/* A number, as where it sits in the range the engine allows. touch-action: none so a
+   drag along the bar sets the value instead of scrolling the panel under it. */
+.deck-track {
+  flex: 1 1 auto; position: relative; height: 22px;
+  background: var(--field); box-shadow: var(--field-in);
+  cursor: ew-resize; touch-action: none;
+}
+.deck-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: var(--vc, var(--text)); opacity: 0.75;
+}
+.deck-off .deck-fill { opacity: 0.25; }
+.deck-val {
+  flex: 0 0 4.5em; text-align: right; font-size: 11px; font-weight: 700;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+.deck-off .deck-val { color: var(--muted); font-weight: 400; }
+
+/* A choice, as the whole list. One press slides across it (the row is a slider), and a
+   tap lands on one option (the row is also buttons) — same gesture either way. */
+.deck-list {
+  flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 3px;
+  touch-action: none;
+}
+/* The app's universal toggle (.seg-btn): raised when off, pressed and bold when on. The
+   deck adds a voice-coloured underline to the chosen one — pressed-vs-raised is enough to
+   read a settled row, but not to follow a selection sliding under your own finger. */
+.deck-opt {
+  flex: 1 1 auto; text-align: center; padding: 5px 6px;
+  font-size: 11px; font-weight: 400; color: var(--text);
+  background: var(--panel); box-shadow: var(--btn-out);
+  white-space: nowrap; user-select: none;
+}
+.deck-opt.on { font-weight: 700; box-shadow: var(--btn-in), inset 0 -2px 0 var(--vc, var(--text)); }
+.deck-off .deck-opt { color: var(--muted); }
+
+/* The sections. They wrap into as many rows as they need and stay under the panel — the
+   one part of this screen that never moves. */
+.deck-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.deck-tab {
+  flex: 1 1 auto; padding: 6px 7px; font: inherit; font-size: 10.5px; font-weight: 600;
+  color: var(--muted); background: var(--panel);
+  border: none; border-radius: 0; box-shadow: var(--btn-out);
+  white-space: nowrap;
+}
+.deck-tab:active { box-shadow: var(--btn-in); padding: 7px 6px 5px 8px; }
+/* LIT = something inside this section is sounding, the same test the sheet's headings
+   use — so the strip reads what a shuffle built without opening anything. */
+.deck-tab.lit { color: var(--vc, var(--text)); font-weight: 700; }
+.deck-tab.on { box-shadow: var(--btn-in), inset 0 -2px 0 var(--vc, var(--text)); color: var(--text); }

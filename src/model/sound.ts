@@ -399,6 +399,31 @@ export class SoundDraft {
     }
   }
 
+  /** The DRONE start: one long held note instead of a hit. The engine has no drone
+      switch — a drone is what the amp envelope does when the gate is long and Sustain
+      holds the note up through it (params.ts documents the pairing on Gate, and
+      estimateLength counts the hold only when Sustain > 0.02). So: hold for seconds,
+      sustain near the top, ease the attack and release off the transient, and take the
+      percussive end off the decay shape. The hit machinery — the click transient, the
+      noise layer, ratcheting — goes to zero, since none of it is what a held note is
+      made of; HitChance stays at 1 so the one long note always sounds.
+
+      Pushes an undo step, so ↩ takes the default sound straight back. */
+  resetToDrone(): void {
+    this.pushUndo();
+    this.resetToDefault();
+    this.set(ParamId.Gate, 8);            // seconds of hold, not a step's worth
+    this.set(ParamId.AmpSustain, 0.8);    // ...which only rings because sustain holds it
+    this.set(ParamId.AmpAttack, 0.05);    // eased in rather than struck
+    this.set(ParamId.AmpDecay, 1.5);      // and slow to settle onto the sustain
+    this.set(ParamId.AmpDecayShape, 0);   // 0 = gated hold, 1 = percussive
+    this.set(ParamId.AmpRelease, 0.4);    // a tail when the gate finally closes
+    this.set(ParamId.ClickLevel, 0);      // no transient
+    this.set(ParamId.NoiseLevel, 0);      // no noise layer
+    this.set(ParamId.Ratchet, 0);         // no retriggering
+    this.set(ParamId.HitChance, 1);       // the one note always fires
+  }
+
   capture(): Snapshot {
     return this.values.slice();
   }
