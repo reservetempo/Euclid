@@ -275,6 +275,15 @@ export function effectiveEchoTime(snap: number[], bpm: number): number {
   return beats > 0 ? (beats * 60) / Math.max(1, bpm) : snap[ParamId.EchoTime];
 }
 
+/** How long the sequencer holds an ordinary step, in seconds — the engine's own
+    STEP_GATE_SEC, and the Gate param's default. It is the line between a note that is
+    STRUCK and one that is HELD: past it, the sound outlives the step that fired it. */
+const STEP_GATE_SEC = 0.4;
+
+/** How much sustain it takes before a note reads as HELD rather than as a hit with a tail.
+    A quarter of the note's peak is about where the hold stops sounding like decay. */
+const DRONE_SUSTAIN = 0.25;
+
 /** Rough audible length (seconds) of a sound from its parameter snapshot: the amp
     body (attack + decay + sustain-weighted release) plus the dominant FX tail
     (echo/reverb). Used for the shuffle recap, the length cap, and the engine's
@@ -282,10 +291,10 @@ export function effectiveEchoTime(snap: number[], bpm: number): number {
     a tempo-synced echo's tail (harmless default for free echoes). */
 export function estimateLength(snap: number[], bpm = 120): number {
   // A sustained sound holds for its Gate before releasing: count the hold beyond the
-  // default 0.4s step gate when Sustain keeps it audible (drone-length gates ring long).
+  // sequencer's own step gate when Sustain keeps it audible (drone-length gates ring long).
   const gateSec = snap[ParamId.Gate] || 0;
   const sustain = snap[ParamId.AmpSustain] || 0;
-  const hold = sustain > 0.02 ? Math.max(0, gateSec - 0.4) : 0;
+  const hold = sustain > 0.02 ? Math.max(0, gateSec - STEP_GATE_SEC) : 0;
   const body =
     snap[ParamId.AmpAttack] +
     snap[ParamId.AmpDecay] +
@@ -399,29 +408,58 @@ export class SoundDraft {
     }
   }
 
-  /** The DRONE start: one long held note instead of a hit. The engine has no drone
-      switch — a drone is what the amp envelope does when the gate is long and Sustain
-      holds the note up through it (params.ts documents the pairing on Gate, and
-      estimateLength counts the hold only when Sustain > 0.02). So: hold for seconds,
-      sustain near the top, ease the attack and release off the transient, and take the
-      percussive end off the decay shape. The hit machinery — the click transient, the
-      noise layer, ratcheting — goes to zero, since none of it is what a held note is
-      made of; HitChance stays at 1 so the one long note always sounds.
+  /** Is this sound a DRONE — a note that holds rather than a hit that decays? Sustain is
+      what keeps the amp up (without it the note dies at the end of its decay whatever the
+      gate says), and the gate is how long it is held there; past the sequencer's own step
+      gate, that reads as a held note rather than a struck one. Deliberately a property of
+      the SOUND rather than a stored flag: it survives shuffles, undo and hand edits, and
+      it goes false the moment you make the sound percussive again.
 
-      Pushes an undo step, so ↩ takes the default sound straight back. */
-  resetToDrone(): void {
+      The sustain bar is far higher than estimateLength's 0.02 because the question is a
+      different one. There, any sustain at all adds audible LENGTH worth counting; here it
+      has to hold the note UP — at 0.12 a shuffled sound has decayed to a quiet tail that
+      merely outlasts its decay, which is not what anyone means by a drone. */
+  isDrone(): boolean {
+    return this.values[ParamId.AmpSustain] >= DRONE_SUSTAIN && this.values[ParamId.Gate] > STEP_GATE_SEC;
+  }
+
+  /** The DRONE start: one long held note instead of a hit. The engine has no drone switch —
+      a drone is what the amp envelope does when the gate is long and Sustain holds the note
+      up through it (params.ts documents the pairing on Gate, and estimateLength counts the
+      hold only when Sustain > 0.02).
+
+      It starts from the REGISTRY's defaults rather than from resetToDefault, and that is the
+      whole trick. The registry's defaults already are a clean held tone — a sine at Tone 0.8
+      through an open filter, with Click, Noise, Tone Decay, Pitch Env, the resonators, every
+      LFO depth and every FX mix at zero. It is resetToDefault's CENTRING that was in the way:
+      centring exists to give the shuffle a mid-range start, and it lands Tone Decay at 0.6s
+      (the oscillator is inaudible after ~3s no matter what Sustain says), Pitch Env at 1.5x
+      (a percussive drop), three LFOs at ~20Hz, and half-mix echo and reverb.
+
+      So all that is left is the handful of settings that make it a drone rather than a
+      plucked default. `holdSec` is the caller's: a drone wants its gate FITTED to the gap
+      between its own hits, so one note holds until the next begins.
+
+      Pushes an undo step, so ↩ takes the previous sound straight back. */
+  resetToDrone(holdSec = 8): void {
     this.pushUndo();
-    this.resetToDefault();
-    this.set(ParamId.Gate, 8);            // seconds of hold, not a step's worth
-    this.set(ParamId.AmpSustain, 0.8);    // ...which only rings because sustain holds it
+    for (let i = 0; i < NUM_PARAMS; i++) this.set(i as ParamId, baseSpec(i as ParamId).def);
+    this.set(ParamId.Gate, holdSec);      // the hold — seconds, not a step's worth
+    this.set(ParamId.AmpSustain, 0.8);    // ...which only rings because sustain holds it up
     this.set(ParamId.AmpAttack, 0.05);    // eased in rather than struck
     this.set(ParamId.AmpDecay, 1.5);      // and slow to settle onto the sustain
-    this.set(ParamId.AmpDecayShape, 0);   // 0 = gated hold, 1 = percussive
     this.set(ParamId.AmpRelease, 0.4);    // a tail when the gate finally closes
-    this.set(ParamId.ClickLevel, 0);      // no transient
-    this.set(ParamId.NoiseLevel, 0);      // no noise layer
-    this.set(ParamId.Ratchet, 0);         // no retriggering
-    this.set(ParamId.HitChance, 1);       // the one note always fires
+    this.set(ParamId.Pitch, 55);          // A1 — a drone, not a test tone at 1kHz
+    // Dec Shape is left at its default 0.5 (linear) ON PURPOSE. It looks like it wants the
+    // "gated hold" end at 0, but the engine feeds the same exponent to the decay AND the
+    // release, and at Sustain 0.8 the decay only travels 1.0 -> 0.8 (nearly invisible) while
+    // the release is fully audible: 0 would turn the tail into a cliff at gate-close.
+
+    // One slow breath so the drone moves without wobbling: LFO 1 onto the filter, well
+    // under a hertz, shallow. Named rather than indexed so it can't drift from the list.
+    this.set(ParamId.Lfo1Target, Math.max(0, LFO_TARGETS.indexOf("Filter")));
+    this.set(ParamId.Lfo1Rate, 0.3);
+    this.set(ParamId.Lfo1Depth, 0.15);
   }
 
   capture(): Snapshot {

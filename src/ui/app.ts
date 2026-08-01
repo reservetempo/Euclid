@@ -197,11 +197,31 @@ const SHEET_TRACE_OF: (TraceSpec | undefined)[] = (() => {
   return map;
 })();
 
-/** Is this setting audible right now? A parameter with no trace of its own is always part
-    of the sound (the amp envelope, the filter, the pitch it plays at); otherwise the
-    graph's own predicate decides. Both flat layouts ask through here, so "on" means one
-    thing across the whole app. */
+/** The value at which a per-hit setting is doing NOTHING. Per-Hit Life is the one block
+    with no trace to ask (its trace lights when accents OR ghosts OR ratchets do, which says
+    nothing about any one row), so its rows have never had an activity test — yet each of
+    them has an obvious idle value, and four of the five sit at it in an ordinary sound.
+    Note Hit Chance's is its MAXIMUM: 1 means no hit is ever dropped.
+
+    Deliberately not keyed on "is this a drone": these settings are not inert BECAUSE a note
+    is held. Ratchet on a drone re-strikes and restarts the whole gate, and Hit Chance can
+    drop the note entirely — dimming those on a held note would say "not sounding" about the
+    most destructive controls on the screen. At their idle value it is simply true. */
+const INERT_AT: Partial<Record<ParamId, number>> = {
+  [ParamId.AccentAmount]: 0,
+  [ParamId.Humanize]: 0,
+  [ParamId.HitChance]: 1,
+  [ParamId.Ratchet]: 0,
+  [ParamId.ChokeGroup]: 0, // "Off"
+};
+
+/** Is this setting doing anything right now? A parameter with no trace of its own is
+    normally part of the sound whatever its value (the amp envelope, the filter, the pitch
+    it plays at); otherwise the graph's own predicate decides. Both flat layouts ask through
+    here, so "on" means one thing across the whole app. */
 function sectionRowActive(id: ParamId, get: ParamGet): boolean {
+  const inert = INERT_AT[id];
+  if (inert !== undefined) return get(id) !== inert;
   const trace = SHEET_TRACE_OF[id];
   return !trace || trace.active(get);
 }
@@ -512,7 +532,7 @@ export class App {
   private updateLoopTime(): void {
     if (!this.loopTimeEl) return;
     const steps = this.arr.loopSteps();
-    const sec = (steps * 60) / Math.max(1, this.tempo) / 4;
+    const sec = this.stepsToSeconds(steps);
     this.loopTimeEl.textContent = steps > 0 ? `${sec < 10 ? sec.toFixed(1) : Math.round(sec)}s` : "—";
   }
 
@@ -2240,12 +2260,19 @@ export class App {
     );
     // The deck's own starting point, stamped on demand — ∞ for the note that doesn't end.
     // A loop ADDED while the deck is open is already minted as one (see mintLoopSound);
-    // this is how any other sound becomes one.
+    // this is how any other sound becomes one. It lights up while the sound on screen IS a
+    // drone, so the button reports as well as acts: shuffle the drone away and it goes out.
     if (this.soundLayout === "deck") {
-      bar.append(mkTool("∞", "Start again from the drone — one long held note, no hit", () => {
-        p.resetToDrone();
-        void host.replace();
-      }));
+      const isDrone = p.isDrone();
+      bar.append(mkTool("∞",
+        isDrone ? "This sound is a held drone — press to start a fresh one"
+                : "Start again from the drone — one long held note, no hit",
+        () => {
+          // The hold is fitted to the gap between this loop's own hits, as the mint does.
+          p.resetToDrone(host.lifeLoop ? this.loopGapSeconds(host.lifeLoop) : undefined);
+          void host.replace();
+        },
+        "graph-tool-drone" + (isDrone ? " on" : "")));
     }
     if (withDice) {
       bar.append(mkTool("🎲", "Shuffle a new sound", () => {
@@ -3842,7 +3869,7 @@ export class App {
       });
       // Stale? A newer edit re-rendered, or the editor was left — drop this one.
       if (token !== this.previewToken || this.editTransition !== tr) return;
-      this.engine.playPreviewLoop(buffer, (lenSteps * 60) / Math.max(1, this.tempo) / 4);
+      this.engine.playPreviewLoop(buffer, this.stepsToSeconds(lenSteps));
     } catch { /* the preview is best-effort */ }
   }
 
@@ -4180,13 +4207,40 @@ export class App {
       The layout is the whole signal: a shuffled hit is what you want a new loop to be when
       you are working on the graph or the sheet, and a held note is what you want it to be
       when you are on the screen for shaping one. Existing sounds are never touched either
-      way — ∞ on the deck's toolbar is how an already-minted sound becomes a drone. */
+      way — ∞ on the deck's toolbar is how an already-minted sound becomes a drone.
+
+      A drone is minted as a RHYTHM as well as a sound, because the two only work together:
+      the hold has to reach the next hit or the drone breathes in and out, and it must not
+      overshoot it either — an 8s note against a hit every 2s stacks four copies of itself,
+      and past the engine's six voices the seventh steals a live one mid-note, which clicks.
+      So: one hit every MAX_STEPS (the longest gap the model allows — 4 bars), with the gate
+      fitted to exactly that gap at the current tempo. One note holds until the next begins. */
   private mintLoopSound(loop: Loop): void {
     const draft = this.draftFor(loop);
-    if (this.soundLayout === "deck") draft.resetToDrone();
-    else draft.shuffle(this.shuffleContext(), randomSeed());
+    if (this.soundLayout === "deck") {
+      loop.steps = MAX_STEPS;
+      loop.hits = 1;
+      loop.rotation = 0;
+      draft.resetToDrone(this.stepsToSeconds(MAX_STEPS));
+    } else {
+      draft.shuffle(this.shuffleContext(), randomSeed());
+    }
     this.writeLoopFromEditor(loop);
     void this.normalizeLoop(loop);
+  }
+
+  /** How long a run of sequencer steps lasts at the current tempo. Steps are 16ths, so a
+      step is a quarter of a beat. */
+  private stepsToSeconds(steps: number): number {
+    return (steps * 60) / Math.max(1, this.tempo) / 4;
+  }
+
+  /** Seconds between this loop's own hits, which is the gate a drone on it wants: the note
+      then reaches the next hit without overshooting it. `undefined` when the loop has no
+      rhythm yet, so the drone falls back to its own default hold. */
+  private loopGapSeconds(loop: Loop): number | undefined {
+    if (loop.steps < 1) return undefined;
+    return this.stepsToSeconds(loop.steps / Math.max(1, loop.hits));
   }
 
   private toast(text: string): void {
