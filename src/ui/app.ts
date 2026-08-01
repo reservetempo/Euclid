@@ -37,6 +37,7 @@ import {
   randomSeed as newSeed, ruleLengths, defaultLoopTransition,
   placementsFor,
 } from "../model/track";
+import { reverseSnapshot } from "../model/reverse";
 import { generateName, reshuffleNames } from "../model/name";
 import { clampSteps, MAX_STEPS, evenGap, maxSplitGap, voicePattern } from "../model/euclid";
 import { helpButton, HelpItem } from "./soundHelp";
@@ -115,8 +116,9 @@ export class App {
   private patternPlaySteps = 0;
   // Bar-square grids (loop placement / transition bars / the play range): how many bars
   // one square is worth (1 / 2 / 4 / 8), and the armed Start→End pick (start 0 = awaiting
-  // the start square).
-  private gridSpan: Record<"place" | "trans" | "range", number> = { place: 2, trans: 2, range: 2 };
+  // the start square). The play range picks out a SECTION of the whole track rather than
+  // individual bars, so it starts at 8 (64 bars a row — a 256-bar track in four rows).
+  private gridSpan: Record<"place" | "trans" | "range", number> = { place: 2, trans: 2, range: 8 };
   private gridPick: { key: "place" | "trans" | "range"; start: number } | null = null;
   // The popup's view identity at the last rebuild — an unchanged key means an in-place
   // rebuild (a value scrub, a toggle), whose scroll position is preserved.
@@ -1253,14 +1255,23 @@ export class App {
         cur,
       );
       head.append(crumb);
-      // A ⧉ on the header's right edge lands the transformed sound as a new loop after
-      // the transition. (On/Off lives in the transition list, so it's not repeated here.)
+      // Two ⧉ on the header's right edge, both landing the transformed sound as a new loop
+      // placed after the transition: the plain one drops it on THIS row (the common case —
+      // the row plays the sound, transitions, then carries on as the new one), the ⧉→ asks
+      // which voice to drop it on instead. (On/Off lives in the transition list, so it's
+      // not repeated here.)
       const copy = document.createElement("button");
       copy.className = "voice-name-dice crumb-copy";
       copy.textContent = "⧉";
       copy.title = "New loop from this transformed sound, placed after the transition";
       copy.onclick = () => this.copyTransformedSound(loop, openTr);
-      head.append(copy, closeBox());
+      const copyTo = document.createElement("button");
+      copyTo.className = "voice-name-dice crumb-copy";
+      copyTo.textContent = "⧉→";
+      copyTo.title = "Copy this transformed sound to another voice";
+      copyTo.onclick = () => this.openCopyMenu("Copy transformed sound to…",
+        (c) => this.copyTransformedSound(loop, openTr, c), this.colorOf(loop));
+      head.append(copy, copyTo, closeBox());
       sheet.append(head);
     } else {
       const back = document.createElement("button");
@@ -1754,10 +1765,22 @@ export class App {
   }
 
   /** A small picker over the loop popup: tap a coloured row to drop an independent copy of
-      this loop there (its own sound id, so the two never share an engine sound). */
+      this loop there (its own sound id, so the two never share an engine sound). The copy
+      is the WHOLE loop — rhythm, sound, options and its transitions ride along (cloneLoop
+      deep-copies them), which the title spells out so it's clear before the tap. */
   private openCopyLoopMenu(loop: Loop): void {
+    const trs = loop.transitions?.length ?? 0;
+    this.openCopyMenu(
+      trs ? `Copy loop + ${trs} transition${trs === 1 ? "" : "s"} to…` : "Copy loop to…",
+      (c) => this.copyLoopTo(loop, c),
+      this.colorOf(loop),
+    );
+  }
+
+  /** The shared "which voice?" picker: one row per colour with its loop count, calling
+      `pick` with the chosen colour index. `from` marks the row the copy comes from. */
+  private openCopyMenu(titleText: string, pick: (target: number) => void, from = -1): void {
     document.querySelector(".copy-menu-overlay")?.remove();
-    const from = this.colorOf(loop);
     const overlay = document.createElement("div");
     overlay.className = "copy-menu-overlay";
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
@@ -1765,7 +1788,7 @@ export class App {
     card.className = "copy-menu-card";
     const title = document.createElement("h3");
     title.className = "tr-title";
-    title.textContent = "Copy loop to…";
+    title.textContent = titleText;
     card.append(title);
 
     for (let c = 0; c < NUM_LINES; c++) {
@@ -1782,7 +1805,7 @@ export class App {
       count.className = "copy-menu-count";
       count.textContent = n === 0 ? "empty" : `${n} loop${n === 1 ? "" : "s"}`;
       row.append(dot, name, count);
-      row.onclick = () => { overlay.remove(); this.copyLoopTo(loop, c); };
+      row.onclick = () => { overlay.remove(); pick(c); };
       card.append(row);
     }
 
@@ -1796,7 +1819,9 @@ export class App {
   }
 
   /** Append an independent copy of `loop` to colour `target` (own sound id + editor), then
-      resend sounds/lanes. Leaves the current popup as-is (least disruptive) and toasts. */
+      resend sounds/lanes. The clone carries the loop's transitions with it, on the same
+      bars — they're part of the loop, not of the row. Leaves the current popup as-is
+      (least disruptive) and toasts. */
   private copyLoopTo(loop: Loop, target: number): void {
     const clone = cloneLoop(loop);
     clone.color = VOICE_COLORS[target % VOICE_COLORS.length];
@@ -1805,7 +1830,10 @@ export class App {
     this.pushSounds();  // register the clone's sound before it's asked to play
     this.recompile();
     this.render();      // the loop list / previews may be visible under the popup
-    this.toast(`Copied to Voice ${target + 1}`);
+    const trs = clone.transitions?.length ?? 0;
+    this.toast(trs
+      ? `Copied to Voice ${target + 1} with ${trs} transition${trs === 1 ? "" : "s"}`
+      : `Copied to Voice ${target + 1}`);
   }
 
   // --- THE SOUND GRAPH: the sound's settings as coloured time functions --
@@ -1873,7 +1901,8 @@ export class App {
         write();
         rerender();
       },
-      resetTitle: "Reset to the untransformed sound (no change)",
+      // Reset is about the VALUES; Reverse is a separate axis and survives it.
+      resetTitle: "Reset to the untransformed sound (no change) — Reverse stays as it is",
       reset: () => draft.restore(loop.snapshot),
     };
   }
@@ -2371,17 +2400,20 @@ export class App {
       changed ? `${changed} param${changed === 1 ? "" : "s"} changed` : "no changes yet",
     ];
     if (tr.speedOn) bits.push(`speed ${(tr.rate ?? 2).toFixed(2)}×`);
+    if (tr.reverseOn) bits.push("reverse");
     if (!tr.on) bits.push("off");
     return bits.join(" · ");
   }
 
-  /** How many params the transition's target differs from the loop's own sound in. */
+  /** How many params the transition's target differs from the loop's own sound in — against
+      the EFFECTIVE target, so a reverse-only transition doesn't read "no changes yet". */
   private changedParamCount(loop: Loop, tr: LoopTransition): number {
     let n = 0;
-    const len = Math.max(loop.snapshot.length, tr.snapshot.length);
+    const target = this.targetSnapshot(tr);
+    const len = Math.max(loop.snapshot.length, target.length);
     for (let i = 0; i < len; i++) {
       const a = loop.snapshot[i] ?? 0;
-      const b = tr.snapshot[i] ?? a;
+      const b = target[i] ?? a;
       if (Math.abs(a - b) > 1e-6) n++;
     }
     return n;
@@ -2917,26 +2949,66 @@ export class App {
     });
   }
 
-  /** The Sound tab of a transition: the SAME sound graph the voice's Sound panel uses,
-      hosted by the transition's TRANSFORMED sound — every value edited here is the
-      transition's END. The corner gains a small ⧉ that lands the transformed sound as
-      a new loop after the transition; ↺ resets to "no change" (the loop's own sound). */
+  /** The Sound tab of a transition: the Reverse toggle, then the SAME sound graph the
+      voice's Sound panel uses, hosted by the transition's TRANSFORMED sound — every value
+      edited here is the transition's END. The corner gains a small ⧉ that lands the
+      transformed sound as a new loop after the transition; ↺ resets to "no change" (the
+      loop's own sound). Reverse rides ABOVE the graph on purpose: it flips the end sound in
+      time without touching the values below it, and this is where that needs saying. */
   private transEffectsSection(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "trans-effects";
+    wrap.append(this.transReverseRow(loop, tr, rerender));
     wrap.append(this.soundGraphPanel(this.graphHostForTransition(loop, tr, rerender), rerender));
     return wrap;
   }
 
-  /** Copy a transition's TRANSFORMED sound into a new loop on the same row, placed from
-      the bar after the transition through the end of the track — so the row plays the
-      initial sound, transitions, then loops the new sound. The copy keeps the source
-      loop's rhythm; it gets its own sound id, name and loudness make-up. */
-  private copyTransformedSound(loop: Loop, tr: LoopTransition): void {
-    const c = this.colorOf(loop);
+  /** The Reverse toggle: the transition arrives at the time-MIRROR of the sound below —
+      its loudness shape read end for end, so each hit swells instead of falling away. The
+      morph gets there gradually, one step further round per hit across the window, since
+      the mirror is just another target snapshot (see model/reverse.ts). */
+  private transReverseRow(loop: Loop, tr: LoopTransition, rerender: () => void): HTMLElement {
+    const on = !!tr.reverseOn;
+    const row = document.createElement("div");
+    row.className = "placement-row fade-row";
+    const lbl = document.createElement("span");
+    lbl.className = "placement-lbl";
+    lbl.textContent = "Reverse";
+    const controls = document.createElement("div");
+    controls.className = "fade-controls";
+    const toggle = document.createElement("button");
+    toggle.className = "seg-btn fade-toggle" + (on ? " on" : "");
+    toggle.textContent = on ? "On" : "Off";
+    toggle.title = "Mirror the end sound in time (attack ↔ fall)";
+    toggle.onclick = () => {
+      tr.reverseOn = on ? undefined : true;
+      this.recompile();
+      this.schedulePreview(loop, tr);
+      rerender();
+    };
+    controls.append(toggle);
+    const hint = document.createElement("p");
+    hint.className = "sing-hint";
+    hint.textContent = on
+      ? "The sound arrives back to front — its loudness shape mirrored end for end, so the hits swell into themselves instead of falling away, each one a little further round than the last. The graph below still shows the end values the right way round; Reverse flips them on the way out. The layer decays and the click can't be mirrored, so a sound shaped mostly by those turns round less."
+      : "Off — the transition lands on the sound exactly as shaped below. Turn on to have it arrive time-mirrored: the attack and the fall swap places.";
+    controls.append(hint);
+    row.append(lbl, controls);
+    return row;
+  }
+
+  /** Copy a transition's TRANSFORMED sound into a new loop, placed from the bar after the
+      transition through the end of the track — so the row plays the initial sound,
+      transitions, then loops the new sound. The copy keeps the source loop's rhythm; it
+      gets its own sound id, name and loudness make-up. `target` defaults to the source's
+      own row (the header's ⧉); the header's ⧉→ passes another voice, which is the same
+      hand-off one row over.  */
+  private copyTransformedSound(loop: Loop, tr: LoopTransition, target?: number): void {
+    const c = target ?? this.colorOf(loop);
     const clone = cloneLoop(loop);
+    clone.color = VOICE_COLORS[c % VOICE_COLORS.length];
     clone.soundId = this.nextSoundId++;
-    clone.snapshot = tr.snapshot.slice();
+    clone.snapshot = this.targetSnapshot(tr).slice(); // what the transition ARRIVES at
     clone.transitions = undefined; // the new sound starts with a clean slate
     clone.label = generateName();
     clone.gain = undefined;        // re-measured below for the new sound
@@ -2957,9 +3029,10 @@ export class App {
     this.recompile();
     void this.normalizeLoop(clone);
     this.render(); // refresh the loop list under the popup (the popup itself survives)
+    const where = c === this.colorOf(loop) ? "" : ` on Voice ${c + 1}`;
     this.toast(bars.length
-      ? `“${clone.label}” added after the transition (bars ${bars[0]}–${barLimit})`
-      : `“${clone.label}” added — the transition reaches the track end, so place it on its Loop tab`);
+      ? `“${clone.label}” added${where} after the transition (bars ${bars[0]}–${barLimit})`
+      : `“${clone.label}” added${where} — the transition reaches the track end, so place it on its Loop tab`);
   }
 
   /** The Speed tab: stack the timing warp on the morph — the window's hits rush (rate
@@ -3029,6 +3102,15 @@ export class App {
     return tr.draft;
   }
 
+  /** What the transition actually ARRIVES at: the edited target, time-mirrored when Reverse
+      is on — the same derivation loopTransitionWindows does at compile time. The Sound tab's
+      graph deliberately keeps drawing the un-mirrored `tr.snapshot` (the draft writes through
+      to that array); everywhere the END sound is what matters — the preview, the ⧉ copies,
+      the "params changed" count — goes through here instead. */
+  private targetSnapshot(tr: LoopTransition): number[] {
+    return tr.reverseOn ? reverseSnapshot(tr.snapshot) : tr.snapshot;
+  }
+
   // --- transition preview (the shortened 4-bar loop) ---------------------
 
   /** Debounced: after edits settle, re-render the 4-bar preview and swap the loop to the
@@ -3065,7 +3147,9 @@ export class App {
       if (loop.gain && loop.gain !== 1) s[ParamId.Volume] = (s[ParamId.Volume] ?? 0.85) * loop.gain;
       return s;
     };
-    const target = tr.snapshot.length ? tr.snapshot : loop.snapshot;
+    // The EFFECTIVE target, so both preview modes tell the same story as the track: with
+    // Reverse on, "result" plays the mirrored sound on its own and "transition" travels to it.
+    const target = tr.snapshot.length ? this.targetSnapshot(tr) : loop.snapshot;
     // In result-only mode the node's own sound (id 0) IS the transformed sound.
     const sounds: EngineSound[] = [
       { id: 0, snap: withGain(resultOnly ? target : loop.snapshot), tail: estimateLength(resultOnly ? target : loop.snapshot, this.tempo), span: snapshotAxisSeconds(resultOnly ? target : loop.snapshot, this.tempo) },

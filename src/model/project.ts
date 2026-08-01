@@ -83,6 +83,10 @@ export interface LoopTransitionJSON {
   yMax?: number;
   speedOn?: boolean;
   rate?: number;
+  // Added after v16 shipped, and additive on purpose: a file without it simply reads as
+  // "reverse off", which is the right default, so the version stays 16 rather than
+  // blanking every saved project (v16 is load-or-blank).
+  reverseOn?: boolean;
 }
 
 export interface LoopJSON {
@@ -142,7 +146,7 @@ const cloneTransition = (t: LoopTransition): LoopTransitionJSON => ({
   shape: t.shape, curve: t.curve, dir: t.dir, cycles: t.cycles,
   points: t.points ? t.points.slice() : undefined,
   yGain: t.yGain, yBias: t.yBias, yMin: t.yMin, yMax: t.yMax,
-  speedOn: t.speedOn, rate: t.rate,
+  speedOn: t.speedOn, rate: t.rate, reverseOn: t.reverseOn,
 });
 
 const cloneLoop = (l: Loop): LoopJSON => ({
@@ -367,6 +371,7 @@ function readTransition(tv: unknown): LoopTransition | undefined {
     return n === undefined ? undefined : Math.max(lo, Math.min(hi, n));
   };
   const speedOn = t.speedOn === true ? true : undefined;
+  const reverseOn = t.reverseOn === true ? true : undefined;
   const points = readPoints(t.points);
   let shape = readShape(t.shape);
   if (shape === "drawn" && !points) shape = undefined; // a drawing IS its points
@@ -385,6 +390,7 @@ function readTransition(tv: unknown): LoopTransition | undefined {
     yMax: clampNum(t.yMax, 0, 1),
     speedOn,
     rate: speedOn ? (clampNum(t.rate, 0.05, 32) ?? 2) : undefined,
+    reverseOn,
   };
 }
 

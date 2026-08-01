@@ -25,6 +25,7 @@ import {
   emptyNode, clampEnvelopes, STEPS_PER_BAR, MAX_REPS, NUM_LINES, VOICE_COLORS,
 } from "./lines";
 import { ParamId } from "./params";
+import { reverseSnapshot } from "./reverse";
 import { SoundDraft } from "./sound";
 import { rng01, randomSeed } from "./rng";
 
@@ -129,7 +130,10 @@ export function rowSweepWindows(sweeps: RowSweep[] | undefined, barLimit: number
     default is the loop's whole placement). The blend follows the Graph tab's function:
     the shape (shape/curve/dir/cycles, see BlendShapeId) plus the graph-calculator
     transform (slope/shift/min/max — identity by default). `speedOn` stacks the timing
-    warp: hits rush toward `rate`× across each window while the tone morphs. */
+    warp: hits rush toward `rate`× across each window while the tone morphs. `reverseOn`
+    mirrors the TARGET in time (see model/reverse.ts) — the transition then arrives at the
+    sound back to front, and because the mirror is derived at compile time rather than
+    written into `snapshot`, turning it off is lossless and it composes with hand edits. */
 export interface LoopTransition extends GraphTransform {
   on: boolean;
   bars: number[];
@@ -143,6 +147,7 @@ export interface LoopTransition extends GraphTransform {
   points?: number[]; // "drawn" shape: the freehand blend function, uniformly sampled y∈[0,1]
   speedOn?: boolean;
   rate?: number; // far-end hit-rate multiple of the tempo (speed only)
+  reverseOn?: boolean; // arrive at the time-mirror of `snapshot` (reverseSnapshot)
 }
 
 /** A fresh transition for `loop`: on, covering the loop's full placement (else the whole
@@ -175,7 +180,10 @@ export function loopTransitionWindows(loop: Loop, barLimit: number): SweepWindow
     const bars = [...new Set(tr.bars.map((b) => Math.round(b)).filter((b) => b >= 1 && b <= limit))]
       .sort((a, b) => a - b);
     if (!bars.length) continue;
-    const morphSnap = tr.snapshot.slice();
+    // With Reverse on the window lands on the MIRROR of the edited target, derived here
+    // rather than stored — so the two stack (reverse a darkened sound) and toggling it off
+    // gives the hand-edited target back untouched.
+    const morphSnap = tr.reverseOn ? reverseSnapshot(tr.snapshot) : tr.snapshot.slice();
     const ownVol = loop.snapshot[ParamId.Volume] ?? 0.85;
     morphSnap[ParamId.Volume] = (morphSnap[ParamId.Volume] ?? 0.85) / Math.max(0.05, ownVol);
     let i = 0;
@@ -573,6 +581,7 @@ export function cloneLoop(loop: Loop): Loop {
           points: t.points ? t.points.slice() : undefined,
           speedOn: t.speedOn,
           rate: t.rate,
+          reverseOn: t.reverseOn,
           yGain: t.yGain,
           yBias: t.yBias,
           yMin: t.yMin,
