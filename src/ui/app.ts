@@ -79,26 +79,25 @@ type PlacementTab = "sound" | "transition";
 type RhythmField = "hits" | "steps" | "rotation" | "split" | "push";
 
 // How the sound is READ. The graph draws each active setting as a function of time; the
-// sheet lists every setting as a number; the deck opens ONE section at a time with every
-// setting shown in full (a choice list as a list, a number as a bar). Same draft, same
-// edits — a preference, not a mode, so it is App state rather than anything the model or
-// the save format knows about.
-type SoundLayout = "graph" | "sheet" | "deck";
+// deck opens ONE section at a time with every setting shown in full (a choice list as a
+// list, a number as a bar). Same draft, same edits — a preference, not a mode, so it is
+// App state rather than anything the model or the save format knows about.
+type SoundLayout = "graph" | "deck";
 
-/** Where the parameter sheet starts a new titled block, what to call it, and the word
+/** Where the engine is cut into titled sections, what to call each one, and the word
     its rows may drop. The registry's own groups (getParamGroup) are the fallback, but
-    they are too coarse to read down a narrow column: "Tone" alone is 32 rows, and the
+    they are too coarse to read as one screen: "Tone" alone is 32 rows, and the
     three LFOs plus the FX chain repeat the same short names ("Rate", "Amt", "Mix",
     "FB") with nothing but a heading to tell them apart. Each entry names the FIRST
-    parameter of a block, so blocks are contiguous enum ranges in registry order.
+    parameter of a section, so sections are contiguous enum ranges in registry order.
 
-    `strip` is what makes four columns fit: under a heading that already says PITCH,
+    `strip` is what keeps a row narrow: under a heading that already says PITCH,
     "Pitch Cycles" only has to say "Cycles". Dropping a redundant prefix beats
     abbreviating ("P Cycles") because nothing has to be learned or guessed — and a row
     whose whole name IS the prefix ("Pitch", "Tone", "Noise") keeps it, since that row
-    is the block's own level or value rather than one of its settings. */
-interface SheetBlock { title: string; strip?: string }
-const SHEET_BLOCK_TITLES: Partial<Record<ParamId, SheetBlock>> = {
+    is the section's own level or value rather than one of its settings. */
+interface SectionTitle { title: string; strip?: string }
+const SECTION_TITLES: Partial<Record<ParamId, SectionTitle>> = {
   [ParamId.Pitch]: { title: "Pitch", strip: "Pitch" },
   [ParamId.Waveform]: { title: "Tone", strip: "Tone" },
   [ParamId.NoiseLevel]: { title: "Noise", strip: "Noise" },
@@ -108,7 +107,7 @@ const SHEET_BLOCK_TITLES: Partial<Record<ParamId, SheetBlock>> = {
   [ParamId.WaveTable]: { title: "Wavetable" },
   [ParamId.ClickLevel]: { title: "Click", strip: "Click" },
   // Resonators is two unrelated instruments sharing a heading. Split, and each one's
-  // rows lose its name AND its heading lights independently of the other.
+  // rows lose its name AND its section lights independently of the other.
   [ParamId.CombMix]: { title: "Comb", strip: "Comb" },
   [ParamId.ModalMix]: { title: "Modal", strip: "Modal" },
   [ParamId.Lfo1Target]: { title: "LFO 1" },
@@ -119,18 +118,7 @@ const SHEET_BLOCK_TITLES: Partial<Record<ParamId, SheetBlock>> = {
   [ParamId.ReverbSize]: { title: "Reverb", strip: "Verb" },
 };
 
-/** The handful of names a four-column phone layout cannot fit even after `strip` has
-    taken the block's word off the front. Only the stragglers are listed: an abbreviation
-    has to be learned, so it earns its place one row at a time rather than as a policy.
-    The full name still shows on the numpad when the row is tapped. */
-const SHEET_SHORT_NAMES: Record<string, string> = {
-  Release: "Rel", "Att Shape": "Att Sh", "Dec Shape": "Dec Sh",
-  Material: "Mat", Downsmpl: "Down", "Ping-Pong": "Ping",
-  Humanize: "Human", "Hit Chance": "Chance", Ratchet: "Ratch", Volume: "Vol",
-  "Mod FX": "Type", // the row under the MOD FX heading is its type
-};
-
-/** Drop a block's own word from a row name ("Echo Time" under ECHO reads "Time"). Never
+/** Drop a section's own word from a row name ("Echo Time" under ECHO reads "Time"). Never
     leaves a row nameless — a row whose whole name IS the word keeps it. */
 function dropBlockWord(name: string, strip?: string): string {
   return strip && name !== strip && name.startsWith(strip + " ")
@@ -138,26 +126,18 @@ function dropBlockWord(name: string, strip?: string): string {
     : name;
 }
 
-/** The sheet's row name: the block's word dropped, then whatever is still too long for a
-    column abbreviated. The deck only takes the first half — it gives a setting a whole
-    row of its own, so nothing there has to be shortened. */
-function sheetRowName(name: string, strip?: string): string {
-  const short = dropBlockWord(name, strip);
-  return SHEET_SHORT_NAMES[short] ?? short;
-}
-
-/** The sheet's own value formatting: the registry's, but never more precision than the
-    column can hold. formatValue picks its decimals from the param's RANGE, which gives
-    an LFO at 27.11 Hz two decimals it does not need and cannot fit; here the decimals
-    come from the value itself, so nothing is quoted wider than "-2.68 st". */
-function sheetValue(s: ParamSpec, v: number): string {
+/** The deck's value formatting: the registry's, but never more precision than the row's
+    value column can hold. formatValue picks its decimals from the param's RANGE, which
+    gives an LFO at 27.11 Hz two decimals it does not need and cannot fit; here the
+    decimals come from the value itself, so nothing is quoted wider than "-2.68 st". */
+function sectionValue(s: ParamSpec, v: number): string {
   if (isDiscrete(s)) return formatValue(s, v);
   const mag = Math.abs(v);
   const dec = mag >= 100 ? 0 : mag >= 10 ? 1 : 2;
   return s.unit ? `${v.toFixed(dec)} ${s.unit}` : v.toFixed(dec);
 }
 
-/** Which trace decides whether a stretch of the sheet is doing anything, resolved once
+/** Which trace decides whether a stretch of the deck is doing anything, resolved once
     per parameter. The ranges are contiguous because ParamId is ordered by feature, and
     the PREDICATE is the graph's own (soundTraces): both layouts then agree on what
     "active" means, and only one place in the codebase knows that a comb at zero mix is
@@ -166,7 +146,7 @@ function sheetValue(s: ParamSpec, v: number): string {
 
     Per-Hit Life is deliberately not mapped: its trace is active when accents OR ghosts
     OR ratchets are, which says nothing about any one of its rows. */
-const SHEET_TRACE_OF: (TraceSpec | undefined)[] = (() => {
+const SECTION_TRACE_OF: (TraceSpec | undefined)[] = (() => {
   const byId = new Map(SOUND_TRACES.map((t) => [t.id, t]));
   const map = new Array<TraceSpec | undefined>(NUM_PARAMS).fill(undefined);
   const set = (from: ParamId, to: ParamId, id: string) => {
@@ -197,7 +177,7 @@ const SHEET_TRACE_OF: (TraceSpec | undefined)[] = (() => {
   return map;
 })();
 
-/** The value at which a per-hit setting is doing NOTHING. Per-Hit Life is the one block
+/** The value at which a per-hit setting is doing NOTHING. Per-Hit Life is the one section
     with no trace to ask (its trace lights when accents OR ghosts OR ratchets do, which says
     nothing about any one row), so its rows have never had an activity test — yet each of
     them has an obvious idle value, and four of the five sit at it in an ordinary sound.
@@ -217,47 +197,30 @@ const INERT_AT: Partial<Record<ParamId, number>> = {
 
 /** Is this setting doing anything right now? A parameter with no trace of its own is
     normally part of the sound whatever its value (the amp envelope, the filter, the pitch
-    it plays at); otherwise the graph's own predicate decides. Both flat layouts ask through
-    here, so "on" means one thing across the whole app. */
+    it plays at); otherwise the graph's own predicate decides. The deck asks through here,
+    so "on" means one thing across the whole app. */
 function sectionRowActive(id: ParamId, get: ParamGet): boolean {
   const inert = INERT_AT[id];
   if (inert !== undefined) return get(id) !== inert;
-  const trace = SHEET_TRACE_OF[id];
+  const trace = SECTION_TRACE_OF[id];
   return !trace || trace.active(get);
 }
 
-// How much one scrub tick moves a parameter on the sheet. The registry's own step is the
-// EDIT granularity, which for a wide range is far too fine to drag across (Pitch steps in
-// single hertz over 8 kHz — a screen-height drag would not clear the bass). So a range
-// that would take more than SHEET_SCRUB_TICKS ticks to cross scrubs in coarser multiples
-// of that step; the numpad is how you land on an exact value either way.
-const SHEET_SCRUB_TICKS = 200;
-function sheetStep(s: ParamSpec): number {
-  if (isDiscrete(s)) return 1;
-  const span = s.max - s.min;
-  const step = s.step > 0 ? s.step : span / SHEET_SCRUB_TICKS;
-  if (span / step <= SHEET_SCRUB_TICKS) return step;
-  return Math.max(step, Math.round(span / SHEET_SCRUB_TICKS / step) * step);
-}
+/** The engine cut into readable sections, once, at module load: start a section wherever
+    {@link SECTION_TITLES} names one, and otherwise wherever the registry's grouping
+    changes, so every parameter lands under a heading either way. The deck spreads these
+    across the bottom as one button each.
 
-/** The engine cut into readable sections, once, at module load. This is the SHEET's own
-    splitting rule — start a section wherever {@link SHEET_BLOCK_TITLES} names one, and
-    otherwise wherever the registry's grouping changes, so every parameter lands under a
-    heading either way — lifted out because the deck needs the same cut for a different
-    purpose: what the sheet stacks as titled blocks down four columns, the deck spreads
-    across the bottom as one button each. One split, so the two layouts can never disagree
-    about what "the Echo section" is.
-
-    The 32 PitchDraw slots are the one omission, in both layouts: they are samples of a
-    drawn curve rather than settings, and are authored in the path overlay. */
-interface SheetSection { title: string; strip?: string; ids: RealParamId[] }
-const SHEET_SECTIONS: SheetSection[] = (() => {
-  const out: SheetSection[] = [];
+    The 32 PitchDraw slots are the one omission: they are samples of a drawn curve rather
+    than settings, and are authored in the path overlay. */
+interface EngineSection { title: string; strip?: string; ids: RealParamId[] }
+const ENGINE_SECTIONS: EngineSection[] = (() => {
+  const out: EngineSection[] = [];
   let group = -1;
   for (let i = 0; i < NUM_PARAMS; i++) {
     const id = i as ParamId;
     if (id >= ParamId.PitchDraw1) break;
-    const named = SHEET_BLOCK_TITLES[id];
+    const named = SECTION_TITLES[id];
     const g = getParamGroup(id);
     if (named || g !== group || !out.length) {
       group = g;
@@ -327,8 +290,8 @@ export class App {
   // the coloured trace buttons) and which button page shows (0 = active settings;
   // later pages = the inactive ones).
   private graphTrace: string | null = null;
-  // How the sound panel is read (graph / sheet / deck) — sticky across loops for the
-  // session, as is the deck's open section (index into SHEET_SECTIONS): coming back to the
+  // How the sound panel is read (graph / deck) — sticky across loops for the
+  // session, as is the deck's open section (index into ENGINE_SECTIONS): coming back to the
   // deck should land where you left it, the way the graph keeps its page.
   private soundLayout: SoundLayout = "graph";
   private deckSection = 0;
@@ -2156,46 +2119,19 @@ export class App {
       desc: "Beside the buttons on the toolbar. GATE — how many seconds each hit is held before release (long gates make drones; the amp line follows it). MAX LEN — a shuffled sound is trimmed to at most this long, keeping hits punchy (Off = untrimmed). SPREAD — how the shuffle spreads its pitch & filter draws: linear, log, or weighted toward bass / mid / high. Max len and Spread shape the NEXT 🎲, not the current sound.",
     },
     {
-      name: "▤ The other two layouts",
-      desc: "The same sound, read two other ways. ▤ THE SHEET: no graph and no functions, every setting listed as a number instead — use it when you know which setting you want and just want to reach it. ◫ THE DECK: one section of the engine at a time, filling the screen, with every setting shown in full — a choice list as a list you drag across, a number as a bar. The toolbar button cycles graph → sheet → deck → graph, so ∿ always comes back here.",
-    },
-  ];
-
-  private static readonly SOUND_SHEET_HELP: HelpItem[] = [
-    {
-      name: "The sheet",
-      desc: "Every setting of this sound as one row — the whole engine on one screen, in the order the signal runs through it. Nothing is hidden and nothing is drawn: this is the same sound the graph shows, read as numbers instead of curves. The toolbar button cycles on to ◫ the deck, and from there back to ∿ the graph.",
-    },
-    {
-      name: "Changing a value",
-      desc: "Hold a value and drag UP or DOWN to scrub it — the sound updates as you drag, and plays when you let go. Or tap it once to type an exact number on the keypad. Values are clamped to what the engine accepts, so you cannot type something it can't play.",
-    },
-    {
-      name: "Choices scrub too",
-      desc: "A setting that picks from a list (Wave, Noise Col, Material, Mod FX, an LFO's Dest…) works exactly like a number: drag through Sine / Square / Saw the way you drag through hertz. That's why there are no dropdowns — a list costs the same one row as everything else.",
-    },
-    {
-      name: "What's actually on",
-      desc: "A row with a sunken white field is AUDIBLE — it is reaching the output right now. A flat, dim row is a setting that exists but isn't sounding: a comb at zero mix, an LFO routed to None, a wavetable switched off. It still holds a real value and you can still edit it; give it a level and it lights up. This is the same test the graph uses to decide whether to draw a curve, so the two layouts always agree.",
-    },
-    {
-      name: "The blocks",
-      desc: "Rows are grouped by what they belong to (Pitch, Tone, Noise, Comb, Modal, the three LFOs, the FX chain, Per-Hit Life…), and a heading lights up in the voice colour once anything under it is sounding — so you can read what a shuffle actually built from the headings alone. A block's own word is dropped from its rows: under ECHO, \"Echo Time\" is just \"Time\". Tap any row and the keypad shows its full name.",
-    },
-    {
-      name: "The drawn pitch contour",
-      desc: "The one thing not on the sheet. Setting Pitch Shape to \"Drawn\" plays a curve you draw by hand rather than a formula, and its 32 stored points are samples of that drawing, not settings — they're authored by drawing, from the graph's Pitch trace.",
+      name: "◫ The other layout",
+      desc: "The same sound, read the other way. ◫ THE DECK: one section of the engine at a time, filling the screen, with every setting shown in full — a choice list as a list you drag across, a number as a bar. Use it when you know which setting you want and just want to reach it. The toolbar button flips between the two, so ∿ always comes back here.",
     },
   ];
 
   private static readonly SOUND_DECK_HELP: HelpItem[] = [
     {
       name: "The deck",
-      desc: "The same sound as the graph and the sheet, but one section of the engine at a time, filling the screen. Where the sheet fits everything at once by giving each setting a single line, the deck spends the whole screen on one section — so nothing has to be read blind. The toolbar button cycles on to ∿ the graph.",
+      desc: "The same sound as the graph, but one section of the engine at a time, filling the screen. Where the graph draws the whole sound at once as curves, the deck spends the whole screen on one section — so every setting can be shown in full and reached directly, nothing read blind. The toolbar button flips back to ∿ the graph.",
     },
     {
       name: "The section buttons",
-      desc: "Along the bottom: one button per part of the engine — Pitch, Tone, Noise, the oscillators and shapers, Click, the Comb and Modal resonators, the three LFOs, the FX chain, the amp envelope, the filter, Per-Hit Life and Output. Tap one to open it above. A button lit in the voice colour has something sounding in it, so the strip alone reads what a shuffle built — the same test the sheet's headings use.",
+      desc: "Along the bottom: one button per part of the engine — Pitch, Tone, Noise, the oscillators and shapers, Click, the Comb and Modal resonators, the three LFOs, the FX chain, the amp envelope, the filter, Per-Hit Life and Output. Tap one to open it above. A button lit in the voice colour has something sounding in it, so the strip alone reads what a shuffle built — the same test the graph uses to decide whether to draw a curve.",
     },
     {
       name: "Lists you drag across",
@@ -2212,6 +2148,10 @@ export class App {
     {
       name: "What's actually on",
       desc: "A dim row is a setting that exists but isn't sounding — a comb at zero mix, an LFO routed to None. It still holds a real value and you can still edit it; give it a level and it lights up, here and on the graph alike.",
+    },
+    {
+      name: "The drawn pitch contour",
+      desc: "The one thing not on the deck. Setting Pitch Shape to \"Drawn\" plays a curve you draw by hand rather than a formula, and its 32 stored points are samples of that drawing, not settings — they're authored by drawing, from the graph's Pitch trace.",
     },
   ];
 
@@ -2273,12 +2213,11 @@ export class App {
   }
 
   /** The SOUND panel, in whichever layout is selected: the graph (functions drawn over
-      time), the sheet (every parameter as a row) or the deck (one section at a time, every
-      setting shown in full). All three edit the same draft through the same host, so the
-      choice is purely how you'd rather read and reach the values.
+      time) or the deck (one section at a time, every setting shown in full). Both edit the
+      same draft through the same host, so the choice is purely how you'd rather read and
+      reach the values.
       Hosted by a loop's own sound OR a transition's transformed sound. */
   private soundPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
-    if (this.soundLayout === "sheet") return this.soundSheetPanel(host, rerender);
     if (this.soundLayout === "deck") return this.soundDeckPanel(host, rerender);
     return this.soundGraphPanel(host, rerender);
   }
@@ -2286,8 +2225,7 @@ export class App {
   // The layout cycle, and what the toolbar button says while you are in each one: the
   // glyph and title name where the button GOES, never where you are.
   private static readonly LAYOUT_NEXT: Record<SoundLayout, { next: SoundLayout; glyph: string; title: string }> = {
-    graph: { next: "sheet", glyph: "▤", title: "Switch to the parameter sheet — every setting as a number" },
-    sheet: { next: "deck", glyph: "◫", title: "Switch to the deck — one section at a time, every setting in full" },
+    graph: { next: "deck", glyph: "◫", title: "Switch to the deck — one section at a time, every setting in full" },
     deck: { next: "graph", glyph: "∿", title: "Switch to the sound graph — every setting as a curve" },
   };
 
@@ -2391,9 +2329,8 @@ export class App {
       (i) => { p.curve = CURVE_OPTIONS[i].curve; },
     ));
     const help = helpButton(
-      onGraph ? "The sound graph" : this.soundLayout === "deck" ? "The deck" : "The parameter sheet",
-      onGraph ? App.SOUND_GRAPH_HELP
-        : this.soundLayout === "deck" ? App.SOUND_DECK_HELP : App.SOUND_SHEET_HELP,
+      onGraph ? "The sound graph" : "The deck",
+      onGraph ? App.SOUND_GRAPH_HELP : App.SOUND_DECK_HELP,
     );
     help.classList.add("graph-tool-help");
     bar.append(help);
@@ -2439,93 +2376,15 @@ export class App {
     return wrap;
   }
 
-  /** The PARAMETER SHEET: the same sound with no graph, no functions and nothing drawn —
-      just every setting as a `name  value` row, packed into columns dense enough to read
-      a whole sound in one screenful.
-
-      Every row behaves identically, continuous and discrete alike: hold and drag to
-      scrub, tap to type on the numpad (attachScrub gives both). A choice list is simply
-      a parameter whose value happens to have names, so Waveform scrubs through Sine /
-      Square / Saw the way Cutoff scrubs through hertz, and neither one needs a dropdown
-      or the space one would cost.
-
-      Rows are grouped into short titled blocks (see {@link SHEET_BLOCK_TITLES}) that the
-      CSS column layout keeps whole, so the sheet reflows from two columns to four with
-      the groupings intact. The 32 PitchDraw slots are the one omission: they are samples
-      of a drawn curve, not settings, and are authored in the path overlay. */
-  private soundSheetPanel(host: SoundGraphHost, rerender: () => void): HTMLElement {
-    const p = host.draft;
-    const wrap = document.createElement("div");
-    wrap.className = "sound-graph sound-sheet";
-    wrap.style.setProperty("--vc", host.color);
-    wrap.append(this.soundToolbar(host, rerender, true));
-
-    const cols = document.createElement("div");
-    cols.className = "ps-cols";
-
-    const get: ParamGet = (id) => p.get(id);
-    for (const section of SHEET_SECTIONS) {
-      const block = document.createElement("div");
-      block.className = "ps-block";
-      const head = document.createElement("div");
-      head.className = "ps-head";
-      head.textContent = section.title;
-      block.append(head);
-      cols.append(block);
-
-      for (const id of section.ids) {
-        const spec = baseSpec(id);
-
-        // ACTIVE = this setting is audible in the sound right now, by the same test the
-        // graph uses to decide whether to draw its curve. An inactive row still holds a
-        // real value you can edit — it just isn't reaching the output yet, so it recedes,
-        // and its heading only lights up once something under it is doing something.
-        const active = sectionRowActive(id, get);
-        if (active) head.classList.add("on");
-
-        const row = document.createElement("div");
-        row.className = "ps-row" + (active ? "" : " ps-off");
-        const name = document.createElement("span");
-        name.className = "ps-name";
-        name.textContent = sheetRowName(spec.name, section.strip);
-        const inp = document.createElement("input");
-        inp.type = "text";
-        inp.readOnly = true;
-        inp.inputMode = "none";
-        inp.className = "ps-val";
-        const show = () => sheetValue(spec, p.get(id));
-        inp.value = show();
-        this.attachScrub(inp, {
-          label: spec.name, // the numpad gets the FULL name — no block heading over it
-          color: host.color,
-          read: () => p.get(id),
-          write: (n) => {
-            p.set(id, n);
-            host.write();
-          },
-          show,
-          commit: () => { host.commitAudition(); rerender(); },
-          step: sheetStep(spec),
-        });
-        row.append(name, inp);
-        block.append(row);
-      }
-    }
-
-    wrap.append(cols);
-    return wrap;
-  }
-
   /** The DECK: the engine one section at a time, with the sections themselves along the
-      bottom as buttons. Where the sheet fits the whole sound on one screen by giving every
-      setting a single 18px line, the deck spends the whole screen on ONE section — which
-      buys the thing neither other layout can afford: a setting shown IN FULL.
+      bottom as buttons. Where the graph draws the whole sound at once as curves, the deck
+      spends the whole screen on ONE section — which buys the thing the graph cannot: a
+      setting shown IN FULL, reached directly rather than through its trace's equation.
 
-      A choice list is drawn as a list. On the sheet, dragging Waveform flicks one field
-      through Sine / Tri / Square / Saw and you never see the options you are passing; here
-      they are all on screen and you slide across them, hearing each one. A number is drawn
-      as a bar, so where the value sits in the range the engine allows is visible rather
-      than inferred from the digits.
+      A choice list is drawn as a list: every option is on screen and you slide across
+      them, hearing each one, instead of flicking a single field through names you never
+      see. A number is drawn as a bar, so where the value sits in the range the engine
+      allows is visible rather than inferred from the digits.
 
       It is also the screen a DRONE is designed on — a sound you hold and shape while it
       rings, rather than a hit you fire. A loop added while this layout is open is minted
@@ -2540,8 +2399,8 @@ export class App {
     wrap.append(this.soundToolbar(host, rerender, true));
 
     const get: ParamGet = (id) => p.get(id);
-    const idx = Math.max(0, Math.min(SHEET_SECTIONS.length - 1, this.deckSection));
-    const section = SHEET_SECTIONS[idx];
+    const idx = Math.max(0, Math.min(ENGINE_SECTIONS.length - 1, this.deckSection));
+    const section = ENGINE_SECTIONS[idx];
 
     const panel = document.createElement("div");
     panel.className = "deck-panel";
@@ -2554,7 +2413,7 @@ export class App {
       const row = isDiscrete(spec)
         ? this.deckChoiceRow(host, rerender, id, spec, section.strip)
         : this.deckBarRow(host, rerender, id, spec, section.strip);
-      // Dim what isn't reaching the output, by the sheet's own test — the value is still
+      // Dim what isn't reaching the output, by the graph's own test — the value is still
       // real and still editable, it just isn't sounding yet.
       if (!sectionRowActive(id, get)) row.classList.add("deck-off");
       panel.append(row);
@@ -2562,10 +2421,10 @@ export class App {
     wrap.append(panel);
 
     // The sections, as the buttons that switch between them. A lit button has something
-    // sounding inside it, so the strip reads like the sheet's headings do.
+    // sounding inside it, so the strip alone reads what a shuffle built.
     const tabs = document.createElement("div");
     tabs.className = "deck-tabs";
-    SHEET_SECTIONS.forEach((s, i) => {
+    ENGINE_SECTIONS.forEach((s, i) => {
       const b = document.createElement("button");
       b.className = "deck-tab"
         + (i === idx ? " on" : "")
@@ -2665,7 +2524,7 @@ export class App {
     const paint = () => {
       const v = p.get(id);
       fill.style.width = `${valueToNorm(spec, v) * 100}%`;
-      val.textContent = sheetValue(spec, v);
+      val.textContent = sectionValue(spec, v);
     };
     paint();
 
@@ -2679,7 +2538,7 @@ export class App {
       },
       tap: () => this.openNumpad({
         title: spec.name, // the FULL name — no section heading over the keypad
-        value: sheetValue(spec, p.get(id)),
+        value: sectionValue(spec, p.get(id)),
         color: host.color,
         onSubmit: (n) => {
           p.set(id, n);
@@ -4275,7 +4134,7 @@ export class App {
   /** Mint an audible sound for a fresh loop: a shuffle, or — when the DECK is the open
       layout — the drone start it is built around (see {@link SoundDraft.resetToDrone}).
       The layout is the whole signal: a shuffled hit is what you want a new loop to be when
-      you are working on the graph or the sheet, and a held note is what you want it to be
+      you are working on the graph, and a held note is what you want it to be
       when you are on the screen for shaping one. Existing sounds are never touched either
       way — ∞ on the deck's toolbar is how an already-minted sound becomes a drone.
 

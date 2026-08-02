@@ -1402,49 +1402,8 @@ select:focus { outline: none; }
   background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
 }
 
-/* --- The parameter sheet -----------------------------------------------------
-   The graph's alternative: ~85 settings as `name  value` rows, sized so a whole
-   sound fits a phone screen. A CSS column layout does the packing — blocks are
-   kept whole (break-inside), so widening the screen adds COLUMNS rather than
-   restacking the groups, and a setting keeps the same neighbours everywhere. */
-/* Four columns on a phone. Dropping the block's own word from its rows (SHEET_BLOCK_TITLES
-   `strip`) is what buys the fourth: "Cycles" needs half the width of "Pitch Cycles", and
-   the width that frees goes back into ROW HEIGHT — the values are what you reach for, so
-   they get the taller target rather than the sheet getting shorter. */
-.ps-cols {
-  column-count: 4; column-gap: 6px;
-  font-size: 9.5px; line-height: 1.15;
-}
-@media (min-width: 560px) { .ps-cols { column-count: 5; column-gap: 10px; font-size: 10.5px; } }
-@media (min-width: 800px) { .ps-cols { column-count: 6; } }
-
-.ps-block { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3px; }
-.ps-head {
-  font-size: 8.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
-  color: var(--muted); height: 13px; line-height: 13px;
-  border-bottom: 1px solid var(--muted);
-}
-/* A heading lights up in the voice colour once anything under it is audible. */
-.ps-head.on { color: var(--vc, var(--text)); border-bottom-color: var(--vc, var(--muted)); }
-
-.ps-row { display: flex; align-items: center; gap: 3px; height: 18px; }
-/* The name gives way first: a value must never be the thing that gets ellipsed. */
-.ps-name { flex: 1 1 auto; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ps-val {
-  flex: 0 0 auto; width: 44px; padding: 2px 1px; text-align: right;
-  font: inherit; font-size: 9.5px; font-weight: 700; color: var(--text);
-  background: var(--field); border: none; border-radius: 0; box-shadow: var(--field-in);
-  cursor: ns-resize; touch-action: none;
-}
-@media (min-width: 560px) { .ps-val { width: 54px; font-size: 10.5px; } }
-/* INACTIVE: this setting holds a real, editable value that isn't reaching the output —
-   a zero-mix comb, an LFO routed to None. It recedes rather than disappearing, because
-   turning it on is exactly what you'd come here to do. */
-.ps-row.ps-off .ps-name { opacity: 0.4; }
-.ps-row.ps-off .ps-val { color: var(--muted); font-weight: 400; box-shadow: none; background: transparent; }
-
 /* --- The deck ----------------------------------------------------------------
-   The sheet's opposite trade: one section of the engine at a time, given the whole
+   The graph's opposite trade: one section of the engine at a time, given the whole
    screen, with the sections themselves along the bottom as buttons. The panel takes
    the height and scrolls inside itself, so the button strip stays put — a section is
    always one tap away, never a scroll away. */
@@ -1513,7 +1472,7 @@ select:focus { outline: none; }
   white-space: nowrap;
 }
 .deck-tab:active { box-shadow: var(--btn-in); padding: 7px 6px 5px 8px; }
-/* LIT = something inside this section is sounding, the same test the sheet's headings
-   use — so the strip reads what a shuffle built without opening anything. */
+/* LIT = something inside this section is sounding, the same test the graph uses to decide
+   whether to draw a curve — so the strip reads what a shuffle built without opening it. */
 .deck-tab.lit { color: var(--vc, var(--text)); font-weight: 700; }
 .deck-tab.on { box-shadow: var(--btn-in), inset 0 -2px 0 var(--vc, var(--text)); color: var(--text); }
