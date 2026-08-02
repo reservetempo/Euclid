@@ -58,10 +58,11 @@ const PROJECT_KEY = "msq010.project";
 // the user picks a Max len in the sound-graph toolbar.
 const ROW_MAXLEN_SEC = [0, 0, 0, 0, 0, 0];
 
-// The track overview draws each colour as a column of this many blocks, ALWAYS — a block
-// covers barLimit/OVERVIEW_BLOCKS bars, so the whole track fits one screenful at any
-// length (and at the 256-bar default a block is exactly 16 bars).
-const OVERVIEW_BLOCKS = 16;
+// How many bars of the track are on screen at once. The overview is a horizontal scroller
+// at a FIXED zoom — a bar is always the same width — so a long track is genuinely long and
+// you scroll along it, rather than being squeezed into one screenful until its bars are a
+// pixel each. This is the one number that sets the density of the whole view.
+const BARS_PER_SCREEN = 16;
 
 // The lightest a loop's shade goes in the overview / picker ramp: loop 1 is the base
 // colour, each later loop a step lighter, capped so the last one stays legible.
@@ -315,6 +316,14 @@ export class App {
   // transient playback aid (see applySection) — not saved with the project.
   private playFromBar = 0;
   private playToBar = 0;
+  // Where the track scroller sits, in bars, and so WHERE PLAY STARTS: the bar at the left
+  // edge of the overview is the bar the transport begins on (see playStartStep). Kept on the
+  // App rather than read off the element, because render() rebuilds the scroller and the
+  // position has to survive that. `trackFollow` is whether the scroller chases the playhead:
+  // armed on play, cleared as soon as the user scrolls by hand (they're looking ahead), so
+  // the two never fight over scrollLeft.
+  private trackStartBar = 0;
+  private trackFollow = true;
   private nextSoundId = 0;             // monotonic id for loop sounds
 
   private mixerReturn: View = "track"; // where the mixer's Back returns to
@@ -323,19 +332,20 @@ export class App {
   private viewRoot!: HTMLElement;
   private loopTimeEl: HTMLElement | null = null;
   private trackPlayheadEl: HTMLElement | null = null; // overview playback line
-  // Measured vertical geometry of one column's overview blocks, relative to .track-cols —
-  // what the playback line is positioned against and what a tap on a column reads. See
-  // trackBlockBoxes(). Cleared on every track render; also re-measured when the container
-  // height changes (there is no resize listener, and none is needed for this).
-  private trackGeom: {
-    h: number;
-    boxes: { top: number; height: number }[];
-    colTop: number; // where a column's own box starts inside .track-cols (all six alike)
-  } | null = null;
-  // The overview's LIVE SECTION: one band per column, lit on the bar being played — but only
-  // on the columns whose paint actually covers that bar, so the light says who is sounding
+  // The overview's scroller, the lane inside it, and the width of one bar in pixels. At a
+  // fixed zoom the geometry is arithmetic — bar b starts at b * trackBarPx down the lane —
+  // so there is nothing to measure per frame beyond the one clientWidth that sets barPx.
+  private trackScrollEl: HTMLElement | null = null;
+  private trackLaneEl: HTMLElement | null = null;
+  private trackBarPx = 0;
+  // Set while the code itself is writing scrollLeft, so the scroll handler can tell a follow
+  // from a user's own drag (only the latter cancels following).
+  private trackAutoScrolling = false;
+  private trackStartEl: HTMLElement | null = null; // the "starts here" readout in the top bar
+  // The overview's LIVE SECTION: one band per row, lit on the bar being played — but only
+  // on the rows whose paint actually covers that bar, so the light says who is sounding
   // and not merely where the line is. `trackBars` is the same per-bar loop numbering the
-  // blocks are shaded from and a tap is hit-tested against (colorBarNumbers), kept from the
+  // rows are shaded from and a tap is hit-tested against (colorBarNumbers), kept from the
   // render so the playhead needn't recompute it 16 times a bar. Both are rebuilt per render.
   private trackLiveEls: HTMLElement[] | null = null;
   private trackBars: number[][] | null = null;
@@ -350,6 +360,11 @@ export class App {
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") this.engine.resume();
     });
+    // A bar's width is a sixteenth of the scroller, so a resize (or a phone turned on its
+    // side) changes it. Re-measure and re-lay the lane in place rather than re-rendering:
+    // the paint is one gradient per row and both it and the playhead are expressed in
+    // var(--barw), so setting the new width is the whole update.
+    window.addEventListener("resize", () => { if (this.view === "track") this.layoutTrack(); });
     // No start gate: boot straight into the app. The browser won't let audio run
     // until a user gesture, so the engine starts lazily on the FIRST interaction
     // anywhere (and the shuffle / graph-tap audition paths await it — see withAudio).
@@ -409,22 +424,30 @@ export class App {
       this.lightPatternStep(-1);
       return;
     }
-    // Overview: slide the horizontal playback line down the columns. The columns show the
-    // WHOLE track at once (16 blocks, no wrapping), so this is one straight sweep.
+    // Overview: slide the vertical playback line along the rows. Time is a straight run of
+    // bars at a fixed width, so the position is arithmetic — no measuring per frame.
     if (this.trackPlayheadEl) {
       const loopLen = this.arr.loopSteps();
-      if (loopLen > 0) {
-        const bar = (p.pos % loopLen) / STEPS_PER_BAR;
+      if (loopLen > 0 && this.trackBarPx > 0) {
+        // Clamped to the track: the engine wraps on ITS loop total (the longest compiled
+        // line), which a node overrunning the bar limit can push past the track's own
+        // length — and the line has nowhere to be drawn out there but the empty tail.
         const barLimit = Math.max(1, this.track.barLimit);
-        this.trackPlayheadEl.style.setProperty("--ph", String(Math.min(1, bar / barLimit)));
-        // Prefer the MEASURED position: the line rides the blocks, not the box around them
-        // (see trackBlockBoxes) — a fraction of the container reads early by the column's
-        // border and padding and drifts by the gaps between blocks.
-        const px = this.trackBarOffset(bar);
-        if (px === null) this.trackPlayheadEl.style.removeProperty("--phpx");
-        else this.trackPlayheadEl.style.setProperty("--phpx", `${px.toFixed(2)}px`);
+        const bar = Math.min(barLimit, (p.pos % loopLen) / STEPS_PER_BAR);
+        this.trackPlayheadEl.style.left = `${(bar * this.trackBarPx).toFixed(2)}px`;
         this.trackPlayheadEl.classList.add("live");
         this.lightLiveSection(Math.floor(bar));
+        // Follow the line: keep the bar being played at the left edge, which is also where
+        // the start line is — so wherever the transport is, that's where ▶ would resume.
+        // Dropped the moment the user scrolls by hand (see the scroll handler).
+        if (this.trackFollow) {
+          const b = Math.floor(bar);
+          if (b !== this.trackStartBar) {
+            this.trackStartBar = b;
+            this.scrollTrackToBar(b);
+            this.syncStartReadout();
+          }
+        }
       }
     }
     // Light the open Loop-tab pattern grid's currently-sounding step (nothing when the
@@ -463,24 +486,23 @@ export class App {
     }
   }
 
-  /** Light the section (one bar) being played, on the columns that actually sound there.
+  /** Light the section (one bar) being played, on the rows that actually sound there.
       Called once per 16th step, but the work is done only when the bar CHANGES — or when
-      the blocks have been re-measured, which resets `liveBar` from under us (see
-      trackBlockBoxes), so a resized overview re-places its bands on the next step. */
+      the lane has been laid out again, which resets `liveBar` from under us (see
+      layoutTrack), so a resized overview re-places its bands on the next step. */
   private lightLiveSection(b: number): void {
     const els = this.trackLiveEls;
     const bars = this.trackBars;
-    if (!els || !bars || b === this.liveBar) return;
-    const box = this.trackLiveBox(b);
-    if (!box) return;
+    if (!els || !bars || b === this.liveBar || this.trackBarPx <= 0) return;
+    const left = b * this.trackBarPx;
     this.liveBar = b;
     for (let c = 0; c < els.length; c++) {
       const el = els[c];
       // Lit only where this voice's paint covers the bar — the same per-bar numbering the
-      // blocks are shaded from, so the light and the shade can never disagree.
+      // rows are shaded from, so the light and the shade can never disagree.
       if ((bars[c]?.[b] ?? 0) > 0) {
-        el.style.top = `${box.top.toFixed(2)}px`;
-        el.style.height = `${box.height.toFixed(2)}px`;
+        el.style.left = `${left.toFixed(2)}px`;
+        el.style.width = `${this.trackBarPx.toFixed(2)}px`;
         el.classList.add("on");
       } else {
         el.classList.remove("on");
@@ -672,6 +694,9 @@ export class App {
     this.root.innerHTML = "";
     this.loopTimeEl = null;
     this.trackPlayheadEl = null;
+    this.trackScrollEl = null;
+    this.trackLaneEl = null;
+    this.trackStartEl = null;
     this.trackLiveEls = null;
     this.trackBars = null;
     this.liveBar = -1;
@@ -778,11 +803,21 @@ export class App {
           if (rebuilt) this.pushAll();
         } catch { /* best effort */ }
         this.playing = true;
-        this.engine.play();
+        // The section has to be in place BEFORE play: playStartStep resolves the start
+        // against it, and the engine would otherwise map the first steps through the old one.
         this.applySection();
+        this.trackFollow = true; // ▶ re-arms following, however the view was left
+        this.engine.play(this.playStartStep());
       } else {
         this.playing = false;
         this.engine.stop();
+        // Leave the view where the music stopped, so ▶ resumes from there rather than
+        // jumping back to wherever the scroll happened to be armed.
+        if (this.liveBar >= 0) {
+          this.trackStartBar = this.liveBar;
+          this.scrollTrackToBar(this.liveBar);
+          this.syncStartReadout();
+        }
       }
       syncPlay();
     };
@@ -802,7 +837,39 @@ export class App {
     });
 
     t.append(play, tempo);
+    // Where ▶ will start, in words, beside the transport — the scroller says it in pixels
+    // but the bar number is what you'd tell someone. Track view only: the other views have
+    // no scroller to read it off.
+    if (this.view === "track") {
+      this.trackStartEl = document.createElement("span");
+      this.trackStartEl.className = "start-readout";
+      this.trackStartEl.title = "Playback starts at the bar on the left edge of the track";
+      this.syncStartReadout();
+      t.append(this.trackStartEl);
+    } else {
+      this.trackStartEl = null;
+    }
     return t;
+  }
+
+  /** The step the transport should begin on: the bar at the left edge of the overview.
+
+      The engine's `absStep` is mapped THROUGH the play-range section (`posFor` in engine.js:
+      position = sectionStart + absStep % sectionLen), so the number to send is ABSOLUTE only
+      when no range is set, and section-RELATIVE when one is. A start bar outside the range
+      clamps into it — the range is the explicit instruction, the scroll only says where you
+      happen to be looking. */
+  private playStartStep(): number {
+    const barLimit = Math.max(1, this.track.barLimit);
+    const abs = Math.max(0, Math.min(barLimit - 1, this.trackStartBar)) * STEPS_PER_BAR;
+    const from = this.playFromBar, to = this.playToBar;
+    if (from >= 1 && to >= from && from <= barLimit) {
+      const f = Math.min(from, barLimit), t2 = Math.min(to, barLimit);
+      const start = (f - 1) * STEPS_PER_BAR;
+      const len = (t2 - f + 1) * STEPS_PER_BAR;
+      return Math.max(0, Math.min(len - 1, abs - start));
+    }
+    return abs;
   }
 
   /** Push the play-range loop region to the engine (1-indexed bars, inclusive). An unset /
@@ -973,233 +1040,226 @@ export class App {
     return mix;
   }
 
-  /** A segmented sub-tab nav (the loop popup's Sound/Loop/Transition look), tinted to the
-      row colour. */
-  // --- track view (colours + bar limit) --------------------------------
-  /** A draggable bar strip — the play-range gesture, shared with transition placement:
-      one faint cell per bar, ticked every 4, with a highlight band. Dragging sweeps a
-      from–to bar range; `write` fires live (only when the range actually changes) so the
-      engine can follow mid-drag. `read` returning null hides the band. */
+  // --- track view (the six voices, and where play starts) ---------------
   private renderTrackPanel(): void {
     const v = this.viewRoot;
-    // Whole-track overview: one VERTICAL COLUMN per colour, the whole timeline at once and
-    // in one screenful whatever the track length. Each column is OVERVIEW_BLOCKS blocks
-    // tall; a block covers barLimit/OVERVIEW_BLOCKS bars (2 at the 32-bar default, 16 at
-    // 256) and paints those bars as slices, so its fill shows both how many bars sound and
-    // where they sit. Every block is also RULED into the bars it holds, so the sections are
-    // countable and the one being played can light up. No numbers anywhere — the column is
-    // a shape, not a table. Tapping a painted part of a column opens THAT loop's sound page
-    // directly (the shade you touch is the loop you get); under each column sits the ▦
-    // button onto the voice's all-loops grid.
+    // Whole-track overview: one HORIZONTAL ROW per colour, time running left to right at a
+    // fixed BARS_PER_SCREEN bars to a screenful. A long track is wider than the screen on
+    // purpose and you scroll along it — and where you have scrolled to is where playback
+    // STARTS: the bar at the left edge is the bar ▶ begins on, marked by the start line
+    // welded to that edge. Each row is one element painted by a left-to-right
+    // gradient (one stop per bar, in that loop's shade) and ruled into bars by its own
+    // pseudo-element, so the whole view is six painted elements at any track length.
+    // Tapping a row opens that voice's grid — landing on the loop under your finger when
+    // the bar is painted, on its first loop when it's bare — and the grid is where a loop's
+    // sound is reached. The ▦ heads sit in a gutter to the LEFT, outside the scroller, so
+    // they stay put while the track runs past them.
     this.voiceBtns = new Map();
     this.trackLiveEls = [];
     this.trackBars = [];
     this.liveBar = -1;
     const barLimit = Math.max(1, this.track.barLimit);
-    this.trackGeom = null; // the blocks are about to be rebuilt — re-measure on first use
 
-    const overview = document.createElement("div");
-    overview.className = "track-overview";
+    const view = document.createElement("div");
+    view.className = "track-view";
 
-    // Two rows that line up column for column: the paint, then the per-voice footers. They
-    // are SEPARATE rows because the playhead is positioned against the first one — inside a
-    // single stacked wrapper the footers would stretch it past the end of the track, and
-    // `--ph` = 1 would land the line somewhere under the buttons.
-    const cols = document.createElement("div");
-    cols.className = "track-cols";
-    this.trackPlayheadEl = document.createElement("div");
-    this.trackPlayheadEl.className = "track-playhead";
-    cols.append(this.trackPlayheadEl);
-    const foots = document.createElement("div");
-    foots.className = "track-foots";
-    overview.append(cols, foots);
+    const heads = document.createElement("div");
+    heads.className = "track-heads";
+    const wrap = document.createElement("div");
+    wrap.className = "track-scroll-wrap";
+    const scroll = document.createElement("div");
+    scroll.className = "track-scroll";
+    const lane = document.createElement("div");
+    lane.className = "track-lane";
+    scroll.append(lane);
+    // The start line hangs off the FRAME, not the lane or the scroller: it marks the left
+    // edge of the window rather than a place in the track, and the bar it sits on changes
+    // as you scroll.
+    const startLine = document.createElement("div");
+    startLine.className = "track-startline";
+    wrap.append(scroll, startLine);
+    view.append(heads, wrap);
+    this.trackScrollEl = scroll;
+    this.trackLaneEl = lane;
+
+    lane.append(this.trackRuler(barLimit));
 
     for (let c = 0; c < NUM_LINES; c++) {
       const ct = this.track.colors[c];
-      const foot = document.createElement("div");
-      foot.className = "track-foot";
-      foot.style.setProperty("--vc", VOICE_COLORS[c]);
 
-      const col = document.createElement("button");
-      col.className = "track-color-col";
-      col.style.setProperty("--vc", VOICE_COLORS[c]);
-      col.title = `Voice ${c + 1}`;
+      const head = document.createElement("button");
+      head.className = "track-head";
+      head.style.setProperty("--vc", VOICE_COLORS[c]);
+      head.textContent = "▦";
+      head.title = `All of voice ${c + 1}'s loops`;
+      head.onclick = () => this.openGrid(c);
+      heads.append(head);
 
       const bars = this.colorBarNumbers(c);
       this.trackBars!.push(bars);
-      for (let i = 0; i < OVERVIEW_BLOCKS; i++) {
-        // Split by rounded boundaries rather than a fixed block size, so the blocks always
-        // tile the track exactly even when barLimit isn't a multiple of OVERVIEW_BLOCKS.
-        const { from, to } = this.blockRange(i, barLimit);
-        col.append(this.overviewBlock(bars.slice(from, Math.max(from + 1, to)), c));
-      }
+      const row = this.trackRow(bars, c);
+      row.title = `Voice ${c + 1}`;
 
-      // The live-section band, sized and placed by the transport (see handlePlayhead). It
-      // rides ON the column rather than over the whole row so each voice can light on its
-      // own; it takes no pointer events, so the column's own hit test below is unaffected.
+      // The live-section band, placed by the transport (see handlePlayhead). It rides ON the
+      // row so each voice can light on its own; it takes no pointer events, so the row's own
+      // hit test below is unaffected.
       const live = document.createElement("div");
       live.className = "track-live";
-      col.append(live);
+      row.append(live);
       this.trackLiveEls!.push(live);
 
-      // Where the tap landed, in bars, read off the same per-bar numbers the blocks are
-      // shaded from — so the loop that opens is always the one under the finger. Measured
-      // against the BLOCKS (as the playhead is), not the padded column around them. Bare
-      // field falls through to the grid, which is where you'd go to place something there.
-      col.onclick = (e) => {
-        const n = bars[this.trackBarAtY(cols, e.clientY)] ?? 0; // 1-based loop number, 0 = silence
-        const loop = n > 0 ? ct.loops[n - 1] : null;
-        if (loop) this.openPlacement(loop, "sound");
-        else this.openGrid(c);
+      // Where the tap landed, in bars, read off the same per-bar numbers the row is painted
+      // from — so the loop that opens is always the one under the finger. A bare bar still
+      // opens the grid, which is where you'd go to place something there.
+      row.onclick = (e) => {
+        const n = bars[this.trackBarAtX(e.clientX)] ?? 0; // 1-based loop number, 0 = silence
+        this.openGrid(c, n > 0 ? n - 1 : 0);
       };
-      cols.append(col);
+      lane.append(row);
 
-      // The voice's own button first — it's the one you reach for blind, so it gets the
-      // width and the height — then its loops as chips underneath it.
-      const gridBtn = document.createElement("button");
-      gridBtn.className = "track-grid-btn";
-      gridBtn.textContent = "▦";
-      gridBtn.title = `All of voice ${c + 1}'s loops`;
-      gridBtn.onclick = () => this.openGrid(c);
-      foot.append(gridBtn);
-
-      // A hit flashes the COLUMN. Every loop of the voice maps to the same element, so the
+      // A hit flashes the ROW. Every loop of the voice maps to the same element, so the
       // flash says which voice fired rather than which loop did — the shade under the live
       // section already says that, and it costs the overview no chrome of its own.
       for (const loop of ct.loops) {
-        if (loop.soundId >= 0) this.voiceBtns!.set(loop.soundId, col);
+        if (loop.soundId >= 0) this.voiceBtns!.set(loop.soundId, row);
       }
-
-      foots.append(foot);
     }
-    v.append(overview);
+
+    this.trackPlayheadEl = document.createElement("div");
+    this.trackPlayheadEl.className = "track-playhead";
+    lane.append(this.trackPlayheadEl);
+
+    // A drag of the scroller is a choice of start bar. It also cancels following — during
+    // playback that's the user taking the view off the playhead to look ahead, and grabbing
+    // it back on the next frame would make the track un-scrollable while it plays.
+    scroll.addEventListener("scroll", () => {
+      if (this.trackAutoScrolling) return;
+      this.trackStartBar = this.trackBarAtScroll();
+      this.trackFollow = false;
+      this.syncStartReadout();
+    });
+
+    v.append(view);
+    // Measured after the append: barPx comes from the scroller's real width.
+    this.layoutTrack();
   }
 
-  /** Open a voice's all-loops grid, landing on its first loop. */
-  private openGrid(c: number): void {
-    this.openColor = c;
-    this.gridLoopIdx = 0;
-    this.view = "grid";
-    this.editLoop = null;
-    this.render();
+  /** The bar ruler above the rows: a tick per bar, a number every four. The overview used
+      to carry no numbers at all — it didn't need them when the whole track was one
+      screenful — but a scroller does: without them there is nothing to say which sixteen
+      bars you are looking at, or which bar ▶ is about to start on. */
+  private trackRuler(barLimit: number): HTMLElement {
+    const ruler = document.createElement("div");
+    ruler.className = "track-ruler";
+    for (let b = 0; b < barLimit; b += 4) {
+      const mark = document.createElement("span");
+      mark.className = "track-ruler-mark";
+      mark.style.left = `calc(${b} * var(--barw))`;
+      mark.textContent = String(b + 1); // bars read 1-based everywhere in the UI
+      ruler.append(mark);
+    }
+    return ruler;
   }
 
-  /** The shade a colour's `num`-th loop (1-based) is drawn in, everywhere it's drawn: the
-      overview blocks, the track chips, the grid's underlay and its loop picker. Loop 1 is
-      the base colour, each later loop a step lighter. */
-  private loopShade(c: number, num: number): string {
-    return this.shade(VOICE_COLORS[c], Math.min(LOOP_SHADE_CAP, 0.5 + (num - 1) * LOOP_SHADE_STEP));
-  }
-
-  /** One block of a colour's column: `cells` (one entry per bar it covers, 0 = empty, >0 =
-      the sounding loop's number) drawn as equal vertical slices. It's a single element with
-      a hard-stop gradient rather than a span per bar — six columns of sixteen blocks is 96
-      elements this way, against 1536 at one per bar on a 256-bar track. */
-  private overviewBlock(cells: number[], c: number): HTMLElement {
+  /** One voice's row: `cells` (one entry per bar, 0 = empty, >0 = the sounding loop's
+      number) drawn as equal slices of a left-to-right gradient. One element with hard stops
+      rather than a span per bar — six rows this way, against 1536 elements at one per bar on
+      a 256-bar track. Loop 1 is the base colour, each later loop a shade lighter, so a
+      colour's loops still tell apart within its own row. */
+  private trackRow(cells: number[], c: number): HTMLElement {
     const el = document.createElement("div");
-    el.className = "track-block";
-    // How many bars this block holds — the CSS rules it into that many sections. Read per
-    // block rather than computed once because blockRange's rounded boundaries can hand a
-    // block one bar more or fewer than its neighbours on an odd bar limit, and the lines
-    // have to land on the actual bars. Set on EMPTY blocks too: an empty stretch of track
-    // is still divided into sections you can count and land on.
-    el.style.setProperty("--bars", String(Math.max(1, cells.length)));
-    if (!cells.some((n) => n > 0)) return el; // wholly empty: the plain field background
+    el.className = "track-row";
+    el.style.setProperty("--vc", VOICE_COLORS[c]);
+    if (!cells.some((n) => n > 0)) return el; // wholly empty: the plain sunken field
     const stops: string[] = [];
     for (let i = 0; i < cells.length; i++) {
-      // Loop 1 = the base colour, each later loop a shade lighter (as the colour panel's
-      // timeline cells), so a colour's loops still tell apart inside one block.
       const n = cells[i];
       const col = n > 0 ? this.loopShade(c, n) : "transparent";
       const a = ((i / cells.length) * 100).toFixed(4);
       const b = (((i + 1) / cells.length) * 100).toFixed(4);
       stops.push(`${col} ${a}% ${b}%`);
     }
-    el.style.backgroundImage = `linear-gradient(to bottom, ${stops.join(", ")})`;
+    el.style.backgroundImage = `linear-gradient(to right, ${stops.join(", ")})`;
     return el;
   }
 
-  /** The bar range block `i` covers, by ROUNDED boundaries so the blocks tile the track
-      exactly even when barLimit isn't a multiple of OVERVIEW_BLOCKS. The one definition
-      of where a block starts and ends — renderTrackPanel slices its cells by it, and the
-      playhead/tap mapping reads bars back out of it. */
-  private blockRange(i: number, barLimit: number): { from: number; to: number } {
-    return {
-      from: Math.round((i * barLimit) / OVERVIEW_BLOCKS),
-      to: Math.round(((i + 1) * barLimit) / OVERVIEW_BLOCKS),
-    };
-  }
-
-  /** Each overview block's top/height relative to `.track-cols` — the box the playhead is
-      positioned in. Time is painted by the BLOCKS, which sit inside the column's border
-      and padding and are separated by gaps that carry no time at all, so a fraction of the
-      CONTAINER lands several pixels off the bars it claims to mark. Measured once per
-      render (all six columns share the same vertical geometry), never per frame. */
-  private trackBlockBoxes(): { top: number; height: number }[] | null {
-    const cols = this.root.querySelector<HTMLElement>(".track-cols");
-    if (!cols) { this.trackGeom = null; return null; }
-    const h = cols.clientHeight;
-    if (this.trackGeom && this.trackGeom.h === h) return this.trackGeom.boxes;
-    const col = cols.querySelector<HTMLElement>(".track-color-col");
-    const blocks = col ? [...col.querySelectorAll<HTMLElement>(".track-block")] : [];
-    if (blocks.length !== OVERVIEW_BLOCKS) return null;
-    const base = cols.getBoundingClientRect().top;
-    const boxes = blocks.map((b) => {
-      const r = b.getBoundingClientRect();
-      return { top: r.top - base, height: r.height };
-    });
-    // Where the column itself starts inside .track-cols. The live band lives INSIDE a column
-    // and so is positioned in the column's own box, while everything else here is measured
-    // against .track-cols; this is the one offset between the two. All six columns are
-    // stretch items of a single flex row, so one measurement serves them all.
-    const colTop = col!.getBoundingClientRect().top - base;
-    this.liveBar = -1; // the geometry moved under them: the bands must be placed again
-    this.trackGeom = { h, boxes, colTop };
-    return boxes;
-  }
-
-  /** The live band's box for bar `b` (0-based), in the COLUMN's coordinates: the same block
-      geometry the playhead rides, shifted by the column's own offset. Null when the overview
-      isn't on screen to be measured. */
-  private trackLiveBox(b: number): { top: number; height: number } | null {
-    const top = this.trackBarOffset(b);
-    const next = this.trackBarOffset(b + 1);
-    if (top === null || next === null || !this.trackGeom) return null;
-    return { top: top - this.trackGeom.colTop, height: Math.max(2, next - top) };
-  }
-
-  /** Where bar position `bar` (fractional, 0-based) sits in pixels down `.track-cols`, or
-      null when the overview isn't on screen to be measured. */
-  private trackBarOffset(bar: number): number | null {
-    const boxes = this.trackBlockBoxes();
-    if (!boxes) return null;
+  /** Measure the bar width and lay the lane out at it: BARS_PER_SCREEN bars fill the
+      scroller, so the lane is barLimit/BARS_PER_SCREEN screens wide. Everything positioned
+      along the track (the ruler marks, the playhead, the live bands) is expressed in
+      `--barw`, so this one property is the whole geometry. Called after each track render
+      and on resize; restores the scroll to the start bar the App is holding. */
+  private layoutTrack(): void {
+    const scroll = this.trackScrollEl, lane = this.trackLaneEl;
+    if (!scroll || !lane) return;
     const barLimit = Math.max(1, this.track.barLimit);
-    const b = Math.max(0, Math.min(barLimit, bar));
-    let i = Math.min(OVERVIEW_BLOCKS - 1, Math.floor((b / barLimit) * OVERVIEW_BLOCKS));
-    // Rounded boundaries can put `b` in the neighbouring block on odd bar limits.
-    while (i > 0 && b < this.blockRange(i, barLimit).from) i--;
-    while (i < OVERVIEW_BLOCKS - 1 && b >= this.blockRange(i, barLimit).to) i++;
-    const { from, to } = this.blockRange(i, barLimit);
-    const f = to > from ? Math.max(0, Math.min(1, (b - from) / (to - from))) : 0;
-    return boxes[i].top + f * boxes[i].height;
+    // The track can have been shortened under the start bar since it was last set.
+    this.trackStartBar = Math.max(0, Math.min(barLimit - 1, this.trackStartBar));
+    this.trackBarPx = Math.max(1, scroll.clientWidth / BARS_PER_SCREEN);
+    lane.style.setProperty("--barw", `${this.trackBarPx.toFixed(4)}px`);
+    // The lane is the track's own width PLUS a screenful less a bar of empty tail. Without
+    // the tail the scroll clamps a screen short of the end, and the last fifteen bars could
+    // never reach the left edge — which is to say they could never be started from, and the
+    // playhead would run off to the right instead of being followed. The tail is padding, so
+    // the rows (flex children) still stop at the last real bar.
+    const tail = this.trackBarPx * (BARS_PER_SCREEN - 1);
+    lane.style.paddingRight = `${tail.toFixed(2)}px`;
+    lane.style.width = `${(this.trackBarPx * barLimit + tail).toFixed(2)}px`;
+    this.liveBar = -1; // the geometry moved under the bands: place them again
+    this.scrollTrackToBar(this.trackStartBar);
+    this.syncStartReadout();
   }
 
-  /** The bar (0-based) under a tap at `clientY` on a column, read off the same block
-      geometry the playhead uses — the inverse of trackBarOffset, so the loop that opens is
-      the loop the line would be crossing. Falls back to the flat mapping when unmeasured. */
-  private trackBarAtY(cols: HTMLElement, clientY: number): number {
+  /** The bar (0-based) under a tap at `clientX` on a row — the inverse of `bar * barPx`,
+      so the loop that opens is the loop the playhead would be crossing there. */
+  private trackBarAtX(clientX: number): number {
+    const lane = this.trackLaneEl;
     const barLimit = Math.max(1, this.track.barLimit);
-    const boxes = this.trackBlockBoxes();
-    const y = clientY - cols.getBoundingClientRect().top;
-    if (!boxes) {
-      const t = Math.min(0.999, Math.max(0, y / Math.max(1, cols.clientHeight)));
-      return Math.floor(t * barLimit);
-    }
-    let i = 0;
-    while (i < OVERVIEW_BLOCKS - 1 && y >= boxes[i].top + boxes[i].height) i++;
-    const { from, to } = this.blockRange(i, barLimit);
-    const f = Math.max(0, Math.min(0.999, (y - boxes[i].top) / Math.max(1, boxes[i].height)));
-    return Math.min(barLimit - 1, from + Math.floor(f * Math.max(1, to - from)));
+    if (!lane || this.trackBarPx <= 0) return 0;
+    const x = clientX - lane.getBoundingClientRect().left;
+    return Math.max(0, Math.min(barLimit - 1, Math.floor(x / this.trackBarPx)));
+  }
+
+  /** The bar at the scroller's left edge — the start point, rounded to the nearest bar so
+      resting between two doesn't start playback mid-bar. */
+  private trackBarAtScroll(): number {
+    const scroll = this.trackScrollEl;
+    const barLimit = Math.max(1, this.track.barLimit);
+    if (!scroll || this.trackBarPx <= 0) return 0;
+    return Math.max(0, Math.min(barLimit - 1, Math.round(scroll.scrollLeft / this.trackBarPx)));
+  }
+
+  /** Put bar `b` (0-based) at the scroller's left edge, without the scroll handler reading
+      it back as a user's drag. */
+  private scrollTrackToBar(b: number): void {
+    const scroll = this.trackScrollEl;
+    if (!scroll || this.trackBarPx <= 0) return;
+    this.trackAutoScrolling = true;
+    scroll.scrollLeft = b * this.trackBarPx;
+    // Cleared after the scroll event this write queues, not before it — the event is
+    // dispatched asynchronously, so a synchronous reset would leave the flag off by then.
+    requestAnimationFrame(() => { this.trackAutoScrolling = false; });
+  }
+
+  /** The top bar's "starts at bar N" readout, kept in step with the scroll. */
+  private syncStartReadout(): void {
+    if (this.trackStartEl) this.trackStartEl.textContent = `bar ${this.trackStartBar + 1}`;
+  }
+
+  /** Open a voice's all-loops grid, landing on `loopIdx` (its first loop by default).
+      renderGridPanel clamps the index, so an out-of-range one is safe. */
+  private openGrid(c: number, loopIdx = 0): void {
+    this.openColor = c;
+    this.gridLoopIdx = loopIdx;
+    this.view = "grid";
+    this.editLoop = null;
+    this.render();
+  }
+
+  /** The shade a colour's `num`-th loop (1-based) is drawn in, everywhere it's drawn: the
+      overview rows, the grid's underlay and its loop picker. Loop 1 is the base colour,
+      each later loop a step lighter. */
+  private loopShade(c: number, num: number): string {
+    return this.shade(VOICE_COLORS[c], Math.min(LOOP_SHADE_CAP, 0.5 + (num - 1) * LOOP_SHADE_STEP));
   }
 
   // --- grid view (one voice, all its loops) -----------------------------

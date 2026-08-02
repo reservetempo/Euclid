@@ -1573,7 +1573,10 @@ class EngineProcessor extends AudioWorkletProcessor {
       case "play":
         this.promotePending();
         this.playing = true;
-        this.absStep = 0;
+        // Where to begin, in steps. Not always the top: the track view starts playback at
+        // the bar you have scrolled to. It is a position on the LOOP, so posFor still maps
+        // it through the section when one is set (the sender makes it section-relative).
+        this.absStep = Math.max(0, m.start | 0);
         this.maxSteps = m.maxSteps | 0;
         this.samplesToNextStep = 0;
         break;

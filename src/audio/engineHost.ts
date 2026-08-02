@@ -165,8 +165,11 @@ export class EngineHost {
     this.node?.port.postMessage({ type: "section", start: Math.max(0, start | 0), len: Math.max(0, len | 0) });
   }
 
-  play(): void {
-    this.node?.port.postMessage({ type: "play" });
+  /** Start the transport at `start`, in 16th steps (0 = the top of the track). The engine
+      maps this through the play-range section when one is set, so a caller with a section
+      active must pass a SECTION-RELATIVE step — see the App's playStartStep. */
+  play(start = 0): void {
+    this.node?.port.postMessage({ type: "play", start: Math.max(0, start | 0) });
   }
 
   stop(): void {
