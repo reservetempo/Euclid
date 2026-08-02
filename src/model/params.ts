@@ -68,7 +68,9 @@ export enum ParamId {
   ModalMix,        // tuned-resonator bank dry/wet (0 = off)
   ModalMaterial,   // Membrane / Bell / Bar / Bowl / Plate (mode ratio+decay tables)
   ModalDecay,      // scales every mode's ring time (0 = tight, 1 = long ring)
-  // --- LFOs (three identical blocks: dest / rate / depth / shape / sync) ---
+  // --- LFOs (four identical blocks: dest / rate / depth / shape / sync). The blocks differ
+  // only in WHICH destinations each one offers: the ten destinations are PARTITIONED across
+  // the four slots (see LFO_TARGET_CHOICES), so two LFOs can never land on the same one. ---
   Lfo1Target,
   Lfo1Rate,
   Lfo1Depth,
@@ -84,6 +86,11 @@ export enum ParamId {
   Lfo3Depth,
   Lfo3Shape,
   Lfo3Sync,
+  Lfo4Target,
+  Lfo4Rate,
+  Lfo4Depth,
+  Lfo4Shape,
+  Lfo4Sync,
   // --- Drive & FX ---
   Drive,
   Crush,           // bit-depth reduction (Off..3-bit)
@@ -176,14 +183,43 @@ function meanings(ls: string[], es: EngineMeaning[]): ParamChoice[] {
 }
 
 // --- Shared choice lists -----------------------------------------------------
-// Referenced by more than one param (the three LFO blocks, the three envelope contours),
+// Referenced by more than one param (the four LFO blocks, the three envelope contours),
 // so they are declared once and shared by reference.
 
-// LFO destinations. The "None" entry disables the LFO, so shuffling a destination can
-// leave 0-2 LFOs active. It sits LAST; always reference it via LFO_NONE (paramSpec).
-const LFO_TARGET_CHOICES = labels(
-  "Pitch", "Filter", "Amp", "Drive", "Reso", "Wave", "Noise", "Crush", "Ring", "WTPos", "None",
+// --- LFO destinations, partitioned ------------------------------------------
+// Every place an LFO can reach, in routing order. These IDs are what cross to the DSP
+// (ENGINE_TABLES.LFO, engine.js's routing switch) — they are NOT what a sound stores. Each
+// LFO slot offers only its own SHARE of this list, so a stored value is an index into that
+// slot's short list and means nothing without knowing which slot it came from; LFO_TARGET_IDS
+// is the only way back. "None" is id 0, and by construction index 0 of every slot's list,
+// which is why LFO_NONE (paramSpec) is a single constant across all four.
+const LFO_DEST_NAMES = [
+  "None", "Pitch", "Filter", "Amp", "Drive", "Reso", "Wave", "Noise", "Crush", "Ring", "WTPos",
+];
+
+/** LFO destination IDs by name, for engine.js's routing switch. */
+export const LFO_DESTINATIONS: Record<string, number> = Object.fromEntries(
+  LFO_DEST_NAMES.map((n, i) => [n.toUpperCase(), i]),
 );
+
+/** One slot's destination list: "None" plus the destinations that slot OWNS. Each choice
+    carries the global destination id as its DSP meaning, so partitioning the list moves a
+    destination between slots without touching the engine. */
+const lfoTargets = (...dests: string[]): ParamChoice[] =>
+  meanings(["None", ...dests], [0, ...dests.map((d) => LFO_DESTINATIONS[d.toUpperCase()])]);
+
+// The partition. Four slots, ten destinations, no overlap — so all four LFOs can be drawn
+// on the graph at once and still be reading four different things, and nothing has to
+// silence a duplicate after the fact (the shuffle used to, in dedupeLfoTargets).
+// Grouped by what each one bends, so a slot reads as one job rather than a grab-bag:
+//   1 — the note's frequency: vibrato and through-zero AM.
+//   2 — the filter: the cutoff sweep and the resonance it sweeps through.
+//   3 — the oscillator's shape: pulse width, wavetable scan, noise injection.
+//   4 — the output stage: tremolo, saturation, bit-crush.
+const LFO1_TARGET_CHOICES = lfoTargets("Pitch", "Ring");
+const LFO2_TARGET_CHOICES = lfoTargets("Filter", "Reso");
+const LFO3_TARGET_CHOICES = lfoTargets("Wave", "WTPos", "Noise");
+const LFO4_TARGET_CHOICES = lfoTargets("Amp", "Drive", "Crush");
 
 const LFO_SHAPE_CHOICES = labels("Sine", "Tri", "Saw", "Square", "S&H");
 
@@ -331,23 +367,30 @@ export const PARAMS: Record<RealParamId, ParamEntry> = {
   )),
   [ParamId.ModalDecay]: p("Modal Dec", 0, 1, 0.5, 1, 0.02, ""),
 
-  // --- LFOs. The three blocks are identical but for their default destinations, which
-  // fan out (Pitch / Filter / Amp) so a fresh sound's three LFOs aren't stacked. ---
-  [ParamId.Lfo1Target]: p("Dest", 0, 10, 0, 1, 1, "", true, LFO_TARGET_CHOICES),
+  // --- LFOs. The four blocks are identical but for their destination LISTS, which share
+  // the ten destinations out between them (see LFO_TARGET_CHOICES) — so two LFOs cannot
+  // stack on one destination however they are set or shuffled. Each defaults to index 1,
+  // the first destination it owns, and is silent until its Amt leaves zero. ---
+  [ParamId.Lfo1Target]: p("Dest", 0, LFO1_TARGET_CHOICES.length - 1, 1, 1, 1, "", true, LFO1_TARGET_CHOICES),
   [ParamId.Lfo1Rate]: p("Rate", 0.1, 40, 5, 0.4, 0.1, "Hz"),
   [ParamId.Lfo1Depth]: p("Amt", 0, 1, 0, 1, 0.02, ""),
   [ParamId.Lfo1Shape]: p("Shape", 0, 4, 0, 1, 1, "", true, LFO_SHAPE_CHOICES),
   [ParamId.Lfo1Sync]: p("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNC_CHOICES),
-  [ParamId.Lfo2Target]: p("Dest", 0, 10, 1, 1, 1, "", true, LFO_TARGET_CHOICES),
+  [ParamId.Lfo2Target]: p("Dest", 0, LFO2_TARGET_CHOICES.length - 1, 1, 1, 1, "", true, LFO2_TARGET_CHOICES),
   [ParamId.Lfo2Rate]: p("Rate", 0.1, 40, 5, 0.4, 0.1, "Hz"),
   [ParamId.Lfo2Depth]: p("Amt", 0, 1, 0, 1, 0.02, ""),
   [ParamId.Lfo2Shape]: p("Shape", 0, 4, 0, 1, 1, "", true, LFO_SHAPE_CHOICES),
   [ParamId.Lfo2Sync]: p("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNC_CHOICES),
-  [ParamId.Lfo3Target]: p("Dest", 0, 10, 2, 1, 1, "", true, LFO_TARGET_CHOICES),
+  [ParamId.Lfo3Target]: p("Dest", 0, LFO3_TARGET_CHOICES.length - 1, 1, 1, 1, "", true, LFO3_TARGET_CHOICES),
   [ParamId.Lfo3Rate]: p("Rate", 0.1, 40, 5, 0.4, 0.1, "Hz"),
   [ParamId.Lfo3Depth]: p("Amt", 0, 1, 0, 1, 0.02, ""),
   [ParamId.Lfo3Shape]: p("Shape", 0, 4, 0, 1, 1, "", true, LFO_SHAPE_CHOICES),
   [ParamId.Lfo3Sync]: p("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNC_CHOICES),
+  [ParamId.Lfo4Target]: p("Dest", 0, LFO4_TARGET_CHOICES.length - 1, 1, 1, 1, "", true, LFO4_TARGET_CHOICES),
+  [ParamId.Lfo4Rate]: p("Rate", 0.1, 40, 5, 0.4, 0.1, "Hz"),
+  [ParamId.Lfo4Depth]: p("Amt", 0, 1, 0, 1, 0.02, ""),
+  [ParamId.Lfo4Shape]: p("Shape", 0, 4, 0, 1, 1, "", true, LFO_SHAPE_CHOICES),
+  [ParamId.Lfo4Sync]: p("Sync", 0, 9, 0, 1, 1, "", true, LFO_SYNC_CHOICES),
 
   // --- Drive & FX ---
   [ParamId.Drive]: p("Drive", 0, 1, 0.1, 1, 0.02, ""),
@@ -438,11 +481,6 @@ export function choiceMeanings<E extends EngineMeaning>(id: RealParamId): E[] {
 // Only facts BOTH worlds need live here. Pure DSP tuning nobody predicts (CLIP_KNEE,
 // CRACKLE_DENSITY, VOWELS, the wavetable bank) stays hand-written in engine.js.
 
-/** LFO destination indices by name, for engine.js's routing switch. */
-export const LFO_DESTINATIONS: Record<string, number> = Object.fromEntries(
-  LFO_TARGET_CHOICES.map((c, i) => [c.label.toUpperCase(), i]),
-);
-
 export const ENGINE_TABLES = {
   /** Snapshot index per parameter — the contract itself. Built from the enum's own reverse
       mapping, so the emitted names and indices are the enum, not a second copy of it. */
@@ -450,6 +488,15 @@ export const ENGINE_TABLES = {
     Object.keys(PARAMS).map((k) => [ParamId[Number(k) as ParamId], Number(k)]),
   ) as Record<string, number>,
   LFO: LFO_DESTINATIONS,
+  /** Per LFO slot, the destination ID its stored choice index stands for. The destinations
+      are shared out between the four slots, so this is the only way from what a sound
+      stores to what the routing switch understands (see LFO_DEST_NAMES). */
+  LFO_TARGET_IDS: [
+    choiceMeanings<number>(ParamId.Lfo1Target),
+    choiceMeanings<number>(ParamId.Lfo2Target),
+    choiceMeanings<number>(ParamId.Lfo3Target),
+    choiceMeanings<number>(ParamId.Lfo4Target),
+  ],
   /** Tone/Noise layer-decay contours. */
   ENV_SHAPE_IDS: choiceMeanings<string | null>(ParamId.ToneEnvShape),
   /** The pitch sweep's contours — ENV_SHAPE_IDS plus "drawn" at the end. */
@@ -492,7 +539,7 @@ export function getParamGroup(id: ParamId): ParamGroup {
   if (id <= ParamId.AmpDecayShape) return ParamGroup.Amp;
   if (id <= ParamId.FilterReso) return ParamGroup.Filter;
   if (id <= ParamId.ModalDecay) return ParamGroup.Resonator;
-  if (id <= ParamId.Lfo3Sync) return ParamGroup.Lfo;
+  if (id <= ParamId.Lfo4Sync) return ParamGroup.Lfo;
   if (id <= ParamId.ReverbMix) return ParamGroup.Fx;
   if (id <= ParamId.ChokeGroup) return ParamGroup.Life;
   return ParamGroup.Output;

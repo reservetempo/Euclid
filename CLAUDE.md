@@ -209,6 +209,16 @@ src/
   copy to sync back. Its `rev` counter is how async work (the offline loudness pass) tells
   the sound moved on, since the array's identity never changes. A draft lives on its loop
   (`loop.draft`) and is excluded from `cloneLoop` and from the save format on purpose.
+- **The four LFOs, partitioned:** there are four LFO slots, and they do NOT offer the same
+  destinations. The ten destinations are SHARED OUT between them, one owner each — LFO 1 the
+  note's frequency (Pitch, Ring), LFO 2 the filter (Filter, Reso), LFO 3 the oscillator's
+  shape (Wave, WTPos, Noise), LFO 4 the output stage (Amp, Drive, Crush) — so two LFOs can
+  never bend the same thing, all four can be drawn on the graph at once and still read as
+  four motions, and the shuffle needs no dedupe pass (there was one; it's gone). The cost is
+  that a stored `Dest` is an index into ITS OWN slot's short list: `ENGINE_TABLES.
+  LFO_TARGET_IDS[slot][stored]` is the only way to the global destination id the engine's
+  routing switch runs on, and `LFO_NONE` is 0 because "None" leads every slot's list.
+  Re-partitioning is a params.ts edit alone — the engine never sees the stored index.
 - **Drawn pitch contour:** `PitchEnvShape` has a ninth choice, `Drawn`, which is not an
   envelope — it plays a hand-drawn curve (authored point by point in `ui/pathOverlay.ts`)
   held in the 32 `PitchDraw*` slots and ignores
@@ -223,9 +233,12 @@ src/
   32 slots per envelope is affordable only once, the contour table SPLIT in two:
   `PITCH_SHAPE_CHOICES` (the 8 + `Drawn`) and `ENV_SHAPE_CHOICES` (the 8, for Tone/Noise
   decay), identical in their first eight indices so stored values kept their meaning.
-- **Save format:** `project.ts`, JSON `version: 16`. **Only version 16 loads**; any other
+- **Save format:** `project.ts`, JSON `version: 17`. **Only version 17 loads**; any other
   version loads a blank track — only the tempo is restored. The format is deliberately NOT
-  back-compatible with earlier generations. v16 dropped each rule's `mode`
+  back-compatible with earlier generations. v17 added a fourth LFO and PARTITIONED the ten
+  destinations across the four slots: the new block sits with the other three (so every later
+  index moved) and a `Dest` value is now an index into that slot's own list rather than into
+  one list of all ten, so v16 snapshots are wrong twice over. v16 dropped each rule's `mode`
   ("overlap" | "solo") when overlap left the model; v15 had dropped three fields that had
   lost their reader (the `drums` kit blob, `soundName`, and each loop's constant `pitch`
   range). No snapshot index moved in either, so refusing v14/v15 is a deliberate clean break

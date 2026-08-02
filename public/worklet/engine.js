@@ -49,13 +49,34 @@ const PITCH_SHAPE_IDS = need("PITCH_SHAPE_IDS");
 const PITCH_DRAW_BASE = need("PITCH_DRAW_BASE");
 const PITCH_DRAW_SLOTS = need("PITCH_DRAW_SLOTS");
 
-// LFO destination indices. LFO_NONE disables the LFO (falls through the routing switch);
-// it sits LAST in the list. WTPos = wavetable scan sweep.
+// LFO destination ids — what the routing switch below runs on. LFO_NONE (0) disables the
+// LFO (falls through the switch). WTPos = wavetable scan sweep.
 const LFO_DEST = need("LFO");
 const LFO_PITCH = LFO_DEST.PITCH, LFO_FILTER = LFO_DEST.FILTER, LFO_AMP = LFO_DEST.AMP;
 const LFO_DRIVE = LFO_DEST.DRIVE, LFO_RESO = LFO_DEST.RESO, LFO_WAVE = LFO_DEST.WAVE;
 const LFO_NOISE = LFO_DEST.NOISE, LFO_CRUSH = LFO_DEST.CRUSH, LFO_RING = LFO_DEST.RING;
 const LFO_WTPOS = LFO_DEST.WTPOS, LFO_NONE = LFO_DEST.NONE;
+
+// The four LFO slots do NOT all offer all ten destinations: the destinations are shared out
+// between them, one slot each, so two LFOs can never stack on the same one (see params.ts).
+// A snapshot therefore stores a small index into ITS OWN slot's list, and this table is the
+// only way from that back to a destination id.
+const LFO_TARGET_IDS = need("LFO_TARGET_IDS");
+const NUM_LFOS = LFO_TARGET_IDS.length;
+// The slots are identical five-param blocks (dest / rate / depth / shape / sync) laid out
+// back to back, so one block's span is the distance between two slots' first param. Derived
+// rather than written down: reading slot L is then P.Lfo1Target + L * LFO_STRIDE, and a
+// fifth slot would need no edit here.
+const LFO_STRIDE = P.Lfo2Target - P.Lfo1Target;
+
+/** Slot `L`'s stored Dest value -> the destination id the routing switch understands.
+    Anything out of range reads as None, so a short or stale snapshot goes quiet rather
+    than routing itself somewhere arbitrary. */
+function lfoDest(L, stored) {
+  const ids = LFO_TARGET_IDS[L];
+  const i = Math.round(stored);
+  return ids && i >= 0 && i < ids.length ? ids[i] : LFO_NONE;
+}
 
 // Primary-oscillator unison voice count per Unison index (0 = Off = single voice).
 const UNISON_VOICES = need("UNISON_VOICES");
@@ -603,14 +624,16 @@ class Voice {
     this.pitchDrawn = false;
     this.pitchDrawDur = 1; // samples the contour is stretched over (the graph's width)
     this.pitchDrawT = 0;
-    this.lfoPhase = [0, 0, 0];
-    this.lfoTargets = [0, 0, 0];
-    this.lfoRates = [0, 0, 0];
-    this.lfoDepths = [0, 0, 0];
-    this.lfoShapes = [0, 0, 0];
-    this.lfoSyncs = [0, 0, 0];  // tempo-sync index per LFO (0 = Free, use lfoRates Hz)
-    this.lfoInc = [0, 0, 0];    // per-sample phase increments, refreshed per block (live tempo)
-    this.lfoSH = [0, 0, 0];     // sample-and-hold held value, per LFO
+    // One entry per LFO slot, sized from the registry's own partition (NUM_LFOS) so adding
+    // a slot there needs no edit here.
+    this.lfoPhase = new Float64Array(NUM_LFOS);
+    this.lfoTargets = new Int32Array(NUM_LFOS);
+    this.lfoRates = new Float64Array(NUM_LFOS);
+    this.lfoDepths = new Float64Array(NUM_LFOS);
+    this.lfoShapes = new Int32Array(NUM_LFOS);
+    this.lfoSyncs = new Int32Array(NUM_LFOS);  // tempo-sync index per LFO (0 = Free, use lfoRates Hz)
+    this.lfoInc = new Float64Array(NUM_LFOS);  // per-sample phase increments, refreshed per block (live tempo)
+    this.lfoSH = new Float64Array(NUM_LFOS);   // sample-and-hold held value, per LFO
     this.gateSamples = 0; this.samplesPlayed = 0; this.noteOffSent = false;
     // Noise-colour filter state (white needs none; the others are shaped from it).
     this.noiseType = 0;
@@ -697,24 +720,28 @@ class Voice {
     this.filterType = Math.round(s[P.FilterType]);
     this.filterCutoff = s[P.FilterCutoff];
     this.filterReso = Math.max(0.3, s[P.FilterReso]);
-    // Three independent always-on LFOs, each routed by its own destination. The names are
-    // Lfo1* — the un-numbered P.LfoTarget/LfoRate/LfoDepth this used to read stopped
-    // existing when the snapshot contract moved into params.ts, and undefined indices made
-    // LFO 1 silently modulate nothing while its Shape and Sync went on reading correctly.
-    this.lfoTargets = [Math.round(s[P.Lfo1Target]), Math.round(s[P.Lfo2Target]), Math.round(s[P.Lfo3Target])];
-    this.lfoRates = [s[P.Lfo1Rate], s[P.Lfo2Rate], s[P.Lfo3Rate]];
-    this.lfoDepths = [s[P.Lfo1Depth], s[P.Lfo2Depth], s[P.Lfo3Depth]];
-    this.lfoShapes = [Math.round(s[P.Lfo1Shape]), Math.round(s[P.Lfo2Shape]), Math.round(s[P.Lfo3Shape])];
-    this.lfoSyncs = [Math.round(s[P.Lfo1Sync]), Math.round(s[P.Lfo2Sync]), Math.round(s[P.Lfo3Sync])];
-    // A tempo-synced LFO starts phase-locked to the transport's beat grid (the
-    // echo's tempo-sync applied to modulation): every hit's wobble lands the same
-    // way against the bar, wherever in the cycle the note falls. Free LFOs keep
-    // the legacy per-hit restart at phase 0.
-    for (let L = 0; L < 3; L++) {
+    // Four independent always-on LFOs, each routed by its own destination — and each
+    // choosing from its OWN share of the destinations, which is why the stored Dest goes
+    // through lfoDest() rather than straight into the routing switch. The names are Lfo1*
+    // — the un-numbered P.LfoTarget/LfoRate/LfoDepth this used to read stopped existing
+    // when the snapshot contract moved into params.ts, and undefined indices made LFO 1
+    // silently modulate nothing while its Shape and Sync went on reading correctly.
+    //
+    // A tempo-synced LFO starts phase-locked to the transport's beat grid (the echo's
+    // tempo-sync applied to modulation): every hit's wobble lands the same way against the
+    // bar, wherever in the cycle the note falls. Free LFOs keep the legacy per-hit restart
+    // at phase 0. S&H is seeded here so its first cycle holds a value.
+    for (let L = 0; L < NUM_LFOS; L++) {
+      const base = P.Lfo1Target + L * LFO_STRIDE;
+      this.lfoTargets[L] = lfoDest(L, s[base]);
+      this.lfoRates[L] = s[base + 1];
+      this.lfoDepths[L] = s[base + 2];
+      this.lfoShapes[L] = Math.round(s[base + 3]);
+      this.lfoSyncs[L] = Math.round(s[base + 4]);
       const beats = LFO_SYNC_BEATS[this.lfoSyncs[L]] || 0;
       this.lfoPhase[L] = beats > 0 && beatPos > 0 ? (beatPos / beats) % 1 : 0;
+      this.lfoSH[L] = this.rng();
     }
-    this.lfoSH = [this.rng(), this.rng(), this.rng()]; // seed S&H for the first cycle
     this.drive = s[P.Drive];
 
     // --- Sound-verse expansion params ---
@@ -870,7 +897,7 @@ class Voice {
     // Effective LFO phase increments for this block: a synced LFO's cycle spans its
     // division at the LIVE tempo (mirroring the echo's tempo-sync, so BPM changes
     // retune it mid-ring); Free uses the Rate knob in Hz.
-    for (let L = 0; L < 3; L++) {
+    for (let L = 0; L < NUM_LFOS; L++) {
       const beats = LFO_SYNC_BEATS[this.lfoSyncs[L]] || 0;
       this.lfoInc[L] = (beats > 0 ? Math.max(1, tempo || 120) / (60 * beats) : this.lfoRates[L]) / sr;
     }
@@ -896,10 +923,12 @@ class Voice {
         this.samplesPlayed = 0;
         this.noteOffSent = false;
       }
-      // Evaluate the three LFOs and fold each into its destination's modulator.
+      // Evaluate the four LFOs and fold each into its destination's modulator. No two can
+      // be aimed at the same one (the slots share the destinations out — see LFO_TARGET_IDS),
+      // so each accumulator below hears from at most one LFO.
       let pitchMul = 1, cutoffMul = 1, ampMul = 1, resoMul = 1, driveAdd = 0, pwOff = 0;
       let noiseInj = 0, ringMul = 1, crushShift = 0, wtPosOff = 0;
-      for (let L = 0; L < 3; L++) {
+      for (let L = 0; L < NUM_LFOS; L++) {
         const depth = this.lfoDepths[L];
         const shape = this.lfoShapes[L];
         // S&H holds one random value per cycle; the others read the shaped wave.

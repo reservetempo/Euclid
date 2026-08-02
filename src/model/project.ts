@@ -2,10 +2,18 @@
 // own sound) plus a bar limit and tempo. Plain JSON, used for both localStorage autosave
 // and files.
 //
-// The project is serialized as version 16: a procedural placement model (see track.ts)
+// The project is serialized as version 17: a procedural placement model (see track.ts)
 // where each colour is an ordered list of loops carrying a placement rule. Only version
-// 16 loads; any other version loads with a BLANK track (tempo is still restored). The
+// 17 loads; any other version loads with a BLANK track (tempo is still restored). The
 // format is not back-compatible with earlier generations of the app.
+//
+// v17 (from v16) added a FOURTH LFO and shared the ten destinations out between the four
+// slots, one owner each, so no two LFOs can bend the same thing. That is two breaks at
+// once: the new block sits with the other three rather than at the end of ParamId, so every
+// index after it moved; and a Dest value is now an index into that slot's own short list
+// rather than into one list of all ten, so even the untouched indices mean something else
+// (a stored 2 was "Amp" and is now whatever the slot's third entry is). Padding cannot save
+// either, hence the bump.
 //
 // v16 (from v15) dropped each rule's `mode` ("overlap" | "solo"). A colour no longer
 // stacks loops onto simultaneous lanes at all: it compiles to exactly one lane, priority
@@ -137,7 +145,7 @@ export interface ColorJSON {
 }
 
 export interface ProjectJSON {
-  version: number; // 16 = current format; anything else loads blank
+  version: number; // 17 = current format; anything else loads blank
   tempo: number;
   barLimit?: number;
   root?: number;
@@ -181,7 +189,7 @@ const cloneSweep = (s: RowSweep): RowSweepJSON => ({
 
 export function serialize(track: Track, tempo: number): ProjectJSON {
   return {
-    version: 16,
+    version: 17,
     tempo,
     barLimit: track.barLimit,
     root: track.root,
@@ -459,7 +467,7 @@ export function deserialize(json: ProjectJSON, track: Track): number {
   track.scale = 0;
 
   const v = json && json.version;
-  if (json && typeof v === "number" && v === 16) {
+  if (json && typeof v === "number" && v === 17) {
     if (Array.isArray(json.colors)) {
       json.colors.forEach((cj, ci) => {
         if (ci >= NUM_LINES || !cj) return;

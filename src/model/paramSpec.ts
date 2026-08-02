@@ -53,9 +53,19 @@ export function isDiscrete(s: ParamSpec): boolean {
 // These name the label sets other modules reason about. They are VIEWS of the registry's
 // choice lists, not copies — the labels and their DSP meanings live together in params.ts.
 
-export const LFO_TARGETS = choiceLabels(ParamId.Lfo1Target);
-/** Index of the "disable this LFO" destination — it sits last in the list. */
-export const LFO_NONE = LFO_TARGETS.indexOf("None");
+/** Each LFO slot's OWN destination labels, indexed by slot (0 = LFO 1). The ten
+    destinations are shared out between the four slots rather than offered to all of them
+    (see params.ts), so there is no one list to ask — a stored value only means something
+    against the slot it came from. */
+export const LFO_TARGETS: string[][] = [
+  choiceLabels(ParamId.Lfo1Target),
+  choiceLabels(ParamId.Lfo2Target),
+  choiceLabels(ParamId.Lfo3Target),
+  choiceLabels(ParamId.Lfo4Target),
+];
+/** Index of the "disable this LFO" destination. It leads EVERY slot's list, which is what
+    lets this be one constant instead of one per slot. */
+export const LFO_NONE = 0;
 
 export const NOISE_TYPES = choiceLabels(ParamId.NoiseType);
 export const OSC_MOD_TYPES = choiceLabels(ParamId.OscModType);

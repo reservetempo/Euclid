@@ -197,28 +197,59 @@ function sparsityBudget(): number {
 //
 //  - "osc"   the oscillator's colour: Unison / wavetable / Fold / FM-Ring / Modal.
 //            They all rewrite the same spectrum, so at most two, usually one.
-//  - "lfo"   the three LFO slots. Motion was losing the flat draw far too often (3
-//            entries in 21 against a median budget of 4), so these are weighted up —
-//            but capped at two, since three simultaneous LFOs read as wobble, not motion.
+//  - "lfo"   the four LFO slots — EXEMPT from both the cap pass and the global budget,
+//            because their count is drawn and enforced on its own (see {@link lfoCount} /
+//            rollLfoCount) rather than left over from culling something else. The old cap
+//            of two was there because three LFOs used to pile onto overlapping
+//            destinations and read as one smear of wobble; now the destinations are
+//            PARTITIONED between the slots (params.ts), so four running at once are four
+//            different motions — vibrato, a filter sweep, a scan, a tremolo — not four
+//            fights over one knob. The keep-weight that used to defend them from the
+//            budget went too: nothing culls them, so nothing has to protect them.
 //  - "space" echo / reverb / mod-FX: the send stage. Given its own cap so the wet
 //            stage cannot eat the whole budget and leave the sound with no timbre.
 //  - "core"  everything else, competing on the global budget as before.
 type ModuleFamily = "osc" | "lfo" | "space" | "core";
 
 /** How many of a family a shuffle may leave on. `Infinity` = only the global budget
-    constrains it. Drawn per shuffle where the count itself should vary. */
+    constrains it. Drawn per shuffle where the count itself should vary. "lfo" is not asked:
+    it is capped by nothing and budgeted by nothing (see applySparsity). */
 function familyCap(family: ModuleFamily): number {
   if (family === "osc") return rand() < 0.7 ? 1 : 2;
-  if (family === "lfo") return 2;
   // Usually at most two of the three space FX, but all three together is a legitimate
   // (if washy) result, so leave it on the table a quarter of the time.
   if (family === "space") return rand() < 0.75 ? 2 : 3;
   return Infinity;
 }
 
+/** How many LFOs a shuffled sound runs. Drawn per shuffle and then MADE true — slots are
+    woken as well as silenced — because the per-slot draw can't reach the ends on its own: a
+    Dest only lands on "None" when it rerolls at all, so four independent draws pile up on
+    three-or-four LFOs and practically never on stillness. Weighted toward one or two, with
+    both ends genuinely on the table. */
+function lfoCount(): number {
+  const r = rand();
+  if (r < 0.12) return 0;
+  if (r < 0.34) return 1;
+  if (r < 0.62) return 2;
+  if (r < 0.84) return 3;
+  return 4;
+}
+
+/** The four slots' Dest/Amt pairs, in slot order (see params.ts's partition). */
+const LFO_SLOTS: { target: ParamId; depth: ParamId }[] = [
+  { target: ParamId.Lfo1Target, depth: ParamId.Lfo1Depth },
+  { target: ParamId.Lfo2Target, depth: ParamId.Lfo2Depth },
+  { target: ParamId.Lfo3Target, depth: ParamId.Lfo3Depth },
+  { target: ParamId.Lfo4Target, depth: ParamId.Lfo4Depth },
+];
+// Waking a slot has to leave it AUDIBLE: the depth it happens to be carrying may be a
+// rounding error, and an LFO counted as live but inaudible is the bug this pass exists to
+// avoid. Anything already above this keeps the depth the shuffle drew for it.
+const LFO_WAKE_MIN_DEPTH = 0.15;
+
 // Keep-weight multipliers. A module's odds of surviving the global budget scale with
 // its weight (see the weighted draw in applySparsity).
-const LFO_KEEP_WEIGHT = 2.5;   // the fix for LFOs rarely reaching the finished sound
 // The family cap has already decided WHICH colour this sound wears; without a matching
 // weight the global budget then culls it back out and most sounds end up with a bare
 // oscillator, which is a worse failure than the mush the cap was fixing.
@@ -434,7 +465,7 @@ export class SoundDraft {
       LFO depth and every FX mix at zero. It is resetToDefault's CENTRING that was in the way:
       centring exists to give the shuffle a mid-range start, and it lands Tone Decay at 0.6s
       (the oscillator is inaudible after ~3s no matter what Sustain says), Pitch Env at 1.5x
-      (a percussive drop), three LFOs at ~20Hz, and half-mix echo and reverb.
+      (a percussive drop), four LFOs at ~20Hz, and half-mix echo and reverb.
 
       So all that is left is the handful of settings that make it a drone rather than a
       plucked default. `holdSec` is the caller's: a drone wants its gate FITTED to the gap
@@ -459,11 +490,12 @@ export class SoundDraft {
     // release, and at Sustain 0.8 the decay only travels 1.0 -> 0.8 (nearly invisible) while
     // the release is fully audible: 0 would turn the tail into a cliff at gate-close.
 
-    // One slow breath so the drone moves without wobbling: LFO 1 onto the filter, well
-    // under a hertz, shallow. Named rather than indexed so it can't drift from the list.
-    this.set(ParamId.Lfo1Target, Math.max(0, LFO_TARGETS.indexOf("Filter")));
-    this.set(ParamId.Lfo1Rate, 0.3);
-    this.set(ParamId.Lfo1Depth, 0.15);
+    // One slow breath so the drone moves without wobbling: the filter, well under a hertz,
+    // shallow. That is LFO 2's destination now that the four slots share the list out
+    // between them — named rather than indexed, so it can't drift from its slot's list.
+    this.set(ParamId.Lfo2Target, Math.max(0, LFO_TARGETS[1].indexOf("Filter")));
+    this.set(ParamId.Lfo2Rate, 0.3);
+    this.set(ParamId.Lfo2Depth, 0.15);
   }
 
   capture(): Snapshot {
@@ -612,8 +644,10 @@ export class SoundDraft {
         this.set(id, v);
       }
       this.applyPitchSnap(opts.snap ?? PitchSnap.Off, opts.root ?? 0, opts.scale ?? 0);
-      this.dedupeLfoTargets();
       this.applySparsity(randomness);
+      // The LFO count is settled AFTER sparsity and on its own: sparsity only ever thins,
+      // and this pass wakes slots too (see rollLfoCount).
+      this.rollLfoCount(randomness);
       if (randomness > 0) {
         // After sparsity (so an evolved pitch contour isn't immediately stripped) but
         // before tameHarshness (so the pitch-amount screech guard still applies to it).
@@ -794,11 +828,13 @@ export class SoundDraft {
     const NONE = LFO_NONE;
     const g = (id: ParamId) => this.get(id);
     const round = (id: ParamId) => Math.round(g(id));
-    const lfo = (t: ParamId, d: ParamId) => ({
-      name: LFO_TARGETS[round(t)],
+    // `slot` is which LFO this is (0-based): each one offers its own share of the
+    // destinations, so its stored index only names a destination against its own list.
+    const lfo = (slot: number, t: ParamId, d: ParamId) => ({
+      name: LFO_TARGETS[slot][round(t)],
       on: round(t) !== NONE && g(d) > 0.001,
       off: () => this.set(t, NONE),
-      family: "lfo" as const, weight: LFO_KEEP_WEIGHT, fits: true,
+      family: "lfo" as const, weight: 1, fits: true,
     });
 
     // A percussive noise layer already IS the transient, so a click on top of it adds
@@ -817,7 +853,7 @@ export class SoundDraft {
 
     // Weight defaults to the family's own (see OSC_KEEP_WEIGHT); pass one to override.
     const FAMILY_WEIGHT: Record<ModuleFamily, number> = {
-      osc: OSC_KEEP_WEIGHT, lfo: LFO_KEEP_WEIGHT, space: 1, core: 1,
+      osc: OSC_KEEP_WEIGHT, lfo: 1, space: 1, core: 1, // lfo never faces a weighted draw
     };
     const mod = (
       m: { name: string; on: boolean; off: () => void },
@@ -825,9 +861,10 @@ export class SoundDraft {
     ) => ({ ...m, family, weight, fits });
 
     return [
-      lfo(ParamId.Lfo1Target, ParamId.Lfo1Depth),
-      lfo(ParamId.Lfo2Target, ParamId.Lfo2Depth),
-      lfo(ParamId.Lfo3Target, ParamId.Lfo3Depth),
+      lfo(0, ParamId.Lfo1Target, ParamId.Lfo1Depth),
+      lfo(1, ParamId.Lfo2Target, ParamId.Lfo2Depth),
+      lfo(2, ParamId.Lfo3Target, ParamId.Lfo3Depth),
+      lfo(3, ParamId.Lfo4Target, ParamId.Lfo4Depth),
       // Osc2/Sync is a second SOURCE rather than a recolouring of the first, so it sits
       // outside the "osc" family and competes on the general budget.
       mod({ name: round(ParamId.Sync) >= 1 ? "Sync" : "Osc2",
@@ -886,12 +923,18 @@ export class SoundDraft {
       3. whatever survives is cut to the global `sparsityBudget()`, which is unchanged,
          so overall density stays where it was tuned — the families only redistribute it.
 
-      Passes 2 and 3 pick their survivors by WEIGHT rather than uniformly (LFOs weigh
-      more so motion reaches the finished sound; a masked click and a crowded comb weigh
-      less), using Efraimidis-Spirakis sampling: key = rand()^(1/weight), highest keys
-      win. Every disable is still gated on `randomness`, so a gentle shuffle rarely
-      strips a module while a full shuffle enforces the whole thing; at randomness 0
-      (no-op shuffle) nothing is touched. */
+      The LFOs sit outside BOTH passes, which is the one deliberate hole in all this. They
+      each bend a destination of their own now (see {@link ModuleFamily}), so they are not
+      competing for a job the way the other families are, and thinning them only ever
+      flattened the result: the number of LFOs a sound runs is left exactly as the draw
+      rolled it, none through all four.
+
+      Passes 2 and 3 pick their survivors by WEIGHT rather than uniformly (a masked click
+      and a crowded comb weigh less, the oscillator colour the cap just chose weighs more),
+      using Efraimidis-Spirakis sampling: key = rand()^(1/weight), highest keys win. Every
+      disable is still gated on `randomness`, so a gentle shuffle rarely strips a module
+      while a full shuffle enforces the whole thing; at randomness 0 (no-op shuffle)
+      nothing is touched. */
   private applySparsity(randomness: number): void {
     if (randomness <= 0) return;
     type Mod = ReturnType<SoundDraft["soundModules"]>[number];
@@ -914,16 +957,17 @@ export class SoundDraft {
     // 1. Ill-fitting modules go first, so they don't consume a family or budget slot.
     this.dropUnfitModules(randomness);
 
-    // 2. Per-family caps.
-    const families: ModuleFamily[] = ["osc", "lfo", "space"];
+    // 2. Per-family caps ("lfo" is absent on purpose — nothing caps the LFOs).
+    const families: ModuleFamily[] = ["osc", "space"];
     for (const family of families) {
       const active = this.soundModules().filter((m) => m.on && m.family === family);
       const cap = familyCap(family);
       if (active.length > cap) cull(active, active.length - cap);
     }
 
-    // 3. The global budget over everything left.
-    const active = this.soundModules().filter((m) => m.on);
+    // 3. The global budget over everything left — the LFOs excused from it as well, so a
+    // sound that rolled four of them still spends its whole budget on timbre and FX.
+    const active = this.soundModules().filter((m) => m.on && m.family !== "lfo");
     const budget = sparsityBudget();
     if (active.length > budget) cull(active, active.length - budget);
   }
@@ -1086,17 +1130,48 @@ export class SoundDraft {
     if (periodic) { this.set(ids.shape, pick); this.set(ids.cycles, cycles); }
   }
 
-  /** Two LFOs aimed at the same destination just double up — silence the later
-      duplicate(s) by switching them to "None". Duplicate "None"s are fine. */
-  private dedupeLfoTargets(): void {
-    const NONE = LFO_NONE;
-    const slots = [ParamId.Lfo1Target, ParamId.Lfo2Target, ParamId.Lfo3Target];
-    const seen = new Set<number>();
-    for (const id of slots) {
-      const t = Math.round(this.get(id));
-      if (t === NONE) continue;
-      if (seen.has(t)) this.set(id, NONE);
-      else seen.add(t);
+  // There is no dedupe pass any more, and there cannot need to be one: the destinations are
+  // PARTITIONED between the four slots (params.ts), so no two LFOs can name the same one —
+  // a shuffle that once had to be corrected after the fact is now correct by construction.
+
+  /** Bring the live LFO count to {@link lfoCount}'s draw: silence the surplus, and WAKE
+      sleeping slots — a real destination out of that slot's own list, at a depth you can
+      hear — when the draw asks for more than the shuffle happened to roll. Which slots
+      survive or wake is itself random, so it isn't always LFO 1 left standing.
+
+      Waking, not just culling, is the point: every other sparsity pass only ever switches
+      things off, which is why the LFO count used to sit wherever the four independent Dest
+      draws left it (three or four, nearly always). Gated on `randomness` like the rest, so
+      a gentle shuffle leaves a sound's motion alone. */
+  private rollLfoCount(randomness: number): void {
+    if (randomness <= 0 || rand() >= randomness) return;
+    const want = lfoCount();
+
+    const live: number[] = [], idle: number[] = [];
+    LFO_SLOTS.forEach((s, i) => {
+      const on = Math.round(this.get(s.target)) !== LFO_NONE && this.get(s.depth) > 0.001;
+      (on ? live : idle).push(i);
+    });
+    // Fisher-Yates on both pools, so the surplus that goes quiet and the sleeper that wakes
+    // are drawn rather than taken in slot order.
+    for (const pool of [live, idle]) {
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+    }
+
+    while (live.length > want) this.set(LFO_SLOTS[live.pop()!].target, LFO_NONE);
+    while (live.length < want && idle.length) {
+      const s = LFO_SLOTS[idle.pop()!];
+      // 1..max skips index 0 ("None"), and max is that slot's OWN list length - 1: the
+      // slots hold different numbers of destinations, so the range comes from the registry.
+      const max = Math.round(baseRange(s.target).max);
+      this.set(s.target, 1 + Math.floor(rand() * max));
+      if (this.get(s.depth) < LFO_WAKE_MIN_DEPTH) {
+        this.set(s.depth, LFO_WAKE_MIN_DEPTH + rand() * (1 - LFO_WAKE_MIN_DEPTH));
+      }
+      live.push(0); // count only — which slot it was no longer matters
     }
   }
 }

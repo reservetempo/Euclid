@@ -217,11 +217,13 @@ function modalCurve(get: ParamGet, t: number): number {
   return clamp01(get(ParamId.ModalMix) * (sum / norm));
 }
 
-/** An LFO trace (the three differ only in their param ids). Spans the whole note; its
-    wave, DESTINATION and tempo-sync are all editable — and when Sync is on, the formula
-    swaps the Rate knob for the synced rate at the live tempo (what the engine plays). */
+/** An LFO trace (the four differ only in their param ids, and in the destinations their Dest
+    row offers — the four slots share the list out between them, so no two of these curves can
+    ever be bending the same thing, however they are set). Spans the whole note; its wave,
+    DESTINATION and tempo-sync are all editable — and when Sync is on, the formula swaps the
+    Rate knob for the synced rate at the live tempo (what the engine plays). */
 function lfoTrace(
-  n: 1 | 2 | 3, target: ParamId, rate: ParamId, depth: ParamId, shape: ParamId, sync: ParamId, color: string,
+  n: 1 | 2 | 3 | 4, target: ParamId, rate: ParamId, depth: ParamId, shape: ParamId, sync: ParamId, color: string,
 ): TraceSpec {
   return {
     id: `lfo${n}`,
@@ -246,7 +248,7 @@ function lfoTrace(
     duration: () => Infinity, // the wobble runs as long as the note does
     curve: (g, t, ctx) => clamp01(0.5 + 0.5 * g(depth) * lfoWave(g(shape), lfoHz(g, rate, sync, ctx) * t)),
     fromTo: (g, ctx) => `±${Math.round(g(depth) * 100)}% at ${r2(lfoHz(g, rate, sync, ctx))} Hz`,
-    about: "A repeating wobble applied to its destination for the note's whole life — the wave is the function's shape and Dest picks WHAT it bends. The bends fall into two families. Bipolar ones swing symmetrically around the current value: Pitch (vibrato, ±½ octave at full depth), Filter (wah, ±2 octaves), Amp (tremolo down to silence), Ring (through-zero AM), Wave (the square's pulse width — silent on sine/tri/saw), and WTPos (sweeps a wavetable's scan — needs a Table chosen). The \"amount\" ones instead DRIVE their effect up from wherever it sits, so they bite even from off: Drive pumps saturation, Reso pushes the filter into squelchy resonance, Crush pumps the bit-crush grit, and Noise INJECTS noise — blending the noise level up toward full (and ducking the tone) so the crest can hand the whole sound over to noise, even when the noise layer is silent: a rhythmic noise burst rather than a tremolo. Sync beat-locks one cycle to that note length at the live tempo (the Rate knob is ignored then, and the formula shows the synced rate). Depth 0 turns it off.",
+    about: "A repeating wobble applied to its destination for the note's whole life — the wave is the function's shape and Dest picks WHAT it bends. There are four LFOs, and they SHARE the destinations out between them rather than all offering the same ten: LFO 1 bends the note's frequency (Pitch, Ring), LFO 2 the filter (Filter, Reso), LFO 3 the oscillator's shape (Wave, WTPos, Noise), LFO 4 the output stage (Amp, Drive, Crush). So a destination lives on exactly one of them, two LFOs can never double up on one thing, and all four can be running — and drawn — at once and still be four different motions. The bends fall into two families. Bipolar ones swing symmetrically around the current value: Pitch (vibrato, ±½ octave at full depth), Filter (wah, ±2 octaves), Amp (tremolo down to silence), Ring (through-zero AM), Wave (the square's pulse width — silent on sine/tri/saw), and WTPos (sweeps a wavetable's scan — needs a Table chosen). The \"amount\" ones instead DRIVE their effect up from wherever it sits, so they bite even from off: Drive pumps saturation, Reso pushes the filter into squelchy resonance, Crush pumps the bit-crush grit, and Noise INJECTS noise — blending the noise level up toward full (and ducking the tone) so the crest can hand the whole sound over to noise, even when the noise layer is silent: a rhythmic noise burst rather than a tremolo. Sync beat-locks one cycle to that note length at the live tempo (the Rate knob is ignored then, and the formula shows the synced rate). Depth 0 turns it off.",
     code: `// engine.js — Voice.renderAdding: the per-sample LFO
 const beats = LFO_SYNC_BEATS[sync] || 0;
 lfoInc = (beats > 0 ? tempo / (60 * beats)   // synced: one cycle per division
@@ -463,6 +465,7 @@ filtered = svf.process(mixed, gCoef, k, type);               // LP / HP / BP
   lfoTrace(1, ParamId.Lfo1Target, ParamId.Lfo1Rate, ParamId.Lfo1Depth, ParamId.Lfo1Shape, ParamId.Lfo1Sync, "#a800a8"),
   lfoTrace(2, ParamId.Lfo2Target, ParamId.Lfo2Rate, ParamId.Lfo2Depth, ParamId.Lfo2Shape, ParamId.Lfo2Sync, "#5400a8"),
   lfoTrace(3, ParamId.Lfo3Target, ParamId.Lfo3Rate, ParamId.Lfo3Depth, ParamId.Lfo3Shape, ParamId.Lfo3Sync, "#a80054"),
+  lfoTrace(4, ParamId.Lfo4Target, ParamId.Lfo4Rate, ParamId.Lfo4Depth, ParamId.Lfo4Shape, ParamId.Lfo4Sync, "#d000a8"),
   {
     id: "echo", label: "Echo", color: "#0054a8",
     parts: (g, ctx) => {

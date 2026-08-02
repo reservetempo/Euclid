@@ -87,7 +87,7 @@ type SoundLayout = "graph" | "deck";
 /** Where the engine is cut into titled sections, what to call each one, and the word
     its rows may drop. The registry's own groups (getParamGroup) are the fallback, but
     they are too coarse to read as one screen: "Tone" alone is 32 rows, and the
-    three LFOs plus the FX chain repeat the same short names ("Rate", "Amt", "Mix",
+    four LFOs plus the FX chain repeat the same short names ("Rate", "Amt", "Mix",
     "FB") with nothing but a heading to tell them apart. Each entry names the FIRST
     parameter of a section, so sections are contiguous enum ranges in registry order.
 
@@ -113,6 +113,7 @@ const SECTION_TITLES: Partial<Record<ParamId, SectionTitle>> = {
   [ParamId.Lfo1Target]: { title: "LFO 1" },
   [ParamId.Lfo2Target]: { title: "LFO 2" },
   [ParamId.Lfo3Target]: { title: "LFO 3" },
+  [ParamId.Lfo4Target]: { title: "LFO 4" },
   [ParamId.ModFxType]: { title: "Mod FX" },
   [ParamId.EchoTime]: { title: "Echo", strip: "Echo" },
   [ParamId.ReverbSize]: { title: "Reverb", strip: "Verb" },
@@ -168,6 +169,7 @@ const SECTION_TRACE_OF: (TraceSpec | undefined)[] = (() => {
   set(ParamId.Lfo1Target, ParamId.Lfo1Sync, "lfo1");
   set(ParamId.Lfo2Target, ParamId.Lfo2Sync, "lfo2");
   set(ParamId.Lfo3Target, ParamId.Lfo3Sync, "lfo3");
+  set(ParamId.Lfo4Target, ParamId.Lfo4Sync, "lfo4");
   set(ParamId.Drive, ParamId.Drive, "drive");
   set(ParamId.Crush, ParamId.Downsample, "bitcrush");
   set(ParamId.ModFxType, ParamId.ModFxMix, "modfx");
@@ -2131,7 +2133,7 @@ export class App {
     },
     {
       name: "The section buttons",
-      desc: "Along the bottom: one button per part of the engine — Pitch, Tone, Noise, the oscillators and shapers, Click, the Comb and Modal resonators, the three LFOs, the FX chain, the amp envelope, the filter, Per-Hit Life and Output. Tap one to open it above. A button lit in the voice colour has something sounding in it, so the strip alone reads what a shuffle built — the same test the graph uses to decide whether to draw a curve.",
+      desc: "Along the bottom: one button per part of the engine — Pitch, Tone, Noise, the oscillators and shapers, Click, the Comb and Modal resonators, the four LFOs, the FX chain, the amp envelope, the filter, Per-Hit Life and Output. Tap one to open it above. A button lit in the voice colour has something sounding in it, so the strip alone reads what a shuffle built — the same test the graph uses to decide whether to draw a curve.",
     },
     {
       name: "Lists you drag across",
