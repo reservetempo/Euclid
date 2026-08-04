@@ -52,7 +52,47 @@
   --r-sm: 0;
   --r-md: 0;
   --r-lg: 0;
+
+  /* ---- the ROLE palette -----------------------------------------------------
+     Colour here is assigned by what a control DOES, not by where it sits, so the
+     same hue always means the same thing wherever you meet it:
+
+       go      start it / add it / accept it        ▶  ＋  ✓
+       stop    undo it / clear it / remove it       ✕  C  ↺
+       nav     go somewhere else                    ‹ Back  ☰  ▦  mixer
+       chance  ask the machine for something new    🎲
+       tool    change the workspace, not the sound  ∿ ◫  ↩  ?  BPM
+       edit    open a deeper editor                 ⇄ Transitions  ✏ Draw
+
+     Only the INK is named. A face is mixed from it at the point of use through
+     --role-face below, so a role's button and its glyph can never drift apart.
+     The mix lands well short of saturated on purpose: these are still Win98 tiles
+     with black labels and a white top bevel, and a face darker than about a third
+     of the way to the ink starts to swallow both. */
+  --ink-go: #007000;
+  --ink-stop: #a80000;
+  --ink-nav: #000080;
+  --ink-chance: #6000a8;
+  --ink-tool: #8a5000;
+  --ink-edit: #006878;
+  --tint: 26%;
+  --tint-base: #dcdcdc;
+
   color-scheme: light;
+}
+
+/* Set --ink, read --role-face. The pair has to be declared on EVERY element rather
+   than once on :root, because a var() inside a custom property is substituted where
+   that property is DECLARED — declared on :root, --ink would resolve against :root
+   (i.e. never) and every face would come out the same grey. Declared here, each
+   element mixes its own face from whatever --ink reaches it. */
+* {
+  --role-face: color-mix(in srgb, var(--ink, var(--panel)) var(--tint), var(--tint-base));
+  /* The LATCHED face: the same hue taken most of the way to the ink, for the few
+     controls that stay on (▶ while the transport runs, M and S on a mixer strip).
+     Dark enough that its label flips to white — which is the point: a latched
+     button should read as lit, not merely as dented. */
+  --role-face-on: color-mix(in srgb, var(--ink, var(--panel)) 72%, var(--tint-base));
 }
 
 * { box-sizing: border-box; }
@@ -149,6 +189,16 @@ button:disabled {
   cursor: default;
 }
 
+/* --- shapes ---------------------------------------------------------------
+   The skin stays square by default and that is worth keeping: a square tile is a
+   VALUE you set. Three controls break it, and all three break it the same way —
+   ROUND means "press me, something happens to the whole thing, and there is no
+   value here": ▶ in the top bar, 🎲 on the sound toolbar, ? on a section head.
+   A radius simply CLIPS the four inset hairlines, so the bevel comes back as a lit
+   rim over a shadowed one and no rule is needed here; each of the three sets its
+   own border-radius beside its geometry. The deck's section strip is the fourth
+   exception and the only other one — it is cut as a row of folder tabs. */
+
 .hint { color: var(--muted); font-size: 13px; margin: 0; text-align: center; line-height: 1.5; }
 
 /* The COMMON CONTROL trackbar: a sunken channel with a raised rectangular slider.
@@ -163,35 +213,51 @@ input[type="range"] {
   background: transparent;
   cursor: default;
 }
+/* The channel is RULED — a dashed groove in the control's own colour (--slider, set
+   per strip to the lane colour) rather than a flat grey hairline. A native range
+   can't be filled to its value without JS, so the ruling does the work the fill
+   would have: it gives the thumb something to be measured against. The thumb keeps
+   its raised Win98 body and takes the colour as a cap. */
 input[type="range"]::-webkit-slider-runnable-track {
-  height: 4px;
+  height: 6px;
   border-radius: 0;
-  background: #808080;
+  background-color: #a0a0a0;
+  background-image: repeating-linear-gradient(90deg,
+    color-mix(in srgb, var(--slider, #000080) 55%, #ffffff) 0 3px,
+    transparent 3px 8px);
   box-shadow: var(--field-in);
 }
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 11px;
+  width: 13px;
   height: 21px;
-  margin-top: -8.5px;
+  margin-top: -7.5px;
   border: none;
   border-radius: 0;
-  background: var(--panel);
+  /* A coloured cap over a grey body: the fader knob of every hardware mixer. */
+  background:
+    linear-gradient(180deg, var(--slider, #000080) 0 5px, transparent 5px),
+    var(--panel);
   box-shadow: var(--btn-out);
 }
 input[type="range"]::-moz-range-track {
-  height: 4px;
+  height: 6px;
   border-radius: 0;
-  background: #808080;
+  background-color: #a0a0a0;
+  background-image: repeating-linear-gradient(90deg,
+    color-mix(in srgb, var(--slider, #000080) 55%, #ffffff) 0 3px,
+    transparent 3px 8px);
   box-shadow: var(--field-in);
 }
 input[type="range"]::-moz-range-thumb {
-  width: 11px;
+  width: 13px;
   height: 21px;
   border: none;
   border-radius: 0;
-  background: var(--panel);
+  background:
+    linear-gradient(180deg, var(--slider, #000080) 0 5px, transparent 5px),
+    var(--panel);
   box-shadow: var(--btn-out);
 }
 
@@ -235,17 +301,25 @@ select:focus { outline: none; }
   box-shadow: inset 0 -1px 0 #808080, 0 1px 0 #ffffff;
 }
 
-/* Toolbar buttons: square raised tiles. --bc no longer tints the face (a Win98
-   toolbar is grey, always) — it survives as the GLYPH colour, which is what still
-   tells the four buttons apart at a glance. */
+/* Toolbar buttons: raised tiles, each one carrying its ROLE's colour on the face as
+   well as in the glyph. --bc survives as the glyph colour (it is set per button in
+   app.ts); --ink is what paints the tile under it. Four buttons that used to differ
+   only by a small dark glyph now differ by the whole shape of colour. */
 .play-btn, .menu-btn, .loop-view-btn, .mixer-open-btn {
   width: 34px; height: 40px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center;
   border-radius: 0;
   border: none;
   color: var(--bc, var(--text));
-  background: var(--panel);
+  background: var(--role-face);
   box-shadow: var(--btn-out);
+}
+.menu-btn, .loop-view-btn, .mixer-open-btn { --ink: var(--ink-nav); }
+/* ▶ is the one button you hit without looking, so it is the one that breaks the
+   grid: a green disc among square grey tiles. */
+.play-btn {
+  --ink: var(--ink-go);
+  width: 40px; border-radius: 50%;
 }
 .play-btn:active, .menu-btn:active,
 .loop-view-btn:active, .mixer-open-btn:active { padding: 1px 0 0 1px; }
@@ -280,12 +354,14 @@ select:focus { outline: none; }
 }
 
 .transport { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.play-btn { --bc: #008000; font-size: 15px; }
-/* The BPM button: a raised tile that opens the numpad. */
+.play-btn { --bc: #005000; font-size: 15px; }
+/* The BPM button: a raised tile that opens the numpad. It sets the workspace rather
+   than the sound, so it wears the tool amber. */
 .tempo-btn {
+  --ink: var(--ink-tool);
   height: 40px; padding: 0 10px; border-radius: 0; flex: none; white-space: nowrap;
   font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
-  color: var(--text); background: var(--panel);
+  color: var(--text); background: var(--role-face);
   border: none; box-shadow: var(--btn-out);
 }
 
@@ -327,10 +403,11 @@ select:focus { outline: none; }
 /* Play-range button — it used to float over the rings visualizer; with the rings gone it
    sits in the top bar beside the Mixer button (track view only). */
 .topbar .playrange-open-btn {
+  --ink: var(--ink-nav);
   width: 32px; height: 32px; padding: 0; flex: none;
   display: flex; align-items: center; justify-content: center; border-radius: 0;
   color: #000080; border: none;
-  background: var(--panel); box-shadow: var(--btn-out);
+  background: var(--role-face); box-shadow: var(--btn-out);
 }
 .topbar .playrange-open-btn.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
 .playrange-open-btn svg { display: block; }
@@ -345,9 +422,11 @@ select:focus { outline: none; }
 
 /* --- shared view headers ------------------------------------------------------ */
 .mixer-head { display: flex; align-items: center; gap: 12px; }
+/* Going back is navigation, so it is blue wherever it appears — as flat text here,
+   as a tile in the top bar, as a breadcrumb segment in a sheet. */
 .mixer-back {
   background: transparent; border: none; box-shadow: none;
-  color: var(--muted); padding: 6px 4px; font-size: 15px; font-weight: 600;
+  color: var(--ink-nav); padding: 6px 4px; font-size: 15px; font-weight: 600;
 }
 .mixer-back:active { color: var(--text); }
 @media (hover: hover) { .mixer-back:hover { color: var(--text); border-color: transparent; } }
@@ -377,8 +456,9 @@ select:focus { outline: none; }
 .play-range-readout { flex: 1; font-size: 12px; font-weight: 600; color: var(--muted); }
 .play-range.on .play-range-readout { color: #000080; }
 .play-range-clear {
+  --ink: var(--ink-stop);
   flex: none; width: 28px; padding: 4px 0; text-align: center; font-size: 13px; font-weight: 700;
-  background: var(--panel); color: var(--text); border: none; box-shadow: var(--btn-out); border-radius: 0;
+  background: var(--role-face); color: var(--text); border: none; box-shadow: var(--btn-out); border-radius: 0;
 }
 .play-range.on .play-range-clear { color: #800000; }
 .play-range-strip {
@@ -426,9 +506,12 @@ select:focus { outline: none; }
    the identity stripe on the edge it presents to the track. */
 .track-head {
   --vc: var(--accent);
+  --ink: var(--vc);
   height: var(--rowh); width: 44px;
   line-height: 1; font-size: 20px;
-  background: var(--panel); color: var(--text);
+  /* Tinted with the voice's own colour as well as striped with it: six heads in a
+     column now differ over their whole face, not just along one edge. */
+  background: var(--role-face); color: var(--text);
   border: none; border-left: 6px solid var(--vc); border-radius: 0;
   box-shadow: var(--btn-out);
 }
@@ -544,9 +627,14 @@ select:focus { outline: none; }
 .loop-picker-chip.on { box-shadow: var(--btn-in); font-weight: 700; }
 .loop-picker-chip.on .loop-picker-name { text-decoration: underline; }
 .loop-picker-chip:active { box-shadow: var(--btn-in); }
-.loop-picker-dot { width: 12px; height: 12px; flex: none; background: var(--ls); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4); }
+/* Round: a swatch is an identity, not a value. The grid's squares below stay square
+   for exactly that reason — they ARE values (which bars this loop plays on). */
+.loop-picker-dot {
+  width: 12px; height: 12px; flex: none; border-radius: 50%;
+  background: var(--ls); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
 .loop-picker-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.loop-picker-add { font-weight: 700; }
+.loop-picker-add { --ink: var(--ink-go); background: var(--role-face); font-weight: 700; }
 /* What the row of actions acts on is the picked chip. */
 .loop-picker-actions { display: flex; gap: 8px; margin-top: 8px; margin-bottom: 12px; }
 .loop-picker-actions .loop-action-btn:disabled { opacity: 0.4; }
@@ -567,13 +655,14 @@ select:focus { outline: none; }
 .loop-summary { font-size: 12px; color: var(--muted); }
 .loop-remove {
   width: 40px; flex: none; background: transparent; border: none; box-shadow: none;
-  border-left: 1px solid #808080; border-radius: 0; color: var(--text); font-size: 18px;
+  border-left: 1px solid #808080; border-radius: 0; color: var(--ink-stop); font-size: 18px;
 }
-.loop-remove:active { color: #800000; }
+.loop-remove:active { color: #600000; }
 
 .loop-add {
+  --ink: var(--ink-go);
   width: 100%; margin-top: 12px; padding: 8px;
-  background: var(--panel); box-shadow: var(--btn-out);
+  background: var(--role-face); box-shadow: var(--btn-out);
   border: none; border-radius: 0; color: var(--text); font-size: 13px; font-weight: 600;
 }
 .loop-add:active { box-shadow: var(--btn-in); padding: 9px 7px 7px 9px; }
@@ -586,10 +675,13 @@ select:focus { outline: none; }
 .loop-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .loop-action-btn {
   flex: 1 1 0; min-width: 5.5em; padding: 7px 6px; font-size: 12px; font-weight: 600;
-  background: var(--panel); color: var(--text);
+  background: var(--role-face); color: var(--text);
   border: none; border-radius: 0; box-shadow: var(--btn-out);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* ⇄ Transitions opens a deeper editor; ⧉ Copy sends this loop somewhere else. */
+.loop-action-btn.act-edit { --ink: var(--ink-edit); }
+.loop-action-btn.act-nav { --ink: var(--ink-nav); }
 .loop-action-btn:active { box-shadow: var(--btn-in); padding: 8px 5px 6px 7px; }
 
 /* Sub-panel back header (⚙ Options / Accents / the transition list). */
@@ -659,7 +751,7 @@ select:focus { outline: none; }
   color: var(--text); font-size: 13px; font-weight: 600; text-align: left;
 }
 .copy-menu-dot {
-  flex: none; width: 12px; height: 12px; border-radius: 0;
+  flex: none; width: 12px; height: 12px; border-radius: 50%;
   background: var(--vc); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
 }
 .copy-menu-name { flex: 1; }
@@ -688,8 +780,9 @@ select:focus { outline: none; }
 /* .sheet-enter is still applied on a fresh open; it has nothing to play any more. */
 
 /* ================= the title bar =================================================
-   The one piece of colour left in the chrome. Every modal card wears it: an 18px
-   navy→blue strip with white bold text and a raised ✕ box on the right. .win-title
+   Every modal card wears it: an 18px coloured strip with white bold text and a
+   raised ✕ box on the right (navy by default, the voice's own colour on a loop
+   sheet — see the gradient below). .win-title
    is added in TS to the head elements the cards already had, so one rule dresses
    the voice sheet, the numpad, the draw card, the help panel and the copy menu.
    The negative margins cancel the card's own padding so the bar reaches the frame. */
@@ -697,7 +790,16 @@ select:focus { outline: none; }
   display: flex; align-items: center; gap: 6px;
   /* -9px = the card's 12px padding minus the 3px frame the bevel wants left showing. */
   margin: -9px -9px 2px; padding: 3px 3px 3px 5px; min-height: 22px;
-  background: linear-gradient(90deg, #000080, #1084d0);
+  /* The active-window gradient, run through the VOICE's colour where there is one
+     (a loop sheet sets --vc; the numpad, the help panel and the draw card don't, so
+     they keep the navy). A voice's editor therefore announces which voice it is
+     before you read a word of it — the same colour its row wears on the track.
+     The far end LIGHTENS the same hue rather than running towards the old #1084d0:
+     crossing a red voice with a blue highlight lands in mud, and every voice has to
+     work. Same hue, half the ink — the classic bar, in six colours. */
+  background: linear-gradient(90deg,
+    var(--vc, #000080),
+    color-mix(in srgb, var(--vc, #000080) 55%, #ffffff));
   color: #ffffff; font-size: 12px; font-weight: 700;
   flex: none; position: sticky; top: -9px; z-index: 3;
 }
@@ -753,11 +855,9 @@ select:focus { outline: none; }
 }
 .voice-name-dice:active { opacity: 1; }
 @media (hover: hover) { .voice-name-dice:hover { opacity: 1; } }
-/* Sound-description subtitle under a coined voice name. */
-.voice-sheet-sub {
-  margin: -2px 0 8px; font-size: 11.5px; color: var(--muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+/* (The sound-description subtitle that used to sit under a coined voice name — the
+   "Square · 676 · Pink · N-env · …" shorthand — is gone: it abbreviated the very
+   settings the panel below it shows in full. See openPlacement in app.ts.) */
 
 /* Transition editor tab nav (Bars / Curve / Sound / Speed): a segmented glass control. */
 .placement-nav {
@@ -792,7 +892,13 @@ select:focus { outline: none; }
   background: var(--panel); color: var(--text);
   border: none; border-radius: 0; box-shadow: var(--btn-out);
 }
-.seg-btn.on { box-shadow: var(--btn-in); font-weight: 700; }
+/* ON takes the panel's own colour (the voice's, or the deck section's) as a tinted
+   face on top of the pressed bevel. Pressed-vs-raised alone survives a screenshot but
+   not a glance across a screenful of these. */
+.seg-btn.on {
+  --ink: var(--vc, var(--ink-nav));
+  box-shadow: var(--btn-in); font-weight: 700; background: var(--role-face);
+}
 .seg-btn:active:not(:disabled) { box-shadow: var(--btn-in); padding: 6px 9px 4px 11px; }
 .placement-roll { justify-content: flex-end; gap: 8px; }
 .roll-btn {
@@ -810,9 +916,10 @@ select:focus { outline: none; }
 /* Dice-face weight picker: six faces, the active one lit in the voice colour. */
 .dice-faces { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .dice-face {
+  --ink: var(--ink-chance);
   width: 38px; height: 38px; padding: 0; font-size: 24px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
-  color: var(--text); background: var(--panel); border: none; border-radius: 0;
+  color: var(--text); background: var(--role-face); border: none; border-radius: 0;
   box-shadow: var(--btn-out);
 }
 .dice-face.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
@@ -968,13 +1075,19 @@ select:focus { outline: none; }
   background: var(--panel); border: none; border-radius: 0; box-shadow: var(--btn-out);
 }
 .numpad-key:active { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
-.numpad-key.back { font-size: 20px; }
-.numpad-key.clear { color: #800000; }
+/* A calculator's own colour logic: digits stay grey (they are the neutral mass you
+   aim at), and the three keys that aren't digits are the three that get coloured —
+   take back, throw away, accept. */
+.numpad-key.back { --ink: var(--ink-tool); background: var(--role-face); font-size: 20px; }
+.numpad-key.clear { --ink: var(--ink-stop); background: var(--role-face); color: #600000; }
 .numpad-key.comma { font-size: 22px; }
 .numpad-key.sign, .numpad-key.frac { font-size: 20px; }
-/* The default button: same grey tile, ringed in black the way Windows marked the
-   one Enter would press. */
-.numpad-key.enter { box-shadow: var(--btn-out), inset 0 0 0 1px #000000; }
+/* The default button: ringed in black the way Windows marked the one Enter would
+   press, and green because it is the one that commits. */
+.numpad-key.enter {
+  --ink: var(--ink-go); background: var(--role-face);
+  box-shadow: var(--btn-out), inset 0 0 0 1px #000000;
+}
 .numpad-key.enter:active { box-shadow: var(--btn-in), inset 0 0 0 1px #000000; }
 .numpad-key.wide2 { grid-column: span 2; }
 .numpad-key.wide3 { grid-column: span 3; }
@@ -1050,7 +1163,7 @@ select:focus { outline: none; }
    keyframe; this one just swaps a colour, so it stays a one-frame change like the
    rest of the skin (app.ts still adds/removes .flash on the same schedule). */
 .mix-led {
-  width: 12px; height: 12px; flex: none; border-radius: 0;
+  width: 12px; height: 12px; flex: none; border-radius: 50%;
   background: #808080;
   box-shadow: var(--field-in);
 }
@@ -1064,9 +1177,16 @@ select:focus { outline: none; }
   width: 32px; padding: 4px 0; text-align: center; font-weight: 700; font-size: 13px;
   background: var(--panel); color: var(--text);
 }
-/* Latched toggles: pressed in, and coloured so M and S read across the strip list. */
-.mix-toggle.mute.on { box-shadow: var(--btn-in); color: #800000; padding: 5px 0 3px 1px; }
-.mix-toggle.solo.on { box-shadow: var(--btn-in); color: #000080; padding: 5px 0 3px 1px; }
+/* Latched toggles: pressed in AND lit, so a muted or soloed strip is legible from the
+   top of a six-strip list rather than needing the letter to be read. */
+.mix-toggle.mute.on {
+  --ink: var(--ink-stop);
+  box-shadow: var(--btn-in); background: var(--role-face-on); color: #ffffff; padding: 5px 0 3px 1px;
+}
+.mix-toggle.solo.on {
+  --ink: var(--ink-go);
+  box-shadow: var(--btn-in); background: var(--role-face-on); color: #ffffff; padding: 5px 0 3px 1px;
+}
 .mix-fader { display: flex; align-items: center; gap: 10px; }
 .mix-fader-lbl { width: 34px; flex: none; font-size: 12px; color: var(--muted); }
 .mix-fader input[type="range"] { flex: 1; min-width: 0; }
@@ -1084,10 +1204,11 @@ select:focus { outline: none; }
    default button — a plain grey tile ringed in black, which is exactly how Windows
    said "this is the one Enter presses". Size does the shouting instead of light. */
 .shuffle-big {
+  --ink: var(--ink-chance);
   position: relative;
   width: 100%; color: var(--text); font-weight: 700; font-size: 15px; letter-spacing: 0;
   padding: 10px 18px; border: none; border-radius: 0; cursor: default;
-  background: var(--panel);
+  background: var(--role-face);
   box-shadow: var(--btn-out), inset 0 0 0 1px #000000;
 }
 .shuffle-big:active { box-shadow: var(--btn-in), inset 0 0 0 1px #000000; padding: 11px 17px 9px 19px; }
@@ -1125,9 +1246,11 @@ select:focus { outline: none; }
 /* Section help: the little "?" in each section head opens a glossary of that
    section's controls; each entry expands into a plain-words description. */
 .help-btn {
+  --ink: var(--ink-tool);
   flex: none; width: 22px; height: 22px; padding: 0;
-  border-radius: 0; font-size: 12px; font-weight: 700; line-height: 1;
-  color: var(--text); background: var(--panel); border: none; box-shadow: var(--btn-out);
+  /* Round: it acts on the panel rather than setting anything in it. */
+  border-radius: 50%; font-size: 12px; font-weight: 700; line-height: 1;
+  color: var(--text); background: var(--role-face); border: none; box-shadow: var(--btn-out);
 }
 .help-btn.on { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
 /* In the Back/Reset/Preset row (the Shuffle section's anchor) it sits at the far right. */
@@ -1201,10 +1324,11 @@ select:focus { outline: none; }
    .rolled, .hit-flash, .flash on the same schedule) and are re-expressed as a bevel
    or a colour instead, so nothing in the TS had to learn a new vocabulary. */
 
-/* Playing is a LATCHED button: pressed in for as long as the transport runs. */
+/* Playing is a LATCHED button: pressed in for as long as the transport runs, and lit
+   — the green deepens, so "running" reads from across the room without an animation. */
 .play-btn.playing {
-  color: #000080;
-  background: var(--panel);
+  color: #ffffff;
+  background: var(--role-face-on);
   box-shadow: var(--btn-in);
   padding: 1px 0 0 1px;
 }
@@ -1243,7 +1367,6 @@ select:focus { outline: none; }
 /* Nothing but the title bar sits above the rhythm row, so it starts at the top: an empty
    sub-header still costs a flex gap, which read as a band of dead space. */
 .placement-sheet { padding-top: 4px; }
-.voice-sheet-sub:empty { display: none; }
 
 /* The sequencer pattern grid: one cell per step, hits lit in the voice colour. */
 .pattern-grid-wrap { --vc: var(--accent); display: flex; flex-direction: column; gap: 8px; }
@@ -1355,13 +1478,26 @@ select:focus { outline: none; }
   display: flex; align-items: flex-end; gap: 6px; flex-wrap: nowrap;
   overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px;
 }
+/* Six identical grey squares in a row was the worst of the grey: every one of them
+   does something different and irreversible-ish, and none of them said which. Each
+   now takes its role's colour, and the two that act on the whole sound rather than
+   on a setting (🎲 and ?) are round. */
 .graph-corner-btn {
   flex: none; width: 36px; height: 36px; padding: 0; font-size: 16px; line-height: 1;
-  background: var(--panel); border: none; border-radius: 0; box-shadow: var(--btn-out); color: var(--text);
+  background: var(--role-face); border: none; border-radius: 0; box-shadow: var(--btn-out); color: var(--text);
 }
 .graph-corner-btn:active:not(:disabled) { box-shadow: var(--btn-in); padding: 1px 0 0 1px; }
-/* The shuffle is the primary action — the default-button ring marks it. */
-.graph-tool-dice { font-size: 18px; box-shadow: var(--btn-out), inset 0 0 0 1px #000000; }
+.graph-tool-layout { --ink: var(--ink-edit); }
+.graph-tool-undo { --ink: var(--ink-tool); }
+.graph-tool-reset { --ink: var(--ink-stop); }
+.graph-tool-drone { --ink: var(--ink-nav); }
+/* The shuffle is the primary action — the default-button ring marks it, and the
+   violet says the machine, not you, is choosing. */
+.graph-tool-dice {
+  --ink: var(--ink-chance);
+  font-size: 18px; border-radius: 50%;
+  box-shadow: var(--btn-out), inset 0 0 0 1px #000000;
+}
 .graph-tool-dice:active:not(:disabled) { box-shadow: var(--btn-in), inset 0 0 0 1px #000000; }
 .graph-tool-help { flex: none; margin-left: auto; align-self: center; }
 /* The deck's drone stamp, lit while the sound on screen IS a drone — pressed and underlined
@@ -1381,13 +1517,16 @@ select:focus { outline: none; }
    the colour has to survive (it's how a line on the graph is identified) but the
    button itself stays a grey tile like everything else. */
 .trace-btn {
+  --ink: var(--tc);
   padding: 6px 10px 6px 8px; font-size: 12px; font-weight: 700;
-  color: var(--text); background: var(--panel);
+  color: var(--text); background: var(--role-face);
   border: none; border-left: 5px solid var(--tc);
   border-radius: 0; box-shadow: var(--btn-out);
 }
 .trace-btn:active { box-shadow: var(--btn-in); padding: 7px 9px 5px 9px; }
-.trace-btn.off { color: #808080; font-weight: 400; border-left-color: #808080; }
+/* A setting that isn't sounding drops its colour entirely — that contrast IS the
+   reading, so an off button must not keep a tinted face. */
+.trace-btn.off { color: #808080; font-weight: 400; border-left-color: #808080; background: var(--panel); }
 .trace-pager { display: flex; align-items: center; justify-content: center; gap: 10px; }
 
 /* One setting's equation card (its colour rides --vc for the formula inputs). */
@@ -1399,7 +1538,7 @@ select:focus { outline: none; }
 }
 .trace-ed-head { display: flex; align-items: center; gap: 8px; }
 .trace-ed-head .transition-head { flex: 1 1 auto; color: var(--text); }
-.trace-dot { width: 10px; height: 10px; border-radius: 0; background: var(--vc); flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.5); }
+.trace-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--vc); flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.5); }
 .trace-ed-close { width: 30px; border-left: none; font-size: 16px; }
 .trace-fromto { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
 .formula-domain { color: var(--muted); font-size: 13px; }
@@ -1438,9 +1577,16 @@ select:focus { outline: none; }
   max-height: 52vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 8px; background: var(--panel); box-shadow: var(--btn-out);
 }
+/* --sc is the OPEN SECTION's colour, set in app.ts from the colour the graph draws
+   that same part of the engine in (sectionColor). It falls back to the voice colour,
+   which is what the whole deck used to be — and that was the trouble: on voice 1
+   every section, every bar and every heading came out the same red, so the panel
+   said nothing about which part of the engine you were in. Now Pitch is red, Noise
+   green, Filter blue, the LFOs their four violets, and the strip below is a
+   spectrum you can aim at. */
 .deck-head {
   font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--vc, var(--text)); border-bottom: 1px solid var(--vc, var(--muted));
+  color: var(--sc, var(--vc, var(--text))); border-bottom: 2px solid var(--sc, var(--vc, var(--muted)));
   padding-bottom: 3px; margin-bottom: 2px;
 }
 .deck-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
@@ -1453,17 +1599,47 @@ select:focus { outline: none; }
 .deck-off .deck-name { opacity: 0.4; }
 
 /* A number, as where it sits in the range the engine allows. touch-action: none so a
-   drag along the bar sets the value instead of scrolling the panel under it. */
+   drag along the bar sets the value instead of scrolling the panel under it.
+
+   The bar is a LADDER, not a stripe: the well is ruled into ~28 segments and the
+   value lights them up from the left, like the level meter on a mixing desk. Two
+   things it does that a solid fill didn't — it gives the eye something to count, so
+   a small change is visible without reading the number; and it carries a gradient
+   along its length (the section's colour warming as it climbs), so the bar has
+   internal colour instead of being one flat slab of the voice's red.
+
+   The fill always spans the WHOLE track and is clipped back to the value (--v, set
+   in app.ts). That is the whole trick: the segment ruling and the gradient are laid
+   out over the full range once, so the blocks stay put and the colours keep their
+   places while the value moves — where a fill that grew by its own width would drag
+   both along with it. */
 .deck-track {
+  --seg: 3.571%; /* 100 / 28 — one segment of the ladder */
   flex: 1 1 auto; position: relative; height: 22px;
   background: var(--field); box-shadow: var(--field-in);
   cursor: ew-resize; touch-action: none;
+  overflow: hidden;
 }
 .deck-fill {
-  position: absolute; left: 0; top: 0; bottom: 0;
-  background: var(--vc, var(--text)); opacity: 0.75;
+  position: absolute; inset: 0;
+  /* Lit blocks in the section's colour, BRIGHTENING as they climb — the ramp starts
+     at the full colour rather than below it, so a value near the bottom (most of
+     them, on a skewed range) still shows the section's own hue instead of a muddy
+     dark end, and a value near the top runs away lighter. */
+  background-image: linear-gradient(90deg,
+    var(--sc, var(--vc, var(--text))) 0%,
+    color-mix(in srgb, var(--sc, var(--vc, var(--text))) 62%, #ffffff) 62%,
+    color-mix(in srgb, var(--sc, var(--vc, var(--text))) 34%, #ffffff) 100%);
+  /* The gaps: 1px slivers cut out on a fixed pitch. A mask rather than a striped
+     background so the block edges show the sunken well through them, not a colour. */
+  -webkit-mask-image: repeating-linear-gradient(90deg,
+    #000 0 calc(var(--seg) - 1px), transparent calc(var(--seg) - 1px) var(--seg));
+  mask-image: repeating-linear-gradient(90deg,
+    #000 0 calc(var(--seg) - 1px), transparent calc(var(--seg) - 1px) var(--seg));
+  /* …and the value itself: everything to the right of --v is cut away unlit. */
+  clip-path: inset(0 calc(100% - var(--v, 0%)) 0 0);
 }
-.deck-off .deck-fill { opacity: 0.25; }
+.deck-off .deck-fill { filter: grayscale(0.75); opacity: 0.45; }
 .deck-val {
   flex: 0 0 4.5em; text-align: right; font-size: 11px; font-weight: 700;
   color: var(--text); font-variant-numeric: tabular-nums;
@@ -1485,20 +1661,35 @@ select:focus { outline: none; }
   background: var(--panel); box-shadow: var(--btn-out);
   white-space: nowrap; user-select: none;
 }
-.deck-opt.on { font-weight: 700; box-shadow: var(--btn-in), inset 0 -2px 0 var(--vc, var(--text)); }
+.deck-opt.on {
+  --ink: var(--sc, var(--vc, var(--text)));
+  font-weight: 700; background: var(--role-face);
+  box-shadow: var(--btn-in), inset 0 -2px 0 var(--sc, var(--vc, var(--text)));
+}
 .deck-off .deck-opt { color: var(--muted); }
 
 /* The sections. They wrap into as many rows as they need and stay under the panel — the
    one part of this screen that never moves. */
+/* Twenty-four buttons is a lot to aim at, and as identical grey rectangles they were a
+   wall of small type. Each now carries the colour of the engine section it opens (--sc,
+   from app.ts) and is cut as a folder tab, so the strip reads as a spectrum with a
+   shape — the top row of hot colours is the oscillator, the cool middle the filter and
+   LFOs, the far end the output stage. */
 .deck-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
 .deck-tab {
+  --ink: var(--sc, var(--vc, var(--text)));
   flex: 1 1 auto; padding: 6px 7px; font: inherit; font-size: 10.5px; font-weight: 600;
   color: var(--muted); background: var(--panel);
   border: none; border-radius: 0; box-shadow: var(--btn-out);
   white-space: nowrap;
+  clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% 100%, 0 100%, 0 4px);
 }
 .deck-tab:active { box-shadow: var(--btn-in); padding: 7px 6px 5px 8px; }
 /* LIT = something inside this section is sounding, the same test the graph uses to decide
-   whether to draw a curve — so the strip reads what a shuffle built without opening it. */
-.deck-tab.lit { color: var(--vc, var(--text)); font-weight: 700; }
-.deck-tab.on { box-shadow: var(--btn-in), inset 0 -2px 0 var(--vc, var(--text)); color: var(--text); }
+   whether to draw a curve — so the strip reads what a shuffle built without opening it.
+   A silent section stays grey and grey-lettered; a sounding one takes its colour. */
+.deck-tab.lit { color: var(--sc, var(--vc, var(--text))); font-weight: 700; background: var(--role-face); }
+.deck-tab.on {
+  box-shadow: var(--btn-in), inset 0 -3px 0 var(--sc, var(--vc, var(--text)));
+  background: var(--role-face); color: var(--text);
+}

@@ -234,6 +234,29 @@ const ENGINE_SECTIONS: EngineSection[] = (() => {
   return out;
 })();
 
+/** A section's identity colour — the colour the GRAPH draws that part of the engine in.
+    Taking it from the trace rather than inventing a second palette means the deck's tab
+    strip and the graph's curves name the same thing the same way, and a section can never
+    drift to a colour its own curve doesn't wear. A section with no trace at all (nothing
+    on the graph answers for it) falls back to the voice colour in CSS. */
+function sectionColor(s: EngineSection): string | undefined {
+  for (const id of s.ids) {
+    const t = SECTION_TRACE_OF[id];
+    if (t) return t.color;
+  }
+  // Three sections are drawn on the graph but are deliberately absent from
+  // SECTION_TRACE_OF, because that map answers "is this row doing anything?" and these
+  // three are always doing something — the amp envelope, the filter and the per-hit
+  // life shape are part of every sound whatever their values (see sectionRowActive).
+  // They still have a curve, and therefore a colour, so name them here. A title that
+  // stops matching costs the section its colour and nothing else.
+  const byTitle: Record<string, string> = {
+    "Amp Envelope": "amp", "Filter": "filter", "Per-Hit Life": "life",
+  };
+  const id = byTitle[s.title];
+  return id ? SOUND_TRACES.find((t) => t.id === id)?.color : undefined;
+}
+
 /** What a sound-graph panel edits: the kit + shuffle settings, and where edits land.
     Two hosts exist — a loop's OWN sound, and a transition's TRANSFORMED sound. */
 interface SoundGraphHost {
@@ -1321,7 +1344,7 @@ export class App {
 
     if (!picked) {
       const empty = document.createElement("p");
-      empty.className = "voice-sheet-sub";
+      empty.className = "hint";
       empty.textContent = "No loops on this voice yet — ＋ adds one.";
       v.append(empty);
       return;
@@ -1602,13 +1625,9 @@ export class App {
       }
       head.append(closeBox());
       sheet.append(head);
-      // The sound description under the coined name, for reference.
-      if (loop.label && loop.name) {
-        const sub = document.createElement("p");
-        sub.className = "voice-sheet-sub";
-        sub.textContent = loop.name;
-        sheet.append(sub);
-      }
+      // No shorthand param string under the name any more: it read as a wall of abbreviations
+      // ("Square · 676 · Pink · N-env …") over the very panel that shows those settings in
+      // full. loop.name still exists and still labels the loop on the grid and copy menus.
     }
 
     // No tab nav here: the main page IS the loop, and everything else opens off it.
@@ -1643,9 +1662,9 @@ export class App {
 
       const actions = document.createElement("div");
       actions.className = "loop-actions";
-      const mkAction = (text: string, title: string, fn: () => void) => {
+      const mkAction = (text: string, title: string, fn: () => void, role = "") => {
         const b = document.createElement("button");
-        b.className = "loop-action-btn";
+        b.className = "loop-action-btn" + (role ? " " + role : "");
         b.textContent = text;
         b.title = title;
         b.onclick = fn;
@@ -1669,8 +1688,8 @@ export class App {
             this.recompile();
             this.schedulePreview(loop, tr);
             rerender();
-          }),
-        mkAction("⧉ Copy", "Copy this loop to another row", () => this.openCopyLoopMenu(loop)),
+          }, "act-edit"),
+        mkAction("⧉ Copy", "Copy this loop to another row", () => this.openCopyLoopMenu(loop), "act-nav"),
       );
       sheet.append(actions);
     }
@@ -2318,11 +2337,11 @@ export class App {
     bar.append(
       mkTool("↩", "Back to the previous sound", () => {
         if (p.undo()) void host.replace();
-      }, "", !p.canUndo()),
+      }, "graph-tool-undo", !p.canUndo()),
       mkTool("↺", host.resetTitle, () => {
         host.reset();
         void host.replace();
-      }),
+      }, "graph-tool-reset"),
     );
     // The deck's own starting point, stamped on demand — ∞ for the note that doesn't end.
     // A loop ADDED while the deck is open is already minted as one (see mintLoopSound);
@@ -2470,6 +2489,10 @@ export class App {
     head.className = "deck-head";
     head.textContent = section.title;
     panel.append(head);
+    // The whole panel wears the open section's colour (--sc): the heading rule, the bars'
+    // fill and the lit tab all come from it, so a section is recognisable before it is read.
+    const open = sectionColor(section);
+    if (open) panel.style.setProperty("--sc", open);
     for (const id of section.ids) {
       const spec = baseSpec(id);
       const row = isDiscrete(spec)
@@ -2493,6 +2516,8 @@ export class App {
         + (s.ids.some((id) => sectionRowActive(id, get)) ? " lit" : "");
       b.textContent = s.title;
       b.title = `${s.title} — ${s.ids.length} setting${s.ids.length === 1 ? "" : "s"}`;
+      const sc = sectionColor(s);
+      if (sc) b.style.setProperty("--sc", sc);
       b.onclick = () => { this.deckSection = i; rerender(); };
       tabs.append(b);
     });
@@ -2585,7 +2610,9 @@ export class App {
 
     const paint = () => {
       const v = p.get(id);
-      fill.style.width = `${valueToNorm(spec, v) * 100}%`;
+      // --v, not width: the fill spans the whole track and is clipped back to the value,
+      // so the ladder's segments and its gradient stay still as the value moves (style.css).
+      fill.style.setProperty("--v", `${valueToNorm(spec, v) * 100}%`);
       val.textContent = sectionValue(spec, v);
     };
     paint();
