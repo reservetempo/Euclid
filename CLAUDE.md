@@ -38,7 +38,11 @@ button on its toolbar (∿ ↔ ◫): the **graph**, where every active setting i
 function of time; and the **deck**, which spends the whole screen on ONE section of the
 engine (the sections sit along the bottom as buttons) so every setting can be shown in
 full — a choice list as a list you slide across (every option on screen, no dropdowns), a
-number as a bar you slide along, and a tap on either opens the numpad. The deck is where a
+number as a bar you slide along with its NAME AND VALUE WRITTEN INSIDE THE BAR (no name
+column, so the bar is the full width of the panel), and a tap on either opens the numpad.
+The deck is also the one screen that does NOT wear the Win98 bevel — flat faces, soft
+corners, colour instead of depth — because forty bevelled controls in one view read as
+corrugation rather than as values. The deck is where a
 DRONE is designed — a loop added while it is open is minted as one long held note instead
 of a shuffled hit (`SoundDraft.resetToDrone`, also on the deck's ∞ button). The deck cuts
 the engine into sections through `ENGINE_SECTIONS`, whose "is this sounding" test is the

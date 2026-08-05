@@ -2589,7 +2589,17 @@ export class App {
       ABSOLUTE — the value goes where the finger is — which is what makes the bar worth
       drawing; the numpad (tap, as everywhere else) is still how you land on an exact
       number. The mapping is the registry's own skew, so a bar reads the way that
-      parameter's range is actually shaped. */
+      parameter's range is actually shaped.
+
+      The name and the number ride INSIDE the bar rather than in columns beside it: a name
+      column wide enough for "Wave Position" cost every bar a third of its width, on a
+      screen whose whole point is fitting a section into one view. Inside, the bar is the
+      full width of the panel and the row is one object instead of three.
+
+      The label is drawn TWICE, one copy over the other, because it crosses a boundary that
+      moves: dark words over the pale well, white words over the lit colour, the top copy
+      clipped to exactly the same `--v` as the fill. That is cheaper and steadier than any
+      blend mode, and it means neither half is ever read against its own colour. */
   private deckBarRow(
     host: SoundGraphHost, rerender: () => void,
     id: ParamId, spec: ParamSpec, strip?: string,
@@ -2597,23 +2607,38 @@ export class App {
     const p = host.draft;
     const row = document.createElement("div");
     row.className = "deck-row deck-bar";
-    const name = document.createElement("span");
-    name.className = "deck-name";
-    name.textContent = dropBlockWord(spec.name, strip);
-    const val = document.createElement("span");
-    val.className = "deck-val";
     const track = document.createElement("div");
     track.className = "deck-track";
     const fill = document.createElement("div");
     fill.className = "deck-fill";
-    track.append(fill);
+
+    const caption = (lit: boolean) => {
+      const cap = document.createElement("div");
+      cap.className = "deck-cap" + (lit ? " lit" : "");
+      // The lit copy is the same words a second time, for the eye only — a screen reader
+      // reading every row twice would be the cost of a purely visual trick.
+      if (lit) cap.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.className = "deck-name";
+      name.textContent = dropBlockWord(spec.name, strip);
+      const val = document.createElement("span");
+      val.className = "deck-val";
+      cap.append(name, val);
+      return { cap, val };
+    };
+    const under = caption(false);
+    const over = caption(true);
+    track.append(fill, under.cap, over.cap);
 
     const paint = () => {
       const v = p.get(id);
       // --v, not width: the fill spans the whole track and is clipped back to the value,
       // so the ladder's segments and its gradient stay still as the value moves (style.css).
-      fill.style.setProperty("--v", `${valueToNorm(spec, v) * 100}%`);
-      val.textContent = sectionValue(spec, v);
+      // It sits on the TRACK because the lit caption is clipped by it too.
+      track.style.setProperty("--v", `${valueToNorm(spec, v) * 100}%`);
+      const text = sectionValue(spec, v);
+      under.val.textContent = text;
+      over.val.textContent = text;
     };
     paint();
 
@@ -2639,7 +2664,7 @@ export class App {
       commit: () => { host.commitAudition(); rerender(); },
     });
 
-    row.append(name, track, val);
+    row.append(track);
     return row;
   }
 
