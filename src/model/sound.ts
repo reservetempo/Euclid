@@ -386,7 +386,7 @@ export class SoundDraft {
   // Bumped by every mutation. Async work captures it and compares afterwards to tell
   // whether the sound it started from is still the sound on screen.
   private _rev = 0;
-  // Full-state undo entries (a shuffle or a reset is one step), most recent last.
+  // Full-state undo entries (a shuffle, a reset or a dial turn is one step), most recent last.
   private undoStack: number[][] = [];
 
   // --- shuffle settings, as REAL values (the UI maps its option lists onto these) ---
@@ -543,12 +543,19 @@ export class SoundDraft {
     return this.undoStack.length > 0;
   }
 
-  /** Step back to the state before the last shuffle/reset. False if there is none. */
+  /** Step back to the state before the last shuffle/reset/dial turn. False if there is none. */
   undo(): boolean {
     const prev = this.undoStack.pop();
     if (!prev) return false;
     this.restore(prev);
     return true;
+  }
+
+  /** Push an undo step for an edit made from outside through {@link set}. A single
+      setting moved by hand doesn't earn one — but the deck's dial moves every setting you
+      picked at once, which is a whole-sound edit and should come back in one ↩. */
+  checkpoint(): void {
+    this.pushUndo();
   }
 
   private pushUndo(): void {

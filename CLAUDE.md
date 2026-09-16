@@ -42,7 +42,12 @@ number as a bar you slide along with its NAME AND VALUE WRITTEN INSIDE THE BAR (
 column, so the bar is the full width of the panel), and a tap on either opens the numpad.
 The deck is also the one screen that does NOT wear the Win98 bevel — flat faces, soft
 corners, colour instead of depth — because forty bevelled controls in one view read as
-corrugation rather than as values. The deck is where a
+corrugation rather than as values. The strip's first button, **All**, is the one section
+that is not a slice of the engine: every setting at once as a square grid of buttons, each
+filled like a progress bar to its value, where a click PICKS a setting rather than editing
+it and one **dial** beside the grid moves every pick together — relatively, by the same
+share of each one's own range (`deckAllPanel` / `deckDial`; one turn is one undo step via
+`SoundDraft.checkpoint`). The deck is where a
 DRONE is designed — a loop added while it is open is minted as one long held note instead
 of a shuffled hit (`SoundDraft.resetToDrone`, also on the deck's ∞ button). The deck cuts
 the engine into sections through `ENGINE_SECTIONS`, whose "is this sounding" test is the

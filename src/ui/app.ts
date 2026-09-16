@@ -257,6 +257,46 @@ function sectionColor(s: EngineSection): string | undefined {
   return id ? SOUND_TRACES.find((t) => t.id === id)?.color : undefined;
 }
 
+/** The deck's ALL section: not a slice of the engine but the whole of it, every setting
+    as one square button in a grid, with a DIAL that moves whichever of them you pick.
+    It has no entry in ENGINE_SECTIONS (it would put every id there twice), so the deck's
+    open-section index names it with this sentinel instead. */
+const DECK_ALL = -1;
+
+/** Every setting the All grid shows, in registry order, each with the section it reads
+    under — so a run of one colour on the grid IS a section, just as on the strip. */
+const DECK_ALL_CELLS: { id: RealParamId; section: EngineSection }[] =
+  ENGINE_SECTIONS.flatMap((section) => section.ids.map((id) => ({ id, section })));
+
+/** Columns in the All grid: the smallest square that holds every setting, so ninety
+    settings are ten across and nine down — as near a square as the count allows. */
+const DECK_ALL_COLS = Math.ceil(Math.sqrt(DECK_ALL_CELLS.length));
+
+/** A section's name as a grid cell can carry it. A cell is a tenth of the grid wide, so
+    the three long registry names give way to the word that identifies them. */
+function sectionTag(s: EngineSection): string {
+  const short: Record<string, string> = {
+    "Amp Envelope": "Amp", "Per-Hit Life": "Life", "Drive & FX": "Drive",
+  };
+  return short[s.title] ?? s.title;
+}
+
+/** The range the dial may move a setting through. The registry's, except for Pitch Shape,
+    whose last choice ("Drawn") is a hand-drawn curve rather than a setting — the dial stops
+    one short of it, the way the shuffle and the deck's own list do. */
+function dialSpec(id: ParamId): ParamSpec {
+  const spec = baseSpec(id);
+  return id === ParamId.PitchEnvShape ? { ...spec, max: PITCH_SHAPE_DRAWN - 1 } : spec;
+}
+
+// The dial's gearing, in fractions of each setting's own range (see deckDial). A mouse
+// wheel notch is 2%, a − / + press 5%, a full drag 180px; Shift gears any of them down to
+// a quarter for fine work.
+const DIAL_WHEEL_STEP = 0.02;
+const DIAL_BUTTON_STEP = 0.05;
+const DIAL_DRAG_PX = 180;
+const DIAL_FINE = 0.25;
+
 /** What a sound-graph panel edits: the kit + shuffle settings, and where edits land.
     Two hosts exist — a loop's OWN sound, and a transition's TRANSFORMED sound. */
 interface SoundGraphHost {
@@ -317,10 +357,19 @@ export class App {
   // later pages = the inactive ones).
   private graphTrace: string | null = null;
   // How the sound panel is read (graph / deck) — sticky across loops for the
-  // session, as is the deck's open section (index into ENGINE_SECTIONS): coming back to the
-  // deck should land where you left it, the way the graph keeps its page.
+  // session, as is the deck's open section (index into ENGINE_SECTIONS, or DECK_ALL): coming
+  // back to the deck should land where you left it, the way the graph keeps its page.
   private soundLayout: SoundLayout = "graph";
   private deckSection = 0;
+  // The All section's picks — the settings its dial moves. Sticky across loops for the
+  // session like the open section: "these are the ones I play with" is about the engine,
+  // not about one sound, so a picked set carries from loop to loop.
+  private deckPicked = new Set<ParamId>();
+  // Where the dial has carried each setting, as a fraction of its range, finer than the
+  // value itself can hold: a two-choice switch or a stepped number only changes every so
+  // many notches, and without this the notches in between would be lost at each release.
+  // Trusted only while it still produces the value the sound holds (see dialNormOf).
+  private dialNorm = new Map<ParamId, number>();
   private graphPage = 0;
   // Transition editor state: the open transition and its tabs. The editing state for a
   // transition's transformed sound is the draft on the transition itself (see
@@ -2212,7 +2261,11 @@ export class App {
     },
     {
       name: "The section buttons",
-      desc: "Along the bottom: one button per part of the engine — Pitch, Tone, Noise, the oscillators and shapers, Click, the Comb and Modal resonators, the four LFOs, the FX chain, the amp envelope, the filter, Per-Hit Life and Output. Tap one to open it above. A button lit in the voice colour has something sounding in it, so the strip alone reads what a shuffle built — the same test the graph uses to decide whether to draw a curve.",
+      desc: "Along the bottom: one button per part of the engine — Pitch, Tone, Noise, the oscillators and shapers, Click, the Comb and Modal resonators, the four LFOs, the FX chain, the amp envelope, the filter, Per-Hit Life and Output. Tap one to open it above. A button lit in the voice colour has something sounding in it, so the strip alone reads what a shuffle built — the same test the graph uses to decide whether to draw a curve. ALL, at the head of the strip, opens every section at once.",
+    },
+    {
+      name: "All — every setting on one dial",
+      desc: "Every setting of the engine as one square grid of buttons, each filled like a progress bar to where its value sits in its range — so the grid is a picture of the whole sound, and the empty grey runs are the parts that are off. Click a button to PICK it; press and sweep to pick a run of them (a sweep that starts on a picked one unpicks). The DIAL beside the grid moves every pick at once, each by the same share of its own range: drag it up or down, turn the mouse wheel over it, or click it and use the arrow keys — − and + step 5%, and Shift makes any of them fine. The dial shows where the picks sit on average; one that reaches the end of its range waits there while the rest carry on. A turn is one ↩, and the sound plays when it settles. Double-click a number to type its exact value.",
     },
     {
       name: "Lists you drag across",
@@ -2465,7 +2518,9 @@ export class App {
       A choice list is drawn as a list: every option is on screen and you slide across
       them, hearing each one, instead of flicking a single field through names you never
       see. A number is drawn as a bar, so where the value sits in the range the engine
-      allows is visible rather than inferred from the digits.
+      allows is visible rather than inferred from the digits. One button on the strip,
+      ALL, trades that depth for breadth: every setting at once as a grid, with a dial for
+      the ones you pick (see {@link deckAllPanel}).
 
       It is also the screen a DRONE is designed on — a sound you hold and shape while it
       rings, rather than a hit you fire. A loop added while this layout is open is minted
@@ -2480,35 +2535,47 @@ export class App {
     wrap.append(this.soundToolbar(host, rerender, true));
 
     const get: ParamGet = (id) => p.get(id);
-    const idx = Math.max(0, Math.min(ENGINE_SECTIONS.length - 1, this.deckSection));
-    const section = ENGINE_SECTIONS[idx];
+    const all = this.deckSection === DECK_ALL;
+    const idx = all ? DECK_ALL : Math.max(0, Math.min(ENGINE_SECTIONS.length - 1, this.deckSection));
 
-    const panel = document.createElement("div");
-    panel.className = "deck-panel";
-    const head = document.createElement("div");
-    head.className = "deck-head";
-    head.textContent = section.title;
-    panel.append(head);
-    // The whole panel wears the open section's colour (--sc): the heading rule, the bars'
-    // fill and the lit tab all come from it, so a section is recognisable before it is read.
-    const open = sectionColor(section);
-    if (open) panel.style.setProperty("--sc", open);
-    for (const id of section.ids) {
-      const spec = baseSpec(id);
-      const row = isDiscrete(spec)
-        ? this.deckChoiceRow(host, rerender, id, spec, section.strip)
-        : this.deckBarRow(host, rerender, id, spec, section.strip);
-      // Dim what isn't reaching the output, by the graph's own test — the value is still
-      // real and still editable, it just isn't sounding yet.
-      if (!sectionRowActive(id, get)) row.classList.add("deck-off");
-      panel.append(row);
+    if (all) {
+      wrap.append(this.deckAllPanel(host, rerender, wrap));
+    } else {
+      const section = ENGINE_SECTIONS[idx];
+      const panel = document.createElement("div");
+      panel.className = "deck-panel";
+      const head = document.createElement("div");
+      head.className = "deck-head";
+      head.textContent = section.title;
+      panel.append(head);
+      // The whole panel wears the open section's colour (--sc): the heading rule, the bars'
+      // fill and the lit tab all come from it, so a section is recognisable before it is read.
+      const open = sectionColor(section);
+      if (open) panel.style.setProperty("--sc", open);
+      for (const id of section.ids) {
+        const spec = baseSpec(id);
+        const row = isDiscrete(spec)
+          ? this.deckChoiceRow(host, rerender, id, spec, section.strip)
+          : this.deckBarRow(host, rerender, id, spec, section.strip);
+        // Dim what isn't reaching the output, by the graph's own test — the value is still
+        // real and still editable, it just isn't sounding yet.
+        if (!sectionRowActive(id, get)) row.classList.add("deck-off");
+        panel.append(row);
+      }
+      wrap.append(panel);
     }
-    wrap.append(panel);
 
     // The sections, as the buttons that switch between them. A lit button has something
-    // sounding inside it, so the strip alone reads what a shuffle built.
+    // sounding inside it, so the strip alone reads what a shuffle built. ALL leads the
+    // strip: it is every section at once, so it wears no section's colour — the voice's.
     const tabs = document.createElement("div");
     tabs.className = "deck-tabs";
+    const allTab = document.createElement("button");
+    allTab.className = "deck-tab deck-tab-all" + (all ? " on" : "");
+    allTab.textContent = "All";
+    allTab.title = `All ${DECK_ALL_CELLS.length} settings as one grid, with a dial for the ones you pick`;
+    allTab.onclick = () => { this.deckSection = DECK_ALL; rerender(); };
+    tabs.append(allTab);
     ENGINE_SECTIONS.forEach((s, i) => {
       const b = document.createElement("button");
       b.className = "deck-tab"
@@ -2523,6 +2590,445 @@ export class App {
     });
     wrap.append(tabs);
     return wrap;
+  }
+
+  /** The deck's ALL section: every setting of the engine at once, as a square grid of
+      buttons, and one DIAL beside it that moves the ones you pick.
+
+      Each button is filled the way a progress bar is — left to right, as far as its value
+      sits along the range the engine allows — so the grid reads as a picture of the whole
+      sound before a single number is read: runs of empty grey are the parts of the engine
+      that are off, and the colour shows where the sound's weight is.
+
+      The buttons don't edit anything themselves. A click PICKS one (press and sweep to
+      pick a run of them; a sweep that starts on a picked one unpicks instead), and the dial
+      moves every pick together. It moves each by the same share of ITS OWN range rather
+      than by the same number, which is the only unit a cutoff in hertz, a mix and a list of
+      wave shapes have in common — so "up a bit" means the same thing to all of them.
+      Double-click a number to type its exact value.
+
+      Edits land on the cells as the dial turns; the panel is rebuilt only once a turn
+      settles, so nothing under the pointer is replaced mid-gesture. `wrap` is the sound
+      panel this lives in, which is how a late settle knows its screen is still there. */
+  private deckAllPanel(host: SoundGraphHost, rerender: () => void, wrap: HTMLElement): HTMLElement {
+    const p = host.draft;
+    const get: ParamGet = (id) => p.get(id);
+    const picked = this.deckPicked;
+
+    const panel = document.createElement("div");
+    panel.className = "deck-panel deck-all";
+    const head = document.createElement("div");
+    head.className = "deck-head";
+    head.textContent = `All ${DECK_ALL_CELLS.length} settings`;
+    panel.append(head);
+
+    const body = document.createElement("div");
+    body.className = "deck-all-body";
+    const grid = document.createElement("div");
+    grid.className = "deck-grid";
+    grid.style.setProperty("--cols", String(DECK_ALL_COLS));
+    grid.style.setProperty("--rows", String(Math.ceil(DECK_ALL_CELLS.length / DECK_ALL_COLS)));
+
+    const cells = new Map<HTMLElement, ParamId>();
+    const painters: (() => void)[] = [];
+    for (const { id, section } of DECK_ALL_CELLS) {
+      const spec = baseSpec(id);
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "deck-cell";
+      const sc = sectionColor(section);
+      if (sc) cell.style.setProperty("--sc", sc);
+      const fill = document.createElement("div");
+      fill.className = "deck-cell-fill";
+      cell.append(fill);
+      // The caption twice, as on the deck's bars (see deckBarRow): dark words over the
+      // well, white ones clipped to the fill, so neither is read against its own colour.
+      const caption = (lit: boolean) => {
+        const cap = document.createElement("div");
+        cap.className = "deck-cell-cap" + (lit ? " lit" : "");
+        if (lit) cap.setAttribute("aria-hidden", "true");
+        const tag = document.createElement("span");
+        tag.className = "deck-cell-tag";
+        tag.textContent = sectionTag(section);
+        const name = document.createElement("span");
+        name.className = "deck-cell-name";
+        name.textContent = dropBlockWord(spec.name, section.strip);
+        const val = document.createElement("span");
+        val.className = "deck-cell-val";
+        cap.append(tag, name, val);
+        cell.append(cap);
+        return val;
+      };
+      const under = caption(false);
+      const over = caption(true);
+      painters.push(() => {
+        const v = p.get(id);
+        const text = sectionValue(spec, v);
+        cell.style.setProperty("--v", `${valueToNorm(spec, v) * 100}%`);
+        under.textContent = text;
+        over.textContent = text;
+        const drawn = v > dialSpec(id).max;
+        cell.title = `${section.title} · ${spec.name} — ${text}`
+          + (drawn ? " (drawn by hand: the dial leaves it alone)" : "");
+        cell.classList.toggle("deck-off", !sectionRowActive(id, get));
+        cell.classList.toggle("picked", picked.has(id));
+        cell.setAttribute("aria-pressed", String(picked.has(id)));
+      });
+      // Keyboard only (a pointer picks on press, below): Enter / Space on a focused cell.
+      cell.addEventListener("click", (e) => {
+        if (e.detail !== 0) return;
+        if (picked.has(id)) picked.delete(id);
+        else picked.add(id);
+        paintCells();
+        dial.paint();
+      });
+      cells.set(cell, id);
+      grid.append(cell);
+    }
+    const paintCells = () => { for (const paint of painters) paint(); };
+    const dial = this.deckDial(host, rerender, wrap, paintCells);
+
+    // Picking, by press and sweep. The grid holds the pointer so the sweep can cross cells,
+    // and the cell under it is found by position. The press is default-prevented so it
+    // doesn't take focus off the dial: pick, then turn with the keys, without clicking back.
+    let sweep: "pick" | "unpick" | null = null;
+    let last = { x: 0, y: 0 };
+    const cellAt = (x: number, y: number): HTMLElement | null => {
+      const el = document.elementFromPoint(x, y)?.closest<HTMLElement>(".deck-cell");
+      return el && cells.has(el) ? el : null;
+    };
+    const mark = (cell: HTMLElement) => {
+      const id = cells.get(cell)!;
+      const on = sweep === "pick";
+      if (picked.has(id) === on) return;
+      if (on) picked.add(id);
+      else picked.delete(id);
+      cell.classList.toggle("picked", on);
+      cell.setAttribute("aria-pressed", String(on));
+      dial.paint();
+    };
+    grid.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const cell = cellAt(e.clientX, e.clientY);
+      if (!cell) return;
+      e.preventDefault();
+      sweep = picked.has(cells.get(cell)!) ? "unpick" : "pick";
+      last = { x: e.clientX, y: e.clientY };
+      mark(cell);
+      grid.setPointerCapture(e.pointerId);
+    });
+    // A quick sweep reports only a few points, whole cells apart, so the path between the
+    // last point and this one is walked in short steps and every cell it crosses is marked.
+    grid.addEventListener("pointermove", (e) => {
+      if (!sweep) return;
+      const dx = e.clientX - last.x, dy = e.clientY - last.y;
+      const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 6));
+      for (let i = 1; i <= n; i++) {
+        const cell = cellAt(last.x + (dx * i) / n, last.y + (dy * i) / n);
+        if (cell) mark(cell);
+      }
+      last = { x: e.clientX, y: e.clientY };
+    });
+    const endSweep = (e: PointerEvent) => {
+      if (!sweep) return;
+      sweep = null;
+      try { grid.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    };
+    grid.addEventListener("pointerup", endSweep);
+    grid.addEventListener("pointercancel", endSweep);
+    // The two presses of a double-click pick and unpick, leaving the picks as they were —
+    // so a double-click is free to mean "type this one's value".
+    grid.addEventListener("dblclick", (e) => {
+      const cell = cellAt(e.clientX, e.clientY);
+      if (!cell) return;
+      const id = cells.get(cell)!;
+      const spec = baseSpec(id);
+      if (isDiscrete(spec)) return;
+      this.openNumpad({
+        title: spec.name,
+        value: sectionValue(spec, p.get(id)),
+        color: host.color,
+        onSubmit: (n) => {
+          p.set(id, n);
+          host.write();
+          host.commitAudition();
+          rerender();
+        },
+      });
+    });
+
+    paintCells();
+    body.append(grid, dial.el);
+    panel.append(body);
+    return panel;
+  }
+
+  /** The All section's DIAL: one control for every setting picked on the grid.
+
+      It is RELATIVE — turning it moves each pick from wherever that pick already is, by
+      the same share of its own range — because the picks start at different places and an
+      absolute dial would flatten them all to one level on first touch. What it SHOWS is
+      their average position, so with one pick the dial simply is that setting, and with
+      many it reads where the group sits as it moves. A pick that reaches an end of its
+      range stops there while the rest go on; within one drag it keeps its place in the
+      group, so dragging back brings it back in step.
+
+      Drag up/down, turn the mouse wheel over it, or focus it and use the arrow keys; − and
+      + step it by 5%. Shift gears any of them down for fine work. Each turn — a drag, or a
+      run of notches or presses — is one undo step, and plays the sound when it settles. */
+  private deckDial(
+    host: SoundGraphHost, rerender: () => void, wrap: HTMLElement, paintCells: () => void,
+  ): { el: HTMLElement; paint: () => void } {
+    const p = host.draft;
+    const picked = this.deckPicked;
+    const col = document.createElement("div");
+    col.className = "deck-dial-col";
+    const count = document.createElement("div");
+    count.className = "deck-dial-count";
+
+    const dial = document.createElement("div");
+    dial.className = "deck-dial";
+    dial.tabIndex = 0;
+    dial.setAttribute("role", "slider");
+    dial.setAttribute("aria-label", "Dial — moves every picked setting");
+    dial.setAttribute("aria-valuemin", "0");
+    dial.setAttribute("aria-valuemax", "100");
+
+    // A 270° sweep, from the bottom-left (135°, clockwise in SVG's y-down space) round to
+    // the bottom-right, like the knob on a desk.
+    const NS = "http://www.w3.org/2000/svg";
+    const A0 = 135, SWEEP = 270, R = 40;
+    const pt = (deg: number, r: number): [number, number] => {
+      const a = (deg * Math.PI) / 180;
+      return [50 + r * Math.cos(a), 50 + r * Math.sin(a)];
+    };
+    const arc = (to: number): string => {
+      const [x0, y0] = pt(A0, R);
+      const [x1, y1] = pt(to, R);
+      return `M ${x0} ${y0} A ${R} ${R} 0 ${to - A0 > 180 ? 1 : 0} 1 ${x1} ${y1}`;
+    };
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.classList.add("deck-dial-svg");
+    for (let i = 0; i <= 10; i++) {
+      const [x0, y0] = pt(A0 + (SWEEP * i) / 10, 46);
+      const [x1, y1] = pt(A0 + (SWEEP * i) / 10, 49.5);
+      const tick = document.createElementNS(NS, "line");
+      tick.setAttribute("x1", String(x0));
+      tick.setAttribute("y1", String(y0));
+      tick.setAttribute("x2", String(x1));
+      tick.setAttribute("y2", String(y1));
+      tick.classList.add("deck-dial-tick");
+      svg.append(tick);
+    }
+    const track = document.createElementNS(NS, "path");
+    track.setAttribute("d", arc(A0 + SWEEP));
+    track.classList.add("deck-dial-track");
+    const value = document.createElementNS(NS, "path");
+    value.classList.add("deck-dial-value");
+    const knob = document.createElementNS(NS, "circle");
+    knob.setAttribute("cx", "50");
+    knob.setAttribute("cy", "50");
+    knob.setAttribute("r", "31");
+    knob.classList.add("deck-dial-knob");
+    const pointer = document.createElementNS(NS, "line");
+    pointer.classList.add("deck-dial-pointer");
+    const text = document.createElementNS(NS, "text");
+    text.setAttribute("x", "50");
+    text.setAttribute("y", "54");
+    text.setAttribute("text-anchor", "middle");
+    text.classList.add("deck-dial-text");
+    svg.append(track, value, knob, pointer, text);
+    dial.append(svg);
+
+    const steps = document.createElement("div");
+    steps.className = "deck-dial-steps";
+    const readout = document.createElement("div");
+    readout.className = "deck-dial-read";
+    const readName = document.createElement("div");
+    readName.className = "deck-dial-name";
+    const readVal = document.createElement("div");
+    readVal.className = "deck-dial-val";
+    readout.append(readName, readVal);
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "deck-dial-clear";
+    clear.textContent = "Clear picks";
+    const hint = document.createElement("div");
+    hint.className = "deck-dial-hint";
+    hint.textContent = "Drag up / down, wheel or arrow keys · Shift for fine · double-click a number to type it";
+
+    // Where the dial has carried a setting (see dialNorm), or where its value sits if the
+    // sound has moved on since — another loop, a shuffle, an edit on another section.
+    const normOf = (id: ParamId): number => {
+      const spec = dialSpec(id);
+      const v = p.get(id);
+      const s = this.dialNorm.get(id);
+      return s !== undefined && normToValue(spec, s) === v ? s : valueToNorm(spec, v);
+    };
+    const put = (id: ParamId, n: number) => {
+      const c = Math.max(0, Math.min(1, n));
+      this.dialNorm.set(id, c);
+      p.set(id, normToValue(dialSpec(id), c));
+    };
+    // A drawn pitch contour sits past the dial's range and is left where it is.
+    const movable = () => [...picked].filter((id) => p.get(id) <= dialSpec(id).max);
+    const cellOf = (id: ParamId) => DECK_ALL_CELLS.find((c) => c.id === id);
+    // A pick named with its section, as the grid shows it — but only once when the setting
+    // IS its section's own level ("Pitch", not "Pitch Pitch"; "Osc 2", not "Osc 2 Osc2").
+    const label = (id: ParamId, section: string, sep: string): string => {
+      const c = cellOf(id)!;
+      const name = dropBlockWord(baseSpec(id).name, c.section.strip);
+      const same = (a: string) => a.replace(/\s/g, "").toLowerCase();
+      return same(name) === same(section) ? section : `${section}${sep}${name}`;
+    };
+
+    const paint = () => {
+      const ids = [...picked];
+      const live = movable();
+      const m = live.length ? live.reduce((s, id) => s + normOf(id), 0) / live.length : 0;
+      const pct = Math.round(m * 100);
+      col.classList.toggle("empty", !live.length);
+      const one = ids.length === 1 ? cellOf(ids[0]) : undefined;
+      col.style.setProperty("--dc", (one && sectionColor(one.section)) || host.color);
+      const end = A0 + SWEEP * m;
+      value.setAttribute("d", live.length && m > 0.002 ? arc(end) : "");
+      const [px0, py0] = pt(end, 12);
+      const [px1, py1] = pt(end, 27);
+      pointer.setAttribute("x1", String(px0));
+      pointer.setAttribute("y1", String(py0));
+      pointer.setAttribute("x2", String(px1));
+      pointer.setAttribute("y2", String(py1));
+      text.textContent = live.length ? `${pct}%` : "—";
+      dial.setAttribute("aria-valuenow", String(pct));
+      count.textContent = ids.length === 0 ? "Nothing picked"
+        : ids.length === 1 ? "1 setting on the dial" : `${ids.length} settings on the dial`;
+      if (one) {
+        const spec = baseSpec(one.id);
+        readName.textContent = label(one.id, one.section.title, " · ");
+        readVal.textContent = sectionValue(spec, p.get(one.id))
+          + (live.length ? "" : " — drawn by hand, the dial leaves it");
+      } else if (ids.length) {
+        readName.textContent = ids.map((id) => label(id, sectionTag(cellOf(id)!.section), " ")).join(", ");
+        readVal.textContent = `average ${pct}% of their ranges`;
+      } else {
+        readName.textContent = "Click settings in the grid to put them on the dial";
+        readVal.textContent = "";
+      }
+      dial.setAttribute("aria-valuetext", `${readName.textContent} ${readVal.textContent}`.trim());
+      for (const b of steps.children) (b as HTMLButtonElement).disabled = !live.length;
+      clear.disabled = !ids.length;
+    };
+
+    // A TURN: the first move of one takes the undo step; it settles — plays the sound and
+    // rebuilds the panel — on release, or once the notches and presses have paused.
+    let turning = false;
+    let settleTimer = 0;
+    const begin = () => {
+      if (turning) return;
+      turning = true;
+      p.checkpoint();
+    };
+    const settle = () => {
+      window.clearTimeout(settleTimer);
+      if (!turning) return;
+      turning = false;
+      if (!wrap.isConnected) return; // closed, or rebuilt by something else meanwhile
+      const hadFocus = document.activeElement === dial;
+      host.commitAudition();
+      rerender();
+      if (hadFocus) document.querySelector<HTMLElement>(".deck-dial")?.focus();
+    };
+    const settleSoon = () => {
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(settle, 450);
+    };
+    const changed = () => {
+      host.write();
+      paintCells();
+      paint();
+    };
+    const nudge = (delta: number) => {
+      const ids = movable();
+      if (!ids.length) return;
+      begin();
+      for (const id of ids) put(id, normOf(id) + delta);
+      changed();
+      settleSoon();
+    };
+
+    // Drag: every pick moves from where it was at the press, by the distance travelled, so a
+    // pick pinned at an end during the drag comes back in step when the drag comes back.
+    let drag: { lastY: number; acc: number; moved: boolean; from: Map<ParamId, number> } | null = null;
+    dial.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      drag = { lastY: e.clientY, acc: 0, moved: false, from: new Map(movable().map((id) => [id, normOf(id)])) };
+      dial.setPointerCapture(e.pointerId);
+    });
+    dial.addEventListener("pointermove", (e) => {
+      if (!drag || !drag.from.size) return;
+      const dy = drag.lastY - e.clientY;
+      if (!drag.moved && Math.abs(dy) < 3) return; // a press that hasn't become a drag yet
+      e.preventDefault();
+      drag.moved = true;
+      drag.lastY = e.clientY;
+      drag.acc += (dy / DIAL_DRAG_PX) * (e.shiftKey ? DIAL_FINE : 1);
+      begin();
+      for (const [id, n] of drag.from) put(id, n + drag.acc);
+      changed();
+    });
+    const endDrag = (e: PointerEvent) => {
+      if (!drag) return;
+      const moved = drag.moved;
+      drag = null;
+      try { dial.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      if (moved) settle();
+    };
+    dial.addEventListener("pointerup", endDrag);
+    dial.addEventListener("pointercancel", endDrag);
+
+    dial.addEventListener("wheel", (e) => {
+      if (!movable().length) return; // nothing to turn: let the page scroll
+      e.preventDefault();
+      // A mouse notch reports ~100px, a trackpad many small deltas; scaling by the delta
+      // serves both, and the cap keeps a flung trackpad from slamming every pick to an end.
+      // Shift+wheel arrives as deltaX on most platforms, hence the fallback.
+      const raw = e.deltaY || e.deltaX;
+      const px = e.deltaMode === 1 ? raw * 33 : e.deltaMode === 2 ? raw * 300 : raw;
+      const notches = Math.max(-3, Math.min(3, -px / 100));
+      nudge(notches * DIAL_WHEEL_STEP * (e.shiftKey ? DIAL_FINE : 1));
+    }, { passive: false });
+
+    dial.addEventListener("keydown", (e) => {
+      const fine = e.shiftKey ? DIAL_FINE : 1;
+      const d: Record<string, number> = {
+        ArrowUp: DIAL_WHEEL_STEP * fine, ArrowRight: DIAL_WHEEL_STEP * fine,
+        ArrowDown: -DIAL_WHEEL_STEP * fine, ArrowLeft: -DIAL_WHEEL_STEP * fine,
+        PageUp: DIAL_BUTTON_STEP * 2, PageDown: -DIAL_BUTTON_STEP * 2,
+      };
+      if (!(e.key in d)) return;
+      e.preventDefault();
+      nudge(d[e.key]);
+    });
+
+    for (const [glyph, sign] of [["−", -1], ["+", 1]] as const) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "deck-dial-step";
+      b.textContent = glyph;
+      b.title = `${sign < 0 ? "Down" : "Up"} 5% of each setting's range (Shift: finer)`;
+      b.onclick = (e) => nudge(sign * DIAL_BUTTON_STEP * (e.shiftKey ? DIAL_FINE : 1));
+      steps.append(b);
+    }
+    clear.onclick = () => {
+      picked.clear();
+      paintCells();
+      paint();
+    };
+
+    col.append(count, dial, steps, readout, clear, hint);
+    paint();
+    return { el: col, paint };
   }
 
   /** One choice parameter on the deck: every option visible, and one press that slides

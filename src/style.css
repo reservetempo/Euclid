@@ -1731,3 +1731,152 @@ select:focus { outline: none; }
 .deck-tab.on, .deck-tab.on.lit {
   background: var(--sc, var(--vc, var(--text))); color: #ffffff; font-weight: 700;
 }
+/* ALL heads the strip and opens every section at once, so it belongs to none of them:
+   it wears the voice's colour, and reads as the odd one out by being ink rather than hue. */
+.deck-tab-all { color: var(--text); font-weight: 700; flex: 0 0 auto; padding: 6px 14px; }
+.deck-tab-all.on { background: var(--vc, var(--text)); color: #ffffff; }
+
+/* --- The deck's ALL section ---------------------------------------------------
+   Every setting as one square button, and a dial beside them for the ones picked.
+   The panel lets go of the deck's 58vh scroll box here: the grid is sized to fit
+   the screen on its own, and a scroller inside a scroller would split it in two. */
+.deck-panel.deck-all { max-height: none; overflow: visible; }
+.deck-all-body {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center;
+  gap: 14px;
+}
+/* The square. Sized off the viewport HEIGHT as well as the width, so the whole grid is
+   on screen at once on a computer; the rows are as many as the columns need, and the
+   aspect ratio makes the cells a touch taller than wide rather than leaving a gap.
+   It is a size CONTAINER so the cells' lettering can scale with it (cqw below): a
+   fixed size either broke "Humanize" in two on a small grid or rattled about in a
+   large one. */
+.deck-grid {
+  flex: 0 1 min(76vh, 880px); min-width: 300px; aspect-ratio: 1 / 1;
+  container-type: inline-size;
+  display: grid; gap: 3px;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
+  user-select: none; touch-action: pan-y;
+}
+/* One setting. The fill is the bar idea from the rows above, turned into a tile: it
+   spans the whole cell and is clipped back to the value (--v), and the caption is drawn
+   twice across that same edge. A stripe along the bottom keeps the section's colour
+   showing on a cell whose value is at zero. */
+.deck-cell {
+  position: relative; min-width: 0; min-height: 0; padding: 0; overflow: hidden;
+  font: inherit; text-align: left; color: var(--text);
+  background: var(--deck-well); border: none; border-radius: 5px;
+  box-shadow: inset 0 -3px 0 var(--sc, var(--vc, var(--muted)));
+  cursor: pointer;
+}
+.deck-cell-fill {
+  position: absolute; inset: 0;
+  background-image: linear-gradient(90deg,
+    var(--sc, var(--vc, var(--text))) 0%,
+    color-mix(in srgb, var(--sc, var(--vc, var(--text))) 78%, #ffffff) 100%);
+  clip-path: inset(0 calc(100% - var(--v, 0%)) 0 0);
+}
+.deck-cell-cap {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  justify-content: space-between; gap: 1px; padding: 4px 5px 6px;
+  pointer-events: none;
+}
+.deck-cell-cap.lit { color: #ffffff; clip-path: inset(0 calc(100% - var(--v, 0%)) 0 0); }
+.deck-cell-tag, .deck-cell-val {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.deck-cell-tag {
+  font-size: clamp(7px, 1.2cqw, 10px); font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  opacity: 0.7;
+}
+.deck-cell-name {
+  font-size: clamp(8px, 1.5cqw, 13px); font-weight: 700; line-height: 1.1;
+  overflow: hidden; overflow-wrap: break-word;
+}
+.deck-cell-val { font-size: clamp(7.5px, 1.35cqw, 12px); font-variant-numeric: tabular-nums; }
+.deck-cell.deck-off .deck-cell-fill { filter: grayscale(0.75); opacity: 0.45; }
+/* An off cell's fill is too pale to carry white lettering, so both copies of its
+   caption are the same muted ink and the edge between them disappears. */
+.deck-cell.deck-off .deck-cell-cap,
+.deck-cell.deck-off .deck-cell-cap.lit { color: var(--muted); }
+/* PICKED: a black ring with a white one inside it, drawn OVER the fill and captions
+   (an inset shadow on the cell itself would sit underneath them). Black-and-white is
+   the one pairing that reads on every section colour and on the bare well alike. */
+.deck-cell.picked::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 3px #000000, inset 0 0 0 5px #ffffff;
+}
+@media (hover: hover) {
+  .deck-cell:hover { filter: brightness(1.06); }
+}
+.deck-cell:focus-visible { outline: 2px dotted #000000; outline-offset: -8px; }
+/* On a phone the tiles are too small for three lines; the name alone survives. */
+@media (max-width: 640px) {
+  .deck-cell-tag, .deck-cell-val { display: none; }
+  .deck-cell-cap { justify-content: center; padding: 2px; }
+}
+
+/* The dial column. Sticky, so a grid taller than the sheet's view keeps its dial in
+   reach while you scroll to the far rows. --dc is the dial's colour: the one picked
+   setting's section, or the voice's when several are picked. */
+.deck-dial-col {
+  flex: 0 0 210px; position: sticky; top: 0;
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  padding: 10px; background: var(--deck-well); border-radius: var(--deck-r);
+}
+.deck-dial-count {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  text-align: center; color: var(--dc, var(--text));
+}
+.deck-dial {
+  width: 170px; height: 170px; align-self: center;
+  cursor: ns-resize; touch-action: none; border-radius: 50%;
+}
+.deck-dial:focus { outline: none; }
+.deck-dial:focus-visible { outline: 2px dotted #000000; outline-offset: 2px; }
+.deck-dial-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.deck-dial-tick { stroke: var(--muted); stroke-width: 1.2; stroke-linecap: round; }
+.deck-dial-track, .deck-dial-value { fill: none; stroke-width: 7; stroke-linecap: round; }
+.deck-dial-track { stroke: var(--deck-face); }
+.deck-dial-value { stroke: var(--dc, var(--text)); }
+.deck-dial-knob { fill: #ffffff; stroke: var(--deck-edge); stroke-width: 1; }
+.deck-dial:focus-visible .deck-dial-knob { stroke: var(--dc, var(--text)); stroke-width: 2; }
+.deck-dial-pointer { stroke: var(--dc, var(--text)); stroke-width: 4; stroke-linecap: round; }
+.deck-dial-text {
+  font-size: 11px; font-weight: 700; fill: var(--text);
+  font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.deck-dial-col.empty .deck-dial { cursor: default; opacity: 0.5; }
+.deck-dial-steps { display: flex; gap: 6px; }
+.deck-dial-step, .deck-dial-clear {
+  flex: 1 1 0; padding: 6px 0; font: inherit; font-weight: 700;
+  border: none; border-radius: 5px; box-shadow: none; cursor: pointer;
+}
+.deck-dial-step {
+  font-size: 18px; line-height: 1; color: #ffffff; background: var(--dc, var(--text));
+}
+.deck-dial-clear {
+  font-size: 11px; color: var(--ink-stop);
+  background: color-mix(in srgb, var(--ink-stop) 10%, #ffffff);
+}
+.deck-dial-step:active:not(:disabled), .deck-dial-clear:active:not(:disabled) { opacity: 0.7; }
+.deck-dial-step:disabled, .deck-dial-clear:disabled {
+  cursor: default; color: var(--muted); background: var(--deck-face);
+}
+.deck-dial-read {
+  min-height: 3.2em; padding: 6px 8px; text-align: center;
+  background: var(--deck-face); border-radius: 5px;
+}
+.deck-dial-name {
+  font-size: 11px; font-weight: 700; color: var(--text); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+}
+.deck-dial-val {
+  margin-top: 2px; font-size: 12px; font-weight: 700; color: var(--dc, var(--text));
+  font-variant-numeric: tabular-nums;
+}
+.deck-dial-hint { font-size: 10px; line-height: 1.35; color: var(--muted); text-align: center; }
+@media (max-width: 640px) {
+  .deck-dial-col { flex-basis: 100%; position: static; }
+}
